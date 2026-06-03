@@ -154,27 +154,48 @@ export function useUpcomingAuctions(memberId: string | null) {
     queryFn: async () => {
       if (!memberId) return [];
 
+      // 1. Get the group IDs this member belongs to
+      const { data: memberGroups } = await supabase
+        .from('chit_members')
+        .select('chit_group_id')
+        .eq('customer_id', memberId)
+        .neq('bid_status', 'completed');
+        
+      const groupIds = (memberGroups || []).map((g: any) => g.chit_group_id);
+      if (groupIds.length === 0) return [];
+
       const now = new Date().toISOString();
 
-      const { data: auctions, error } = await supabase
+      // 2. Fetch upcoming auctions for those groups
+      const { data: allAuctions, error } = await supabase
         .from('auctions')
         .select(`
           id,
+          chit_group_id,
           scheduled_at,
           status,
           min_bid,
           chit_group:chit_groups ( name )
         `)
-        .in('status', ['upcoming', 'live'])
+        .in('chit_group_id', groupIds)
+        .eq('status', 'upcoming')
         .gte('scheduled_at', now)
         .order('scheduled_at', { ascending: true })
-        .limit(5);
+        .limit(20);
 
       if (error) throw new Error(error.message);
-      if (!auctions || auctions.length === 0) return [];
+      if (!allAuctions || allAuctions.length === 0) return [];
 
-      // Currently ignoring reminders since they are user_id based
-      return auctions.map((a: any) => ({
+      // 3. Filter: keep only the FIRST upcoming auction per group
+      const upcomingSeen = new Set();
+      const filteredAuctions = allAuctions.filter((a: any) => {
+        if (upcomingSeen.has(a.chit_group_id)) return false;
+        upcomingSeen.add(a.chit_group_id);
+        return true;
+      });
+
+      // 4. Return top 5 unique upcoming auctions
+      return filteredAuctions.slice(0, 5).map((a: any) => ({
         id: a.id,
         scheduled_at: a.scheduled_at,
         status: a.status,
@@ -211,13 +232,24 @@ export function formatAuctionTime(scheduledAt: string): string {
   const now = new Date();
   const scheduled = new Date(scheduledAt);
   const diffMs = scheduled.getTime() - now.getTime();
-  const diffHours = diffMs / (1000 * 60 * 60);
+  if (diffMs <= 0) return 'Starting now';
 
-  if (diffHours < 1) return `Starts in ${Math.round(diffMs / 60000)} mins`;
-  if (diffHours < 24) return `Starts in ${Math.round(diffHours)} hours`;
-  if (diffHours < 48) {
-    const time = scheduled.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
-    return `Tomorrow at ${time}`;
+  const totalMinutes = Math.floor(diffMs / 60000);
+  const totalHours = Math.floor(totalMinutes / 60);
+  const totalDays = Math.floor(totalHours / 24);
+  const months = Math.floor(totalDays / 30);
+  const days = totalDays % 30;
+  const hours = totalHours % 24;
+  const mins = totalMinutes % 60;
+
+  if (months > 0) {
+    return `Starts in ${months} mo${days > 0 ? ` ${days} d` : ''}`;
   }
-  return formatShortDate(scheduledAt);
+  if (days > 0) {
+    return `Starts in ${days} d${hours > 0 ? ` ${hours} h` : ''}`;
+  }
+  if (totalHours > 0) {
+    return `Starts in ${totalHours} h${mins > 0 ? ` ${mins} m` : ''}`;
+  }
+  return `Starts in ${Math.max(totalMinutes, 1)} m`;
 }

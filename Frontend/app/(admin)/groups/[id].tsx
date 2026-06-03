@@ -9,6 +9,101 @@ import { supabase } from '../../../lib/supabase';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { apiPost } from '../../../lib/api';
 
+// ── Step3Review: extracted to avoid IIFE JSX parsing issues ──
+function Step3Review({
+  tempScheduledAt, tempClosesAt, tempMinBid, tempMaxBid, groupValue,
+  isValidatingSchedule, onBack, onSave, onLaunch,
+  formatDate, formatTime, formatRupees, styles,
+}: {
+  tempScheduledAt: Date; tempClosesAt: Date; tempMinBid: string; tempMaxBid: string;
+  groupValue: number; isValidatingSchedule: boolean;
+  onBack: () => void; onSave: () => void; onLaunch: () => void;
+  formatDate: (v: any) => string; formatTime: (v: any) => string;
+  formatRupees: (v: number) => string; styles: any;
+}) {
+  const isGoingLive = tempScheduledAt.getTime() <= Date.now() + 60000;
+  const durationMins = Math.round((tempClosesAt.getTime() - tempScheduledAt.getTime()) / 60000);
+
+  return (
+    <View style={{ gap: 16 }}>
+      <View>
+        <Text style={styles.prepStepTitle}>{isGoingLive ? 'Ready to Launch?' : 'Confirm Schedule'}</Text>
+        <Text style={styles.prepStepSub}>
+          {isGoingLive
+            ? 'The auction will go live immediately and members can start bidding.'
+            : 'Review details before scheduling. You can edit before it goes live.'}
+        </Text>
+      </View>
+
+      <View style={[styles.prepCard, { gap: 0 }]}>
+        <View style={styles.reviewRow}>
+          <Text style={styles.reviewLabel}>{isGoingLive ? 'Live For' : 'Opens'}</Text>
+          <Text style={styles.reviewVal}>
+            {isGoingLive ? `${durationMins} minutes` : `${formatDate(tempScheduledAt)} · ${formatTime(tempScheduledAt)}`}
+          </Text>
+        </View>
+        <View style={styles.reviewDivider} />
+        {!isGoingLive && (
+          <>
+            <View style={styles.reviewRow}>
+              <Text style={styles.reviewLabel}>Closes</Text>
+              <Text style={styles.reviewVal}>{formatDate(tempClosesAt)} · {formatTime(tempClosesAt)}</Text>
+            </View>
+            <View style={styles.reviewDivider} />
+            <View style={styles.reviewRow}>
+              <Text style={styles.reviewLabel}>Duration</Text>
+              <Text style={styles.reviewVal}>{durationMins} minutes</Text>
+            </View>
+            <View style={styles.reviewDivider} />
+          </>
+        )}
+        <View style={styles.reviewRow}>
+          <Text style={styles.reviewLabel}>Discount Range</Text>
+          <Text style={styles.reviewVal}>
+            {formatRupees(Number(tempMinBid) * 100)} – {formatRupees(Number(tempMaxBid) * 100)}
+          </Text>
+        </View>
+        <View style={styles.reviewDivider} />
+        <View style={styles.reviewRow}>
+          <Text style={styles.reviewLabel}>Chit Value</Text>
+          <Text style={styles.reviewVal}>{formatRupees(groupValue)}</Text>
+        </View>
+      </View>
+
+      {isGoingLive ? (
+        <TouchableOpacity
+          style={[styles.launchBtn, { backgroundColor: '#10B981' }, isValidatingSchedule && { opacity: 0.7 }]}
+          onPress={onLaunch}
+          disabled={isValidatingSchedule}
+        >
+          <Text style={styles.launchBtnText}>LAUNCH LIVE NOW</Text>
+        </TouchableOpacity>
+      ) : (
+        <View style={{ gap: 10 }}>
+          <TouchableOpacity
+            style={[styles.launchBtn, { backgroundColor: '#005E7D' }, isValidatingSchedule && { opacity: 0.7 }]}
+            onPress={onSave}
+            disabled={isValidatingSchedule}
+          >
+            <Text style={styles.launchBtnText}>SAVE SCHEDULE</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.launchBtn, { backgroundColor: '#10B981' }, isValidatingSchedule && { opacity: 0.7 }]}
+            onPress={onLaunch}
+            disabled={isValidatingSchedule}
+          >
+            <Text style={styles.launchBtnText}>LAUNCH LIVE INSTEAD</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      <TouchableOpacity onPress={onBack} style={{ alignSelf: 'center', padding: 12 }}>
+        <Text style={{ color: '#94A3B8', fontFamily: 'Inter_600SemiBold', fontSize: 13 }}>← Modify Bid Limits</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 export default function AdminGroupDetail() {
   const router = useRouter();
   const { id } = useLocalSearchParams();
@@ -161,9 +256,61 @@ export default function AdminGroupDetail() {
         .eq('chit_group_id', group.id)
         .order('auction_number', { ascending: false });
       setAuctions(data || []);
+
+      // Auto-sync: for any completed auction, make sure payment_schedules reflects
+      // the correct final_due_amount. This repairs stale rows created before the
+      // direct-write logic was in place (i.e., when backend was offline).
+      const completed = (data || []).filter(
+        (a: any) => a.status === 'completed' && a.auction_number != null
+      );
+      if (completed.length > 0) {
+        const { data: groupMembers } = await supabase
+          .from('chit_members')
+          .select('id, participation_share')
+          .eq('chit_group_id', group.id);
+
+        if (groupMembers && groupMembers.length > 0) {
+          for (const auction of completed) {
+            const finalDuePaise = auction.final_due_amount ?? 0;
+            const dividendPaise = auction.dividend_amount ?? 0;
+            for (const member of groupMembers) {
+              const share = Number((member as any).participation_share || 1);
+              // Only update if the current amount doesn't match — avoids unnecessary writes
+              const { data: existingRow } = await supabase
+                .from('payment_schedules')
+                .select('id, amount')
+                .eq('chit_member_id', (member as any).id)
+                .eq('month_number', auction.auction_number)
+                .maybeSingle();
+
+              if (
+                existingRow &&
+                existingRow.amount !== Math.round(finalDuePaise * share)
+              ) {
+                await supabase
+                  .from('payment_schedules')
+                  .update({
+                    amount: Math.round(finalDuePaise * share),
+                    dividend_amount: Math.round(dividendPaise * share),
+                  })
+                  .eq('id', existingRow.id);
+              }
+            }
+          }
+        }
+      }
     } catch (err) {
       console.error('Error fetching auctions:', err);
     }
+  };
+
+  const addMonthsKeepDay = (date: Date, months: number) => {
+    const year = date.getFullYear();
+    const month = date.getMonth() + months;
+    const day = date.getDate();
+    const lastDay = new Date(year, month + 1, 0).getDate();
+    const targetDay = Math.min(day, lastDay);
+    return new Date(year, month, targetDay);
   };
 
   const ensureAuctionsExist = async (g: any, currentAuctions: any[]) => {
@@ -171,12 +318,12 @@ export default function AdminGroupDetail() {
     const totalNeeded = g.no_of_installments || g.duration_months || 0;
     if (totalNeeded <= 0) return;
 
+    const baseDate = g.start_date ? new Date(g.start_date) : new Date();
     const existingNumbers = new Set(currentAuctions.map((a: any) => a.auction_number));
     const missing = [];
     for (let i = 1; i <= totalNeeded; i++) {
       if (!existingNumbers.has(i)) {
-        const scheduled = new Date();
-        scheduled.setMonth(scheduled.getMonth() + i);
+        const scheduled = addMonthsKeepDay(baseDate, i - 1);
         scheduled.setHours(10, 0, 0, 0);
         const closes = new Date(scheduled);
         closes.setHours(11, 0, 0, 0);
@@ -255,14 +402,14 @@ export default function AdminGroupDetail() {
   const deduplicatedAuctions = React.useMemo(() => {
     const map = new Map<number, any>();
     const statusPriority: Record<string, number> = { 'live': 3, 'completed': 2, 'upcoming': 1 };
-    
+
     [...auctions].forEach(a => {
       const existing = map.get(a.auction_number);
       if (!existing || (statusPriority[a.status] || 0) > (statusPriority[existing.status] || 0)) {
         map.set(a.auction_number, a);
       }
     });
-    
+
     return Array.from(map.values()).sort((a, b) => a.auction_number - b.auction_number);
   }, [auctions]);
 
@@ -298,8 +445,25 @@ export default function AdminGroupDetail() {
     setPrepStep(1);
     setTempMinBid(String((auction.min_bid || 0) / 100));
     setTempMaxBid(String((auction.max_bid || group?.value || 0) / 100));
-    setTempScheduledAt(auction.scheduled_at ? new Date(auction.scheduled_at) : new Date());
-    setTempClosesAt(auction.closes_at ? new Date(auction.closes_at) : new Date(Date.now() + 3600000));
+
+    // CRITICAL: If the existing times are in the past, reset to NOW + 1hr
+    // This prevents launching with an already-expired closes_at (which blocks all bids)
+    const now = new Date();
+    const existingStart = auction.scheduled_at ? new Date(auction.scheduled_at) : null;
+    const existingClose = auction.closes_at ? new Date(auction.closes_at) : null;
+
+    if (existingStart && existingStart > now) {
+      setTempScheduledAt(existingStart);
+    } else {
+      setTempScheduledAt(now);
+    }
+
+    if (existingClose && existingClose > now) {
+      setTempClosesAt(existingClose);
+    } else {
+      setTempClosesAt(new Date(now.getTime() + 3600000)); // NOW + 1 hour
+    }
+
     setShowScheduleModal(true);
   };
 
@@ -323,18 +487,26 @@ export default function AdminGroupDetail() {
       return;
     }
 
+    // SAFETY: If launching live, ensure closes_at is in the future
+    if (setLive && tempClosesAt <= new Date()) {
+      Alert.alert('Validation Error', 'Close time is in the past. Please set a future close time before launching.');
+      return;
+    }
+
     setIsValidatingSchedule(true);
     try {
+      // Only check overlap against live/completed auctions — NOT upcoming placeholders
       const { data: overlaps } = await supabase
         .from('auctions')
-        .select('id, auction_number')
+        .select('id, auction_number, status')
         .eq('chit_group_id', group.id)
         .neq('id', selectedAuctionForSchedule.id)
+        .in('status', ['live', 'completed'])
         .filter('scheduled_at', 'lte', tempClosesAt.toISOString())
         .filter('closes_at', 'gte', tempScheduledAt.toISOString());
 
       if (overlaps && overlaps.length > 0) {
-        Alert.alert('Conflict Detected', `This time slot overlaps with Auction #${overlaps[0].auction_number}.`);
+        Alert.alert('Conflict Detected', `This time slot overlaps with Auction #${overlaps[0].auction_number} (${overlaps[0].status}).`);
         setIsValidatingSchedule(false);
         return;
       }
@@ -536,48 +708,125 @@ export default function AdminGroupDetail() {
   const formatRupees = (value: number | null | undefined) =>
     `₹${Math.round(Number(value || 0) / 100).toLocaleString('en-IN')}`;
 
-  const openSettlementModal = (auction: any) => {
+  const openSettlementModal = async (auction: any) => {
     setSettlementAuction(auction);
-    setSettlementWinnerId(auction?.winner_member_id || '');
-    setSettlementDiscount(String((auction?.discount_amount || 0) / 100 || ''));
     setShowSettlementModal(true);
+
+    // Always try to auto-populate from the actual highest bid in auction_bids.
+    // This covers:
+    //  a) Auction ended via "Stop Bidding" (discount_amount not yet written)
+    //  b) Re-opening a settled auction to review/correct values
+    try {
+      const { data: topBidRow } = await supabase
+        .from('auction_bids')
+        .select('bid_amount, customer_id, bidder_name, customers(full_name)')
+        .eq('auction_id', auction.id)
+        .eq('is_retracted', false)
+        .order('bid_amount', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (topBidRow && topBidRow.bid_amount > 0) {
+        // Auto-populate discount from highest bid
+        setSettlementDiscount(String(topBidRow.bid_amount / 100));
+
+        // Auto-select the winning member based on their customer_id
+        if (topBidRow.customer_id) {
+          const winnerMember = members.find(m => m.customer_id === topBidRow.customer_id);
+          if (winnerMember) {
+            setSettlementWinnerId(winnerMember.id);
+          }
+        }
+      } else {
+        // No bids — fall back to whatever was previously saved on the auction row
+        setSettlementDiscount(String((auction?.discount_amount || 0) / 100 || ''));
+        setSettlementWinnerId(auction?.winner_member_id || '');
+      }
+    } catch {
+      // On any error fall back gracefully
+      setSettlementDiscount(String((auction?.discount_amount || 0) / 100 || ''));
+      setSettlementWinnerId(auction?.winner_member_id || '');
+    }
   };
 
   const handleSaveSettlement = async () => {
-    if (!settlementAuction?.id) return;
+    if (!settlementAuction?.id || !group?.id) return;
 
     const toPaise = (val: string) => Math.max(0, Math.round(Number(val || 0) * 100));
+    const finalDuePaise = toPaise(settlementFinalDue);
+    const dividendPaise = toPaise(settlementDividend);
+    const auctionNumber = settlementAuction.auction_number;
 
     setSavingSettlement(true);
     try {
-      const { error } = await supabase
+      // 1. Update the auction row with all settlement fields
+      const { error: auctionError } = await supabase
         .from('auctions')
         .update({
           winner_member_id: settlementWinnerId || null,
           status: 'completed',
           installment_due: toPaise(String(baseEmi || 0)),
-          dividend_amount: toPaise(settlementDividend),
+          dividend_amount: dividendPaise,
           discount_amount: toPaise(settlementDiscount),
-          final_due_amount: toPaise(settlementFinalDue),
+          final_due_amount: finalDuePaise,
           winner_prize_amount: toPaise(settlementPrize),
         })
         .eq('id', settlementAuction.id);
 
-      if (error) throw error;
+      if (auctionError) throw auctionError;
+
+      // 2. Directly update payment_schedules for every member of this group —
+      //    no backend needed. This is the source of truth the member app reads.
+      if (auctionNumber != null) {
+        // Get all chit_member IDs for this group
+        const { data: groupMembers, error: membersError } = await supabase
+          .from('chit_members')
+          .select('id, participation_share')
+          .eq('chit_group_id', group.id);
+
+        if (membersError) throw membersError;
+
+        if (groupMembers && groupMembers.length > 0) {
+          // Update each member's payment schedule row for this month
+          const updatePromises = groupMembers.map((member: any) => {
+            const share = Number(member.participation_share || 1);
+            // Pro-rate for half-shares; full share members pay full amount
+            const memberFinalDue = Math.round(finalDuePaise * share);
+            const memberDividend = Math.round(dividendPaise * share);
+
+            return supabase
+              .from('payment_schedules')
+              .update({
+                amount: memberFinalDue,
+                dividend_amount: memberDividend,
+              })
+              .eq('chit_member_id', member.id)
+              .eq('month_number', auctionNumber);
+          });
+
+          const results = await Promise.all(updatePromises);
+          const updateError = results.find(r => r.error);
+          if (updateError?.error) {
+            // Non-fatal: log but don't block — the auctions table is the primary source
+            console.warn('payment_schedules update partial failure:', updateError.error.message);
+          }
+        }
+      }
+
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert('Settlement Saved', `Auction #${auctionNumber} settled. Members' installment updated to ₹${Math.round(finalDuePaise / 100).toLocaleString('en-IN')}.`);
       setShowSettlementModal(false);
       fetchAuctions();
 
+      // 3. Try backend API for push notifications only (non-critical)
       try {
-        await apiPost('/api/auctions/apply-settlement', {
-          auctionId: settlementAuction.id,
-        });
         await apiPost('/api/auctions/notify-installments', {
           auctionId: settlementAuction.id,
-          message: `Installment for Auction #${settlementAuction.auction_number || ''} is due. Please pay now.`,
+          message: `Installment for Auction #${auctionNumber || ''} is due. Please pay now.`,
         });
       } catch (notifyErr) {
-        console.warn('Installment notification failed:', notifyErr);
+        // Ignore — push notifications are non-critical
+        console.warn('Push notification failed (non-critical):', notifyErr);
       }
     } catch (err: any) {
       Alert.alert('Error', err?.message || 'Failed to save settlement.');
@@ -792,7 +1041,7 @@ export default function AdminGroupDetail() {
               </Text>
             </View>
           </View>
-          
+
           <View style={styles.timelineContainer}>
             {deduplicatedAuctions.map((auction, idx) => {
               const isCompleted = auction.status === 'completed';
@@ -800,7 +1049,7 @@ export default function AdminGroupDetail() {
               const isUpcoming = auction.status === 'upcoming';
               const isScheduled = !!auction.scheduled_at;
               const isLast = idx === deduplicatedAuctions.length - 1;
-              
+
               let statusColor = '#CBD5E1';
               if (isLive) statusColor = '#10B981';
               else if (isCompleted) statusColor = '#005E7D';
@@ -816,7 +1065,7 @@ export default function AdminGroupDetail() {
                     {!isLast && <View style={[styles.timelineLine, { backgroundColor: isCompleted ? '#005E7D' : '#E2E8F0' }]} />}
                   </View>
 
-                  <TouchableOpacity 
+                  <TouchableOpacity
                     style={[styles.timelineCard, isLive && styles.timelineCardLive, isCompleted && styles.timelineCardCompleted]}
                     onPress={() => isCompleted ? openSettlementModal(auction) : handleOpenScheduleModal(auction)}
                     activeOpacity={0.7}
@@ -843,7 +1092,7 @@ export default function AdminGroupDetail() {
                         </View>
                         <View style={styles.summaryItem}>
                           <Text style={styles.summaryLabel}>PRIZE</Text>
-                          <Text style={[styles.summaryVal, { color: '#10B981' }]}>{formatRupees(auction.prize_amount)}</Text>
+                          <Text style={[styles.summaryVal, { color: '#10B981' }]}>{formatRupees(auction.winner_prize_amount)}</Text>
                         </View>
                       </View>
                     ) : (
@@ -853,8 +1102,8 @@ export default function AdminGroupDetail() {
                             <Text style={styles.timelineActionBtnTextLive}>ENTER LIVE AUCTION →</Text>
                           </TouchableOpacity>
                         ) : (
-                          <TouchableOpacity 
-                            style={[styles.timelineActionBtn, isScheduled && { borderColor: '#F59E0B', backgroundColor: '#FFFBEB' }]} 
+                          <TouchableOpacity
+                            style={[styles.timelineActionBtn, isScheduled && { borderColor: '#F59E0B', backgroundColor: '#FFFBEB' }]}
                             onPress={() => handleOpenScheduleModal(auction)}
                           >
                             <Text style={[styles.timelineActionBtnText, isScheduled && { color: '#D97706' }]}>
@@ -1177,6 +1426,16 @@ export default function AdminGroupDetail() {
             )}
 
             <Text style={styles.sectionTitle}>Auction Inputs</Text>
+            {settlementDiscount && Number(settlementDiscount) > 0 && (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#F0FDF4', borderRadius: 10, padding: 10, marginBottom: 12, borderWidth: 1, borderColor: '#BBF7D0' }}>
+                <Svg width={16} height={16} viewBox="0 0 24 24" fill="#16A34A">
+                  <Path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
+                </Svg>
+                <Text style={{ fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#16A34A', flex: 1 }}>
+                  Auto-filled from highest bid · You can still edit the Bid Amount below
+                </Text>
+              </View>
+            )}
             <View style={styles.settlementGrid}>
               <View style={styles.settlementField}>
                 <Text style={styles.settlementLabel}>Monthly Installment</Text>
@@ -1250,12 +1509,12 @@ export default function AdminGroupDetail() {
       </Modal>
 
       {/* --- AUCTION PREP CENTER (STEPPED MODAL) --- */}
-      <Modal 
-        visible={showScheduleModal} 
-        animationType="slide" 
+      <Modal
+        visible={showScheduleModal}
+        animationType="slide"
         presentationStyle="pageSheet"
         onRequestClose={() => setShowScheduleModal(false)}
-      >
+     />
         <SafeAreaView style={{ flex: 1, backgroundColor: '#F8FAFC' }}>
           <View style={styles.modalHeader}>
             <TouchableOpacity onPress={() => setShowScheduleModal(false)} style={styles.closeBtn}>
@@ -1279,220 +1538,339 @@ export default function AdminGroupDetail() {
             ))}
           </View>
 
-          <ScrollView contentContainerStyle={{ padding: 24 }}>
-            {prepStep === 1 && (
-              <View>
-                <Text style={styles.prepStepTitle}>Step 1: Timing & Schedule</Text>
-                <Text style={styles.prepStepSub}>Configure the window for this auction session.</Text>
-                
-                <View style={styles.prepCard}>
-                  <Text style={styles.schedulingFieldLabel}>AUCTION START</Text>
-                  <View style={{ flexDirection: 'row', gap: 12 }}>
-                    <TouchableOpacity style={[styles.searchInput, { flex: 1 }]} onPress={() => openDatePickerForPrep('scheduled')}>
-                      <Text style={styles.pickerPreviewLabel}>Date</Text>
-                      <Text style={styles.pickerPreviewVal}>{formatDate(tempScheduledAt)}</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={[styles.searchInput, { flex: 1 }]} onPress={() => openTimePickerForPrep('scheduled')}>
-                      <Text style={styles.pickerPreviewLabel}>Time</Text>
-                      <Text style={styles.pickerPreviewVal}>{formatTime(tempScheduledAt)}</Text>
-                    </TouchableOpacity>
-                  </View>
-
-                  <Text style={[styles.schedulingFieldLabel, { marginTop: 24 }]}>AUCTION CLOSE</Text>
-                  <View style={{ flexDirection: 'row', gap: 12 }}>
-                    <TouchableOpacity style={[styles.searchInput, { flex: 1 }]} onPress={() => openDatePickerForPrep('closes')}>
-                      <Text style={styles.pickerPreviewLabel}>Date</Text>
-                      <Text style={styles.pickerPreviewVal}>{formatDate(tempClosesAt)}</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={[styles.searchInput, { flex: 1 }]} onPress={() => openTimePickerForPrep('closes')}>
-                      <Text style={styles.pickerPreviewLabel}>Time</Text>
-                      <Text style={styles.pickerPreviewVal}>{formatTime(tempClosesAt)}</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-
-                <TouchableOpacity style={styles.nextStepBtn} onPress={() => setPrepStep(2)}>
-                  <Text style={styles.nextStepBtnText}>Next: Bid Parameters</Text>
+          {/* --- AUCTION PREP CENTER (STEPPED MODAL) --- */}
+          <Modal
+            visible={showScheduleModal}
+            animationType="slide"
+            presentationStyle="pageSheet"
+            onRequestClose={() => setShowScheduleModal(false)}
+          >
+            <SafeAreaView style={{ flex: 1, backgroundColor: '#F8FAFC' }}>
+              {/* Modal header */}
+              <View style={styles.modalHeader}>
+                <TouchableOpacity onPress={() => setShowScheduleModal(false)} style={styles.closeBtn}>
+                  <Svg width={24} height={24} viewBox="0 0 24 24" fill="#64748B">
+                    <Path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+                  </Svg>
                 </TouchableOpacity>
+                <Text style={styles.modalTitle}>
+                  Auction #{selectedAuctionForSchedule?.auction_number}
+                </Text>
+                <View style={{ width: 40 }} />
               </View>
-            )}
 
-            {prepStep === 2 && (
-              <View>
-                <Text style={styles.prepStepTitle}>Step 2: Financial Parameters</Text>
-                <Text style={styles.prepStepSub}>Define the bidding boundaries for members.</Text>
-                
-                <View style={styles.prepCard}>
-                  <View style={styles.prepRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.schedulingFieldLabel}>MIN BID (DISCOUNT)</Text>
-                      <TextInput style={styles.searchInput} keyboardType="numeric" value={tempMinBid} onChangeText={setTempMinBid} placeholder="0" />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.schedulingFieldLabel}>MAX BID (DISCOUNT)</Text>
-                      <TextInput style={styles.searchInput} keyboardType="numeric" value={tempMaxBid} onChangeText={setTempMaxBid} placeholder="0" />
-                    </View>
-                  </View>
-
-                  <View style={styles.calculationBox}>
-                    <Text style={styles.calcLabel}>Estimated Prize for Winner</Text>
-                    <Text style={styles.calcVal}>{formatRupees((group?.value || 0) - (Number(tempMaxBid) * 100))}</Text>
-                    <Text style={styles.calcNote}>Based on current Max Discount</Text>
-                  </View>
+              {/* Step progress bar */}
+              <View style={{ paddingHorizontal: 24, paddingTop: 4, paddingBottom: 8, backgroundColor: '#F8FAFC' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 0 }}>
+                  {[1, 2, 3].map((s) => (
+                    <React.Fragment key={s}>
+                      <View style={{
+                        width: 28, height: 28, borderRadius: 14,
+                        backgroundColor: prepStep >= s ? '#005E7D' : '#E2E8F0',
+                        alignItems: 'center', justifyContent: 'center',
+                      }}>
+                        {prepStep > s ? (
+                          <Svg width={14} height={14} viewBox="0 0 24 24" fill="#FFFFFF">
+                            <Path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
+                          </Svg>
+                        ) : (
+                          <Text style={{ fontFamily: 'Inter_700Bold', fontSize: 11, color: prepStep >= s ? '#FFFFFF' : '#94A3B8' }}>{s}</Text>
+                        )}
+                      </View>
+                      {s < 3 && (
+                        <View style={{ flex: 1, height: 2, backgroundColor: prepStep > s ? '#005E7D' : '#E2E8F0' }} />
+                      )}
+                    </React.Fragment>
+                  ))}
                 </View>
-
-                <View style={{ flexDirection: 'row', gap: 12 }}>
-                  <TouchableOpacity style={[styles.nextStepBtn, { backgroundColor: '#CBD5E1', flex: 1 }]} onPress={() => setPrepStep(1)}>
-                    <Text style={[styles.nextStepBtnText, { color: '#475569' }]}>Back</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={[styles.nextStepBtn, { flex: 2 }]} onPress={() => setPrepStep(3)}>
-                    <Text style={styles.nextStepBtnText}>Next: Review & Launch</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            )}
-
-            {prepStep === 3 && (
-              <View>
-                <Text style={styles.prepStepTitle}>Step 3: Review & Activate</Text>
-                <Text style={styles.prepStepSub}>Final check before taking the auction LIVE.</Text>
-                
-                <View style={styles.prepCard}>
-                  <View style={styles.reviewItem}>
-                    <Text style={styles.reviewLabel}>Scheduled For</Text>
-                    <Text style={styles.reviewVal}>{formatDate(tempScheduledAt)} at {formatTime(tempScheduledAt)}</Text>
-                  </View>
-                  <View style={styles.reviewItem}>
-                    <Text style={styles.reviewLabel}>Bid Range</Text>
-                    <Text style={styles.reviewVal}>₹{Number(tempMinBid).toLocaleString()} - ₹{Number(tempMaxBid).toLocaleString()}</Text>
-                  </View>
-                  <View style={styles.reviewItem}>
-                    <Text style={styles.reviewLabel}>Duration</Text>
-                    <Text style={styles.reviewVal}>
-                      {Math.round((tempClosesAt.getTime() - tempScheduledAt.getTime()) / 60000)} Minutes
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 }}>
+                  {['Launch Mode', 'Bid Limits', 'Confirm'].map((label, i) => (
+                    <Text key={i} style={{ fontFamily: 'Inter_600SemiBold', fontSize: 9, color: prepStep >= i + 1 ? '#005E7D' : '#94A3B8', letterSpacing: 0.4 }}>
+                      {label}
                     </Text>
-                  </View>
-
-                  <View style={styles.warningBox}>
-                    <Svg width={16} height={16} viewBox="0 0 24 24" fill="#B45309">
-                      <Path d="M12 2L1 21h22L12 2zm0 3.45l8.28 14.55H3.72L12 5.45zM11 16h2v2h-2v-2zm0-7h2v5h-2V9z" />
-                    </Svg>
-                    <Text style={styles.warningText}>Once started, the auction will be visible to all members.</Text>
-                  </View>
-                </View>
-
-                <View style={{ gap: 12 }}>
-                  <TouchableOpacity 
-                    style={[styles.launchBtn, { backgroundColor: '#005E7D' }]} 
-                    onPress={() => handleSaveSchedule(false)}
-                    disabled={isValidatingSchedule}
-                  >
-                    <Text style={styles.launchBtnText}>SAVE AS SCHEDULED</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity 
-                    style={[styles.launchBtn, { backgroundColor: '#10B981' }]} 
-                    onPress={() => {
-                      Alert.alert("Go Live", "This will activate the auction floor immediately. Proceed?", [
-                        { text: "Cancel", style: "cancel" },
-                        { text: "LAUNCH LIVE NOW", onPress: () => handleSaveSchedule(true) }
-                      ]);
-                    }}
-                    disabled={isValidatingSchedule}
-                  >
-                    {isValidatingSchedule ? <ActivityIndicator color="#FFF" /> : <Text style={styles.launchBtnText}>ACTIVATE LIVE AUCTION</Text>}
-                  </TouchableOpacity>
-
-                  <TouchableOpacity onPress={() => setPrepStep(2)} style={{ alignSelf: 'center', marginTop: 12 }}>
-                    <Text style={{ color: '#64748B', fontFamily: 'Inter_600SemiBold', fontSize: 13 }}>Modify Parameters</Text>
-                  </TouchableOpacity>
+                  ))}
                 </View>
               </View>
-            )}
-          </ScrollView>
-        {showDatePicker && Platform.OS === 'ios' && (
-          <View style={styles.pickerOverlay}>
-            <View style={styles.pickerSheet}>
-              <View style={{ height: 216, justifyContent: 'center' }}>
-                <DateTimePicker
-                  value={pendingDateValue}
-                  mode="date"
-                  display="inline"
-                  onChange={handleDateChange}
-                  textColor="#0B1C30"
-                  themeVariant="light"
-                  style={{ height: 216, alignSelf: 'stretch', backgroundColor: '#FFFFFF' }}
-                />
-              </View>
-              <View style={styles.pickerActions}>
-                <TouchableOpacity style={[styles.pickerCancelBtn, { flex: 1 }]} onPress={() => setShowDatePicker(false)}>
-                  <Text style={styles.pickerCancelText}>CANCEL</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.pickerSaveBtn, { flex: 1 }]}
-                  onPress={() => {
-                    applyDateValue(pendingDateValue);
-                    setShowDatePicker(false);
-                  }}
-                >
-                  <Text style={styles.pickerSaveText}>DONE</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
-        )}
 
-        {showTimePicker && Platform.OS === 'ios' && (
-          <View style={styles.pickerOverlay}>
-            <View style={styles.pickerSheet}>
-              <View style={{ height: 216, justifyContent: 'center' }}>
-                <DateTimePicker
-                  value={pendingTimeValue}
-                  mode="time"
-                  display="spinner"
-                  onChange={handleTimeChange}
-                  textColor="#0B1C30"
-                  themeVariant="light"
-                  style={{ height: 216, alignSelf: 'stretch', backgroundColor: '#FFFFFF' }}
-                />
-              </View>
-              <View style={styles.pickerActions}>
-                <TouchableOpacity style={[styles.pickerCancelBtn, { flex: 1 }]} onPress={() => setShowTimePicker(false)}>
-                  <Text style={styles.pickerCancelText}>CANCEL</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.pickerSaveBtn, { flex: 1 }]}
-                  onPress={() => {
-                    applyTimeValue(pendingTimeValue);
-                    setShowTimePicker(false);
-                  }}
-                >
-                  <Text style={styles.pickerSaveText}>DONE</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
-        )}
+              <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 40 }}>
 
-        {showDatePicker && Platform.OS === 'android' && (
-          <DateTimePicker
-            value={currentDateValue}
-            mode="date"
-            display="default"
-            onChange={handleDateChange}
-          />
-        )}
-        {showTimePicker && Platform.OS === 'android' && (
-          <DateTimePicker
-            value={currentTimeValue}
-            mode="time"
-            display="default"
-            onChange={handleTimeChange}
-          />
-        )}
+                {/* ── STEP 1: Launch Mode ─────────────────────────────── */}
+                {prepStep === 1 && (
+                  <View style={{ gap: 16 }}>
+                    <View>
+                      <Text style={styles.prepStepTitle}>How do you want to start?</Text>
+                      <Text style={styles.prepStepSub}>Choose to go live immediately or schedule for a future time.</Text>
+                    </View>
+
+                    {/* GO LIVE NOW card */}
+                    <TouchableOpacity
+                      style={[styles.modeCard, styles.modeCardLive]}
+                      onPress={() => {
+                        // Auto-set start = now, close = now + 2 hours
+                        const now = new Date();
+                        const close = new Date(now.getTime() + 2 * 60 * 60 * 1000);
+                        setTempScheduledAt(now);
+                        setTempClosesAt(close);
+                        setPrepStep(2);
+                      }}
+                      activeOpacity={0.85}
+                    >
+                      <View style={styles.modeCardIconLive}>
+                        <Svg width={28} height={28} viewBox="0 0 24 24" fill="#FFFFFF">
+                          <Path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z" />
+                        </Svg>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.modeCardTitle}>Go Live Now</Text>
+                        <Text style={styles.modeCardSub}>Opens immediately · 2hr window · Members can bid right away</Text>
+                      </View>
+                      <Svg width={20} height={20} viewBox="0 0 24 24" fill="rgba(255,255,255,0.7)">
+                        <Path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z" />
+                      </Svg>
+                    </TouchableOpacity>
+
+                    {/* SCHEDULE card */}
+                    <TouchableOpacity
+                      style={[styles.modeCard, styles.modeCardSchedule]}
+                      onPress={() => {
+                        // Keep existing tempScheduledAt / tempClosesAt
+                        setPrepStep(1.5 as any); // use a flag to show timing step
+                      }}
+                      activeOpacity={0.85}
+                    >
+                      <View style={styles.modeCardIconSchedule}>
+                        <Svg width={28} height={28} viewBox="0 0 24 24" fill="#005E7D">
+                          <Path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z" />
+                        </Svg>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.modeCardTitle, { color: '#0B1C30' }]}>Schedule for Later</Text>
+                        <Text style={[styles.modeCardSub, { color: '#64748B' }]}>Pick a date & time · Opens automatically at scheduled time</Text>
+                      </View>
+                      <Svg width={20} height={20} viewBox="0 0 24 24" fill="#94A3B8">
+                        <Path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z" />
+                      </Svg>
+                    </TouchableOpacity>
+
+                    {/* Show current schedule if one exists */}
+                    {selectedAuctionForSchedule?.scheduled_at && (
+                      <View style={{ backgroundColor: '#F1F5F9', borderRadius: 12, padding: 12 }}>
+                        <Text style={{ fontFamily: 'Inter_500Medium', fontSize: 12, color: '#64748B' }}>
+                          Currently scheduled: {formatDate(selectedAuctionForSchedule.scheduled_at)} at {formatTime(selectedAuctionForSchedule.scheduled_at)}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                )}
+
+                {/* ── STEP 1.5: Timing (only for Schedule mode) ───────── */}
+                {(prepStep as any) === 1.5 && (
+                  <View style={{ gap: 16 }}>
+                    <View>
+                      <Text style={styles.prepStepTitle}>Set Auction Timing</Text>
+                      <Text style={styles.prepStepSub}>Define the exact window when bidding will be open.</Text>
+                    </View>
+
+                    <View style={styles.prepCard}>
+                      {/* Start */}
+                      <Text style={styles.schedulingFieldLabel}>AUCTION OPENS</Text>
+                      <View style={{ flexDirection: 'row', gap: 10, marginBottom: 20 }}>
+                        <TouchableOpacity style={styles.timePickerBtn} onPress={() => openDatePickerForPrep('scheduled')}>
+                          <Text style={styles.timePickerLabel}>DATE</Text>
+                          <Text style={styles.timePickerVal}>{formatDate(tempScheduledAt)}</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.timePickerBtn} onPress={() => openTimePickerForPrep('scheduled')}>
+                          <Text style={styles.timePickerLabel}>TIME</Text>
+                          <Text style={styles.timePickerVal}>{formatTime(tempScheduledAt)}</Text>
+                        </TouchableOpacity>
+                      </View>
+
+                      {/* Close */}
+                      <Text style={styles.schedulingFieldLabel}>AUCTION CLOSES</Text>
+                      <View style={{ flexDirection: 'row', gap: 10 }}>
+                        <TouchableOpacity style={styles.timePickerBtn} onPress={() => openDatePickerForPrep('closes')}>
+                          <Text style={styles.timePickerLabel}>DATE</Text>
+                          <Text style={styles.timePickerVal}>{formatDate(tempClosesAt)}</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.timePickerBtn} onPress={() => openTimePickerForPrep('closes')}>
+                          <Text style={styles.timePickerLabel}>TIME</Text>
+                          <Text style={styles.timePickerVal}>{formatTime(tempClosesAt)}</Text>
+                        </TouchableOpacity>
+                      </View>
+
+                      {/* Duration pill */}
+                      {tempClosesAt > tempScheduledAt && (
+                        <View style={{ marginTop: 16, backgroundColor: '#EFF6FF', borderRadius: 10, padding: 10, alignItems: 'center' }}>
+                          <Text style={{ fontFamily: 'Inter_600SemiBold', fontSize: 13, color: '#1E40AF' }}>
+                            Duration: {Math.round((tempClosesAt.getTime() - tempScheduledAt.getTime()) / 60000)} minutes
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+
+                    <View style={{ flexDirection: 'row', gap: 10 }}>
+                      <TouchableOpacity style={[styles.nextStepBtn, { backgroundColor: '#F1F5F9', flex: 1 }]} onPress={() => setPrepStep(1)}>
+                        <Text style={[styles.nextStepBtnText, { color: '#64748B' }]}>← Back</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={[styles.nextStepBtn, { flex: 2 }]} onPress={() => setPrepStep(2)}>
+                        <Text style={styles.nextStepBtnText}>Set Bid Limits →</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
+
+                {/* ── STEP 2: Bid Parameters ───────────────────────────── */}
+                {prepStep === 2 && (
+                  <View style={{ gap: 16 }}>
+                    <View>
+                      <Text style={styles.prepStepTitle}>Bidding Limits</Text>
+                      <Text style={styles.prepStepSub}>Set the discount range members can offer. Highest discount wins.</Text>
+                    </View>
+
+                    <View style={styles.prepCard}>
+                      <View style={{ flexDirection: 'row', gap: 12 }}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.schedulingFieldLabel}>MIN DISCOUNT (₹)</Text>
+                          <TextInput
+                            style={styles.prepInput}
+                            keyboardType="numeric"
+                            value={tempMinBid}
+                            onChangeText={setTempMinBid}
+                            placeholder="0"
+                            placeholderTextColor="#CBD5E1"
+                          />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.schedulingFieldLabel}>MAX DISCOUNT (₹)</Text>
+                          <TextInput
+                            style={styles.prepInput}
+                            keyboardType="numeric"
+                            value={tempMaxBid}
+                            onChangeText={setTempMaxBid}
+                            placeholder={String(Math.round((group?.value || 0) / 100))}
+                            placeholderTextColor="#CBD5E1"
+                          />
+                        </View>
+                      </View>
+
+                      {/* Prize preview */}
+                      {Number(tempMaxBid) > 0 && (
+                        <View style={{ marginTop: 16, borderRadius: 14, overflow: 'hidden' }}>
+                          <View style={{ backgroundColor: '#005E7D', padding: 16 }}>
+                            <Text style={{ fontFamily: 'Inter_600SemiBold', fontSize: 11, color: 'rgba(255,255,255,0.7)', letterSpacing: 0.5 }}>
+                              IF SOMEONE BIDS MAX DISCOUNT
+                            </Text>
+                            <Text style={{ fontFamily: 'SpaceGrotesk_700Bold', fontSize: 28, color: '#FFFFFF', marginTop: 4 }}>
+                              {formatRupees((group?.value || 0) - (Number(tempMaxBid) * 100))}
+                            </Text>
+                            <Text style={{ fontFamily: 'Inter_400Regular', fontSize: 12, color: 'rgba(255,255,255,0.7)', marginTop: 2 }}>
+                              minimum prize the winner could receive
+                            </Text>
+                          </View>
+                        </View>
+                      )}
+                    </View>
+
+                    <View style={{ flexDirection: 'row', gap: 10 }}>
+                      <TouchableOpacity style={[styles.nextStepBtn, { backgroundColor: '#F1F5F9', flex: 1 }]} onPress={() => setPrepStep(1)}>
+                        <Text style={[styles.nextStepBtnText, { color: '#64748B' }]}>← Back</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={[styles.nextStepBtn, { flex: 2 }]} onPress={() => setPrepStep(3)}>
+                        <Text style={styles.nextStepBtnText}>Review →</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
+
+                {/* ── STEP 3: Review & Confirm ──────────────────────────── */}
+                {prepStep === 3 && (
+                  <Step3Review
+                    tempScheduledAt={tempScheduledAt}
+                    tempClosesAt={tempClosesAt}
+                    tempMinBid={tempMinBid}
+                    tempMaxBid={tempMaxBid}
+                    groupValue={group?.value || 0}
+                    isValidatingSchedule={isValidatingSchedule}
+                    onBack={() => setPrepStep(2)}
+                    onSave={() => handleSaveSchedule(false)}
+                    onLaunch={() => Alert.alert(
+                      'Launch Auction',
+                      'Members will be able to bid immediately. Are you ready?',
+                      [
+                        { text: 'Cancel', style: 'cancel' },
+                        { text: 'Yes, Launch', onPress: () => handleSaveSchedule(true) },
+                      ]
+                    )}
+                    formatDate={formatDate}
+                    formatTime={formatTime}
+                    formatRupees={formatRupees}
+                    styles={styles}
+                  />
+                )}
+
+              </ScrollView>
+
+              {/* Date / Time pickers must live OUTSIDE ScrollView to avoid JSX nesting issues */}
+              {showDatePicker && Platform.OS === 'ios' && (
+                <View style={styles.pickerOverlay}>
+                  <View style={styles.pickerSheet}>
+                    <View style={{ height: 216, justifyContent: 'center' }}>
+                      <DateTimePicker
+                        value={pendingDateValue}
+                        mode="date"
+                        display="inline"
+                        onChange={handleDateChange}
+                        textColor="#0B1C30"
+                        themeVariant="light"
+                        style={{ height: 216, alignSelf: 'stretch', backgroundColor: '#FFFFFF' }}
+                      />
+                    </View>
+                    <View style={styles.pickerActions}>
+                      <TouchableOpacity style={[styles.pickerCancelBtn, { flex: 1 }]} onPress={() => setShowDatePicker(false)}>
+                        <Text style={styles.pickerCancelText}>CANCEL</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={[styles.pickerSaveBtn, { flex: 1 }]} onPress={() => { applyDateValue(pendingDateValue); setShowDatePicker(false); }}>
+                        <Text style={styles.pickerSaveText}>DONE</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </View>
+              )}
+              {showTimePicker && Platform.OS === 'ios' && (
+                <View style={styles.pickerOverlay}>
+                  <View style={styles.pickerSheet}>
+                    <View style={{ height: 216, justifyContent: 'center' }}>
+                      <DateTimePicker
+                        value={pendingTimeValue}
+                        mode="time"
+                        display="spinner"
+                        onChange={handleTimeChange}
+                        textColor="#0B1C30"
+                        themeVariant="light"
+                        style={{ height: 216, alignSelf: 'stretch', backgroundColor: '#FFFFFF' }}
+                      />
+                    </View>
+                    <View style={styles.pickerActions}>
+                      <TouchableOpacity style={[styles.pickerCancelBtn, { flex: 1 }]} onPress={() => setShowTimePicker(false)}>
+                        <Text style={styles.pickerCancelText}>CANCEL</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={[styles.pickerSaveBtn, { flex: 1 }]} onPress={() => { applyTimeValue(pendingTimeValue); setShowTimePicker(false); }}>
+                        <Text style={styles.pickerSaveText}>DONE</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </View>
+              )}
+              {showDatePicker && Platform.OS === 'android' && (
+                <DateTimePicker value={currentDateValue} mode="date" display="default" onChange={handleDateChange} />
+              )}
+              {showTimePicker && Platform.OS === 'android' && (
+                <DateTimePicker value={currentTimeValue} mode="time" display="default" onChange={handleTimeChange} />
+              )}
+            </SafeAreaView>
+          </Modal>
+
         </SafeAreaView>
-      </Modal>
-
     </SafeAreaView>
   );
 }
@@ -1666,15 +2044,6 @@ const styles = StyleSheet.create({
   winnerAmount: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 12 },
   startAuctionBtn: { backgroundColor: '#0F172A', paddingVertical: 12, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   startAuctionBtnText: { fontFamily: 'Inter_700Bold', fontSize: 12, color: '#FFFFFF', letterSpacing: 0.6 },
-  healthLeft: { flex: 1 },
-  healthTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 18, color: '#0B1C30', marginBottom: 4 },
-  healthSub: { fontFamily: 'Inter_500Medium', fontSize: 13, color: '#64748B' },
-  healthLegendRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
-  legendDot: { width: 10, height: 10, borderRadius: 5 },
-  legendText: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#64748B' },
-  progressCircle: { width: 100, height: 100, position: 'relative', alignItems: 'center', justifyContent: 'center' },
-  circleInner: { position: 'absolute', alignItems: 'center', justifyContent: 'center' },
-  circleText: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20, color: '#0B1C30' },
   schedulingFieldLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: '#94A3B8', letterSpacing: 0.8, marginBottom: 8, marginTop: 12 },
 
   roadmapBadge: { backgroundColor: '#F1F5F9', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 },
@@ -1682,15 +2051,15 @@ const styles = StyleSheet.create({
   timelineContainer: { paddingLeft: 8, marginTop: 16 },
   timelineItem: { flexDirection: 'row', minHeight: 120 },
   timelineLeft: { width: 40, alignItems: 'center' },
-  timelineDot: { 
-    width: 24, height: 24, borderRadius: 12, 
+  timelineDot: {
+    width: 24, height: 24, borderRadius: 12,
     alignItems: 'center', justifyContent: 'center', zIndex: 2,
     borderWidth: 4, borderColor: '#FFFFFF',
     shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 8, elevation: 4
   },
   pulseDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#FFFFFF' },
   timelineLine: { width: 2, flex: 1, marginTop: -2, marginBottom: -2, zIndex: 1 },
-  timelineCard: { 
+  timelineCard: {
     flex: 1, backgroundColor: '#FFFFFF', borderRadius: 16, padding: 16, marginBottom: 20, marginLeft: 8,
     borderWidth: 1, borderColor: '#F1F5F9',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 10, elevation: 1
@@ -1707,9 +2076,9 @@ const styles = StyleSheet.create({
   summaryLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 9, color: '#94A3B8', letterSpacing: 0.6 },
   summaryVal: { fontFamily: 'Inter_700Bold', fontSize: 13, color: '#0B1C30', marginTop: 2 },
   timelineActions: { marginTop: 8 },
-  timelineActionBtn: { 
-    paddingVertical: 10, borderRadius: 10, borderWidth: 1, borderColor: '#E2E8F0', 
-    alignItems: 'center', justifyContent: 'center' 
+  timelineActionBtn: {
+    paddingVertical: 10, borderRadius: 10, borderWidth: 1, borderColor: '#E2E8F0',
+    alignItems: 'center', justifyContent: 'center'
   },
   timelineActionBtnText: { fontFamily: 'Inter_700Bold', fontSize: 11, color: '#64748B', letterSpacing: 0.5 },
   timelineActionBtnLive: { backgroundColor: '#10B981', paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
@@ -1742,4 +2111,22 @@ const styles = StyleSheet.create({
   warningText: { flex: 1, fontFamily: 'Inter_500Medium', fontSize: 12, color: '#92400E' },
   launchBtn: { paddingVertical: 16, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   launchBtnText: { fontFamily: 'Inter_700Bold', fontSize: 14, color: '#FFFFFF', letterSpacing: 0.5 },
+
+  // ── New prep center styles ──────────────────────────────────
+  modeCard: { flexDirection: 'row', alignItems: 'center', gap: 14, borderRadius: 20, padding: 18, borderWidth: 1 },
+  modeCardLive: { backgroundColor: '#005E7D', borderColor: '#005E7D' },
+  modeCardSchedule: { backgroundColor: '#FFFFFF', borderColor: '#E2E8F0' },
+  modeCardIconLive: { width: 52, height: 52, borderRadius: 26, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' },
+  modeCardIconSchedule: { width: 52, height: 52, borderRadius: 26, backgroundColor: '#F0F9FF', alignItems: 'center', justifyContent: 'center' },
+  modeCardTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 17, color: '#FFFFFF', marginBottom: 4 },
+  modeCardSub: { fontFamily: 'Inter_400Regular', fontSize: 12, color: 'rgba(255,255,255,0.75)', lineHeight: 18 },
+
+  timePickerBtn: { flex: 1, backgroundColor: '#F8FAFC', borderRadius: 14, padding: 14, borderWidth: 1, borderColor: '#E2E8F0' },
+  timePickerLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 9, color: '#94A3B8', letterSpacing: 0.8, marginBottom: 6 },
+  timePickerVal: { fontFamily: 'Inter_600SemiBold', fontSize: 15, color: '#0B1C30' },
+
+  prepInput: { backgroundColor: '#F8FAFC', borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0', paddingHorizontal: 14, paddingVertical: 14, fontFamily: 'SpaceGrotesk_700Bold', fontSize: 18, color: '#0B1C30' },
+
+  reviewRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 4 },
+  reviewDivider: { height: 1, backgroundColor: '#F1F5F9' },
 });

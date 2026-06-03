@@ -32,6 +32,8 @@ type AuctionSettlement = {
   installment_due: number | null;
   final_due_amount: number | null;
   scheduled_at: string | null;
+  closes_at: string | null;
+  status: string; // 'upcoming' | 'live' | 'completed'
 };
 
 type ChitDetailData = {
@@ -111,12 +113,73 @@ function useGroupAuctions(groupId?: string) {
       if (!groupId) return [];
       const { data, error } = await supabase
         .from('auctions')
-        .select('id, auction_number, installment_due, final_due_amount, scheduled_at')
-        .eq('chit_group_id', groupId);
+        .select('id, auction_number, installment_due, final_due_amount, scheduled_at, closes_at, status')
+        .eq('chit_group_id', groupId)
+        .order('auction_number', { ascending: true });
       if (error) throw error;
-      return (data ?? []) as AuctionSettlement[];
+
+      // Deduplicate: for each auction_number, prefer completed > live > upcoming
+      // This prevents a stale "upcoming" placeholder (final_due_amount=0) from
+      // overriding a settled auction's real final_due_amount.
+      const statusPriority: Record<string, number> = { completed: 3, live: 2, upcoming: 1 };
+      const best = new Map<number, AuctionSettlement>();
+      for (const row of (data ?? []) as AuctionSettlement[]) {
+        if (row.auction_number == null) continue;
+        const existing = best.get(row.auction_number);
+        if (
+          !existing ||
+          (statusPriority[row.status] ?? 0) > (statusPriority[existing.status] ?? 0)
+        ) {
+          best.set(row.auction_number, row);
+        }
+      }
+      return Array.from(best.values()).sort(
+        (a, b) => (a.auction_number ?? 0) - (b.auction_number ?? 0),
+      );
     },
     enabled: !!groupId,
+  });
+}
+
+// Hook to fetch partial payment totals per month
+function usePartialPayments(membershipId: string | undefined, auctions: AuctionSettlement[]) {
+  return useQuery<Record<number, number>>({
+    queryKey: ['partial-payments', membershipId],
+    queryFn: async () => {
+      if (!membershipId) return {};
+
+      const { data, error } = await supabase
+        .from('chit_member_transactions')
+        .select('amount, notes, auction_id')
+        .eq('chit_member_id', membershipId)
+        .eq('payment_type', 'installment')
+        .eq('status', 'completed');
+
+      if (error) throw error;
+
+      const totals: Record<number, number> = {};
+
+      // Group by month number
+      (data || []).forEach((tx: any) => {
+        // Extract month number from notes or auction mapping
+        if (tx.auction_id) {
+          const auction = auctions.find(a => a.id === tx.auction_id);
+          if (auction?.auction_number) {
+            totals[auction.auction_number] = (totals[auction.auction_number] || 0) + tx.amount;
+          }
+        } else if (tx.notes) {
+          // Parse from notes: "Month X - ..."
+          const match = tx.notes.match(/Month (\d+)/);
+          if (match) {
+            const monthNum = parseInt(match[1]);
+            totals[monthNum] = (totals[monthNum] || 0) + tx.amount;
+          }
+        }
+      });
+
+      return totals;
+    },
+    enabled: !!membershipId,
   });
 }
 
@@ -129,10 +192,21 @@ const addMonthsKeepDay = (date: Date, months: number) => {
   return new Date(year, month, targetDay);
 };
 
-/** Calculate the display period using auction start date when available */
-function getMonthPeriod(payment: PaymentRow, startOverride?: Date | null): { from: string; to: string; monthName: string; endDate: Date } {
-  const baseStart = startOverride ?? new Date(payment.due_date);
-  const startDate = new Date(baseStart);
+/** Calculate the display period based on month_number and group start_date */
+function getMonthPeriod(payment: PaymentRow, groupStartDate?: string | null): { from: string; to: string; monthName: string; endDate: Date } {
+  // Use group start_date + month offset for accurate per-month dates
+  // Fallback to payment.due_date if no group start_date available
+  let startDate: Date;
+  if (groupStartDate) {
+    const base = new Date(groupStartDate);
+    // Month 1 starts on group start_date, Month 2 = +1 month, etc.
+    startDate = addMonthsKeepDay(base, payment.month_number - 1);
+  } else {
+    // Fallback: derive from due_date by going back one month
+    const due = new Date(payment.due_date);
+    startDate = addMonthsKeepDay(due, -1);
+    startDate.setDate(1);
+  }
   const endDate = addMonthsKeepDay(startDate, 1);
   const fmt = (d: Date) => d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
   const monthName = startDate.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
@@ -140,16 +214,36 @@ function getMonthPeriod(payment: PaymentRow, startOverride?: Date | null): { fro
 }
 
 function MonthTimelineItem({
-  p, isCurrentDue, onPay, paying, payableAmount, startDate,
-}: { p: PaymentRow; isCurrentDue: boolean; onPay: (p: PaymentRow, payableAmount: number) => void; paying: boolean; payableAmount: number; startDate?: Date | null; }) {
-  const period = getMonthPeriod(p, startDate);
+  p, isCurrentDue, onPay, paying, payableAmount, groupStartDate, auctionStatus, partialPaid,
+}: {
+  p: PaymentRow;
+  isCurrentDue: boolean;
+  onPay: (p: PaymentRow, payableAmount: number) => void;
+  paying: boolean;
+  payableAmount: number;
+  groupStartDate?: string | null;
+  auctionStatus?: string | null;
+  partialPaid?: number;
+}) {
+  const period = getMonthPeriod(p, groupStartDate);
   const isPaid = p.paid;
   const today = Date.now();
   const daysLeft = Math.ceil((period.endDate.getTime() - today) / 86400000);
   const overdue = daysLeft < 0 && !isPaid;
-  const canPay = (isCurrentDue || overdue) && !isPaid;
-  const isUpcoming = !isPaid && !isCurrentDue && !overdue;
-  const isZeroPayable = payableAmount <= 0;
+
+  // Calculate if this is a partial payment scenario
+  const hasPartialPayment = !isPaid && (partialPaid || 0) > 0;
+  const remainingAmount = hasPartialPayment ? Math.max(0, payableAmount - (partialPaid || 0)) : payableAmount;
+
+  // A month is payable when:
+  // 1. Admin has started (live) or settled (completed) this month's auction, OR
+  // 2. It's the first unpaid month and is overdue (date-based safety net)
+  const auctionStarted = auctionStatus === 'live' || auctionStatus === 'completed';
+  const canPay = (isCurrentDue || auctionStarted || overdue) && !isPaid;
+  const isUpcoming = !isPaid && !canPay;
+
+  // Label shown in the action row when auction is live but not yet settled
+  const auctionLiveLabel = auctionStatus === 'live' && !isPaid;
 
   return (
     <View style={ts.item}>
@@ -165,7 +259,8 @@ function MonthTimelineItem({
       <View style={[
         ts.card,
         isPaid && ts.cardPaid,
-        canPay && !overdue && ts.cardCurrent,
+        canPay && !overdue && !auctionLiveLabel && ts.cardCurrent,
+        auctionLiveLabel && ts.cardLive,
         overdue && ts.cardOverdue,
         isUpcoming && ts.cardUpcoming,
       ]}>
@@ -184,12 +279,23 @@ function MonthTimelineItem({
               ts.amount,
               isPaid && { color: Colors.secondary },
               canPay && { color: overdue ? '#EF4444' : Colors.primary, fontSize: 20 },
+              auctionLiveLabel && { color: '#F59E0B', fontSize: 20 },
               isUpcoming && { color: '#94A3B8' },
             ]}>
-              {formatPaise(payableAmount)}
+              {hasPartialPayment ? formatPaise(remainingAmount) : formatPaise(payableAmount)}
             </Text>
+            {hasPartialPayment && (
+              <View style={ts.partialBadge}>
+                <Text style={ts.partialText}>
+                  {formatPaise(partialPaid || 0)} paid · {formatPaise(remainingAmount)} due
+                </Text>
+              </View>
+            )}
             {overdue && <View style={ts.overdueBadge}><Text style={ts.overdueText}>OVERDUE</Text></View>}
-            {isCurrentDue && !overdue && daysLeft >= 0 && (
+            {auctionLiveLabel && (
+              <View style={ts.liveBadge}><Text style={ts.liveText}>AUCTION LIVE</Text></View>
+            )}
+            {isCurrentDue && !overdue && !auctionLiveLabel && daysLeft >= 0 && (
               <View style={ts.dueBadge}><Text style={ts.dueText}>DUE IN {daysLeft}D</Text></View>
             )}
           </View>
@@ -215,12 +321,12 @@ function MonthTimelineItem({
           <TouchableOpacity
             style={[
               ts.payBtn,
+              auctionLiveLabel && ts.payBtnLive,
               overdue && ts.payBtnOverdue,
-              isZeroPayable && ts.payBtnDisabled,
               paying && { opacity: 0.6 },
             ]}
-            onPress={() => onPay(p, payableAmount)}
-            disabled={paying || isZeroPayable}
+            onPress={() => onPay(p, Math.max(0, hasPartialPayment ? remainingAmount : payableAmount))}
+            disabled={paying}
             activeOpacity={0.85}
           >
             {paying ? <ActivityIndicator color="#FFF" size="small" /> : (
@@ -229,10 +335,10 @@ function MonthTimelineItem({
                   <Path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z" />
                 </Svg>
                 <Text style={ts.payBtnText}>
-                  {overdue ? 'PAY NOW - OVERDUE' : 'PAY NOW'}
+                  {hasPartialPayment ? 'PAY REMAINING' : overdue ? 'PAY NOW - OVERDUE' : 'PAY NOW'}
                 </Text>
                 <View style={ts.payBtnAmtBadge}>
-                  <Text style={ts.payBtnAmt}>{formatPaise(payableAmount)}</Text>
+                  <Text style={ts.payBtnAmt}>{formatPaise(hasPartialPayment ? remainingAmount : payableAmount)}</Text>
                 </View>
               </View>
             )}
@@ -257,7 +363,27 @@ export default function ChitDetailScreen() {
   const { memberId, memberProfile } = useMemberSession();
   const { data, isLoading } = useChitDetail(id ?? '', memberId);
   const { data: auctions = [] } = useGroupAuctions(data?.chit_group?.id);
+  const { data: partialPaymentTotals = {} } = usePartialPayments(id, auctions);
   const [payingId, setPayingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!memberId || !data?.chit_group?.id) return;
+    const invalidate = () => {
+      queryClient.invalidateQueries({ queryKey: ['chit-detail', id, memberId] });
+      queryClient.invalidateQueries({ queryKey: ['chit-auctions', data.chit_group.id] });
+    };
+
+    const channel = supabase
+      .channel('member-chit-detail-updates')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'payment_schedules' }, invalidate)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chit_members', filter: `id=eq.${id}` }, invalidate)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'auctions' }, invalidate)
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [data?.chit_group?.id, id, memberId, queryClient]);
   const [paySheetVisible, setPaySheetVisible] = useState(false);
   const [selectedPayment, setSelectedPayment] = useState<PaymentRow | null>(null);
   const [selectedPayable, setSelectedPayable] = useState(0);
@@ -271,11 +397,13 @@ export default function ChitDetailScreen() {
       queryClient.invalidateQueries({ queryKey: ['chit-detail', id, memberId] });
       queryClient.invalidateQueries({ queryKey: ['active-chits', memberId] });
       queryClient.invalidateQueries({ queryKey: ['dashboard-stats', memberId] });
+      queryClient.invalidateQueries({ queryKey: ['partial-payments', id] });
     };
     const channel = supabase
       .channel(`chit-detail-${id}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chit_members', filter: `id=eq.${id}` }, invalidate)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'payment_schedules', filter: `chit_member_id=eq.${id}` }, invalidate)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chit_member_transactions', filter: `chit_member_id=eq.${id}` }, invalidate)
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [id, memberId, queryClient]);
@@ -289,7 +417,24 @@ export default function ChitDetailScreen() {
     const group = data?.chit_group;
 
     const markPaid = async (paymentId?: string) => {
-      const isFullPayment = amountInPaise >= payableAmount;
+      // Get the auction for this month if it exists
+      const auction = settlementByMonth.get(payment.month_number);
+
+      // Get total previously paid for this month
+      const { data: previousPayments } = await supabase
+        .from('chit_member_transactions')
+        .select('amount')
+        .eq('chit_member_id', id)
+        .eq('payment_type', 'installment')
+        .eq('status', 'completed')
+        .or(auction?.id ? `auction_id.eq.${auction.id},notes.ilike.%Month ${payment.month_number}%` : `notes.ilike.%Month ${payment.month_number}%`);
+
+      const previousTotal = (previousPayments || []).reduce((sum, tx) => sum + tx.amount, 0);
+      const totalPaidIncludingCurrent = previousTotal + amountInPaise;
+
+      // Check if this payment completes the month's obligation
+      const isFullPayment = totalPaidIncludingCurrent >= payableAmount;
+
       if (isFullPayment) {
         const { error } = await supabase
           .from('payment_schedules')
@@ -301,8 +446,10 @@ export default function ChitDetailScreen() {
         if (error) throw error;
       }
 
+      // Insert transaction with auction_id if available
       await supabase.from('chit_member_transactions').insert([{
         chit_member_id: id,
+        auction_id: auction?.id || null,
         amount: amountInPaise,
         payment_type: 'installment',
         status: 'completed',
@@ -310,12 +457,22 @@ export default function ChitDetailScreen() {
       }]); // non-critical, ignore any insert errors
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert('Payment Successful!', `Month ${payment.month_number} payment of ${formatPaise(amountInPaise)} recorded.`);
+
+      // Show different messages for partial vs full payments
+      if (isFullPayment && previousTotal > 0) {
+        Alert.alert('Payment Completed!', `Month ${payment.month_number} fully paid with ${formatPaise(amountInPaise)}.\n\nTotal paid for this month: ${formatPaise(totalPaidIncludingCurrent)}`);
+      } else if (!isFullPayment) {
+        const remaining = payableAmount - totalPaidIncludingCurrent;
+        Alert.alert('Partial Payment Recorded', `Paid ${formatPaise(amountInPaise)} for Month ${payment.month_number}.\n\nRemaining: ${formatPaise(remaining)}`);
+      } else {
+        Alert.alert('Payment Successful!', `Month ${payment.month_number} payment of ${formatPaise(amountInPaise)} recorded.`);
+      }
+
       queryClient.invalidateQueries({ queryKey: ['chit-detail', id, memberId] });
       queryClient.invalidateQueries({ queryKey: ['active-chits', memberId] });
       queryClient.invalidateQueries({ queryKey: ['dashboard-stats', memberId] });
+      queryClient.invalidateQueries({ queryKey: ['partial-payments', id] });
     };
-
     setPayingId(payment.id);
     try {
       // Try native Razorpay first, only if the native module is actually linked
@@ -407,6 +564,13 @@ export default function ChitDetailScreen() {
   const openPaySheet = (payment: PaymentRow, payableAmount: number) => {
     setSelectedPayment(payment);
     setSelectedPayable(payableAmount);
+
+    // Check if there's already a partial payment for this month
+    const existingPartialPaid = partialPaymentTotals[payment.month_number] || 0;
+    const remainingDue = existingPartialPaid > 0 ? Math.max(0, payableAmount - existingPartialPaid) : payableAmount;
+
+    // If there's partial payment, default to full (which is now the remaining amount)
+    // Otherwise, let user choose
     setPayMode('full');
     setPartialAmount('');
     setPaySheetVisible(true);
@@ -460,7 +624,7 @@ export default function ChitDetailScreen() {
   const payments: PaymentRow[] = data.payments;
   const currentMonth: number = data.current_month;
 
-  // First unpaid payment that is currently due
+  // First unpaid month (used as fallback for overdue detection even without an auction)
   const firstUnpaid = payments.find(p => !p.paid);
   const settlementByMonth = new Map<number, AuctionSettlement>();
   auctions.forEach(a => {
@@ -469,16 +633,31 @@ export default function ChitDetailScreen() {
 
   const getPayable = (p: PaymentRow) => {
     const settlement = settlementByMonth.get(p.month_number);
-    if (!settlement) return 0;
-    if (settlement.final_due_amount && settlement.final_due_amount > 0) return settlement.final_due_amount;
-    if (settlement.installment_due && settlement.installment_due > 0) return settlement.installment_due;
-    return 0;
+
+    // Only apply settlement figures if the auction is actually COMPLETED (settled by admin)
+    if (settlement && settlement.status === 'completed') {
+      // final_due_amount is the authoritative source — use it even if it is 0
+      // (0 means the member's installment was fully covered by the dividend)
+      if (settlement.final_due_amount !== null) return settlement.final_due_amount;
+      if (settlement.installment_due !== null) return settlement.installment_due;
+    }
+
+    // payment_schedules.amount is updated by the backend apply-settlement route.
+    // If the backend ran, this will already hold the correct reduced amount.
+    // Use it only when it differs from the default monthly_installment — meaning
+    // the backend has already updated it.
+    const defaultInstallment = group?.monthly_installment || 0;
+    if (p.amount > 0 && p.amount !== defaultInstallment) return p.amount;
+
+    // Final fallback: full monthly installment
+    return defaultInstallment;
   };
 
   const totalPaid = payments.filter(p => p.paid).reduce((sum, p) => sum + p.amount, 0);
   const totalDue = payments.filter(p => !p.paid).reduce((sum, p) => sum + getPayable(p), 0);
   const paidCount = payments.filter(p => p.paid).length;
 
+  // isCurrentDue: true only for the very first unpaid month (used for the overdue/due-date badge logic)
   const isCurrentDue = (p: PaymentRow) =>
     firstUnpaid?.id === p.id;
 
@@ -559,7 +738,7 @@ export default function ChitDetailScreen() {
           ) : (
             payments.map((p, idx) => {
               const auction = settlementByMonth.get(p.month_number);
-              const startDate = auction?.scheduled_at ? new Date(auction.scheduled_at) : null;
+              const partialPaid = partialPaymentTotals[p.month_number] || 0;
               return (
                 <View key={p.id}>
                   <MonthTimelineItem
@@ -568,7 +747,9 @@ export default function ChitDetailScreen() {
                     onPay={openPaySheet}
                     paying={payingId === p.id}
                     payableAmount={getPayable(p)}
-                    startDate={startDate}
+                    groupStartDate={group?.start_date ?? null}
+                    auctionStatus={auction?.status ?? null}
+                    partialPaid={partialPaid}
                   />
                   {idx < payments.length - 1 && <View style={ts.connector} />}
                 </View>
@@ -592,9 +773,37 @@ export default function ChitDetailScreen() {
           >
             <View style={s.paySheet}>
               <Text style={s.payTitle}>Pay Installment</Text>
-              <Text style={s.paySub}>
-                Month {selectedPayment?.month_number ?? '-'} · Due {formatPaise(selectedPayable || 0)}
-              </Text>
+              {(() => {
+                const existingPartialPaid = selectedPayment ? (partialPaymentTotals[selectedPayment.month_number] || 0) : 0;
+                const totalDueOriginal = selectedPayable || 0;
+                const remainingDue = existingPartialPaid > 0 ? Math.max(0, totalDueOriginal - existingPartialPaid) : totalDueOriginal;
+
+                return (
+                  <>
+                    <Text style={s.paySub}>
+                      Month {selectedPayment?.month_number ?? '-'}
+                      {existingPartialPaid > 0 ? (
+                        <Text style={{ color: '#F59E0B' }}> · {formatPaise(existingPartialPaid)} already paid</Text>
+                      ) : null}
+                    </Text>
+                    {existingPartialPaid > 0 && (
+                      <View style={{ backgroundColor: '#FEF3C7', padding: 12, borderRadius: 10, marginTop: 8 }}>
+                        <Text style={{ fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#92400E' }}>
+                          Original due: {formatPaise(totalDueOriginal)}
+                        </Text>
+                        <Text style={{ fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#92400E', marginTop: 2 }}>
+                          Remaining: {formatPaise(remainingDue)}
+                        </Text>
+                      </View>
+                    )}
+                    {!existingPartialPaid && (
+                      <Text style={[s.paySub, { marginTop: -8 }]}>
+                        Due {formatPaise(totalDueOriginal)}
+                      </Text>
+                    )}
+                  </>
+                );
+              })()}
 
               <View style={s.payModeRow}>
                 <TouchableOpacity
@@ -615,12 +824,14 @@ export default function ChitDetailScreen() {
                 <View style={{ gap: 8 }}>
                   <TextInput
                     style={s.payInput}
-                    placeholder="Enter amount"
+                    placeholder="Enter amount in ₹"
                     keyboardType="number-pad"
                     value={partialAmount}
                     onChangeText={setPartialAmount}
                   />
-                  <Text style={s.payHint}>Max {formatPaise(selectedPayable || 0)}</Text>
+                  <Text style={s.payHint}>
+                    Max {formatPaise(selectedPayment ? Math.max(0, selectedPayable - (partialPaymentTotals[selectedPayment.month_number] || 0)) : selectedPayable)}
+                  </Text>
                 </View>
               )}
 
@@ -665,6 +876,7 @@ const ts = StyleSheet.create({
   cardCurrent: { borderColor: Colors.primary, borderWidth: 1.5 },
   cardOverdue: { borderColor: '#FECACA', backgroundColor: '#FFF5F5', borderWidth: 1.5 },
   cardUpcoming: { backgroundColor: 'rgba(255,255,255,0.55)', borderStyle: 'dashed' },
+  cardLive: { borderColor: '#F59E0B', borderWidth: 1.5, backgroundColor: '#FFFBEB' },
 
   cardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   monthName: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 16, color: '#0B1C30' },
@@ -684,6 +896,7 @@ const ts = StyleSheet.create({
     shadowOpacity: 0.3, shadowRadius: 10, elevation: 6,
   },
   payBtnOverdue: { backgroundColor: '#EF4444', shadowColor: '#EF4444' },
+  payBtnLive: { backgroundColor: '#D97706', shadowColor: '#D97706' },
   payBtnDisabled: { backgroundColor: '#CBD5E1', shadowColor: '#CBD5E1' },
   payBtnText: { fontFamily: 'Inter_700Bold', fontSize: 14, color: '#FFF', letterSpacing: 1 },
   payBtnAmtBadge: {
@@ -693,10 +906,14 @@ const ts = StyleSheet.create({
 
   overdueBadge: { backgroundColor: '#FEE2E2', paddingHorizontal: 7, paddingVertical: 3, borderRadius: 6 },
   overdueText: { fontFamily: 'Inter_700Bold', fontSize: 9, color: '#B91C1C', letterSpacing: 0.5 },
+  liveBadge: { backgroundColor: '#FEF3C7', paddingHorizontal: 7, paddingVertical: 3, borderRadius: 6 },
+  liveText: { fontFamily: 'Inter_700Bold', fontSize: 9, color: '#D97706', letterSpacing: 0.5 },
   dueBadge: { backgroundColor: '#FEF3C7', paddingHorizontal: 7, paddingVertical: 3, borderRadius: 6 },
   dueText: { fontFamily: 'Inter_700Bold', fontSize: 9, color: '#92400E', letterSpacing: 0.5 },
   dividendBadge: { backgroundColor: '#DBEAFE', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
   dividendText: { fontFamily: 'Inter_500Medium', fontSize: 11, color: '#1E40AF' },
+  partialBadge: { backgroundColor: '#FEF3C7', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
+  partialText: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: '#92400E' },
 });
 
 // ── Screen Styles ─────────────────────────────────────────────
