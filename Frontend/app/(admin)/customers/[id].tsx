@@ -1,72 +1,24 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
+import React from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Linking } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
-import * as Haptics from 'expo-haptics';
-import { supabase } from '../../../lib/supabase';
 import { formatPaise, formatShortDate } from '../../../lib/hooks/useDashboard';
+import { useAdminCustomerDetail } from '../../../lib/hooks/useAdminCustomerDetail';
 
 export default function CustomerDetailsScreen() {
-  const { id } = useLocalSearchParams();
+  const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   
-  const [customer, setCustomer] = useState<any>(null);
-  const [memberships, setMemberships] = useState<any[]>([]);
-  const [transactions, setTransactions] = useState<any[]>([]);
-  const [selectedMembership, setSelectedMembership] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    fetchCustomerData();
-  }, [id]);
-
-  const fetchCustomerData = async () => {
-    try {
-      setLoading(true);
-      // Fetch Customer Details
-      const { data: custData } = await supabase
-        .from('customers')
-        .select('*')
-        .eq('id', id)
-        .single();
-      
-      if (custData) setCustomer(custData);
-
-      // Fetch Groups they are in
-      const { data: memData } = await supabase
-        .from('chit_members')
-        .select(`
-          id, 
-          chit_group_id, 
-          participation_type, 
-          chit_groups (name, value, monthly_installment, duration_months, status)
-        `)
-        .eq('customer_id', id);
-
-      if (memData) setMemberships(memData);
-
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchTransactions = async (chitMemberId: string) => {
-    setSelectedMembership(chitMemberId);
-    try {
-      const { data: txData } = await supabase
-        .from('chit_member_transactions')
-        .select('*')
-        .eq('chit_member_id', chitMemberId)
-        .order('transaction_date', { ascending: false });
-        
-      setTransactions(txData || []);
-    } catch (err) {
-      console.error(err);
-    }
-  };
+  const { 
+    customer, 
+    memberships, 
+    timeline, 
+    health, 
+    unlinkedPayments,
+    loading, 
+    error 
+  } = useAdminCustomerDetail(id as string);
 
   if (loading) {
     return (
@@ -75,6 +27,34 @@ export default function CustomerDetailsScreen() {
       </SafeAreaView>
     );
   }
+
+  if (error || !customer) {
+    return (
+      <SafeAreaView style={styles.container}>
+         <View style={styles.appBar}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.iconButton}>
+            <Svg width={24} height={24} viewBox="0 0 24 24" fill="#01789E">
+              <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
+            </Svg>
+          </TouchableOpacity>
+          <Text style={styles.appBarTitle}>Error</Text>
+        </View>
+        <Text style={styles.errorText}>{error || 'Customer not found'}</Text>
+      </SafeAreaView>
+    );
+  }
+
+  const handleCall = () => {
+    if (customer.mobile) {
+      Linking.openURL(`tel:${customer.mobile}`);
+    }
+  };
+
+  const handleEmail = () => {
+    if (customer.email) {
+      Linking.openURL(`mailto:${customer.email}`);
+    }
+  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -91,108 +71,185 @@ export default function CustomerDetailsScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        {/* Profile Card */}
-        {customer && (
-          <View style={styles.profileCard}>
+        {/* Profile Card & Health Summary */}
+        <View style={styles.profileCard}>
+          <View style={styles.profileHeader}>
             <View style={styles.avatar}>
               <Text style={styles.avatarText}>{customer.full_name?.substring(0, 2).toUpperCase()}</Text>
             </View>
-            <View>
+            <View style={{ flex: 1 }}>
               <Text style={styles.profileName}>{customer.full_name}</Text>
               <Text style={styles.profileId}>ID: {customer.customer_id} • {customer.customer_type}</Text>
-              <Text style={styles.profileContact}>{customer.mobile} • {customer.email}</Text>
             </View>
+          </View>
+
+          {/* Contact Actions */}
+          <View style={styles.contactActions}>
+             <TouchableOpacity 
+               style={[styles.actionButton, !customer.mobile && styles.actionButtonDisabled]} 
+               onPress={handleCall}
+               disabled={!customer.mobile}
+             >
+               <Svg width={18} height={18} viewBox="0 0 24 24" fill={customer.mobile ? "#01789E" : "#94A3B8"}>
+                 <Path d="M20.01 15.38c-1.23 0-2.42-.2-3.53-.56a.977.977 0 00-1.01.24l-1.57 1.97c-2.83-1.35-5.48-3.9-6.89-6.83l1.95-1.66c.27-.28.35-.67.24-1.02-.37-1.11-.56-2.3-.56-3.53 0-.54-.45-.99-.99-.99H4.19C3.65 3 3 3.24 3 3.99 3 13.28 10.73 21 20.01 21c.71 0 .99-.63.99-1.18v-3.45c0-.54-.45-.99-.99-.99z"/>
+               </Svg>
+               <Text style={[styles.actionText, !customer.mobile && styles.actionTextDisabled]}>Call</Text>
+             </TouchableOpacity>
+             <TouchableOpacity 
+               style={[styles.actionButton, !customer.email && styles.actionButtonDisabled]} 
+               onPress={handleEmail}
+               disabled={!customer.email}
+             >
+               <Svg width={18} height={18} viewBox="0 0 24 24" fill={customer.email ? "#01789E" : "#94A3B8"}>
+                 <Path d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/>
+               </Svg>
+               <Text style={[styles.actionText, !customer.email && styles.actionTextDisabled]}>Email</Text>
+             </TouchableOpacity>
+          </View>
+
+          {/* Health Summary */}
+          <View style={styles.healthSummary}>
+            <View style={styles.healthRow}>
+              <View style={styles.healthItem}>
+                <Text style={styles.healthLabel}>Outstanding</Text>
+                <Text style={styles.healthValueRed}>{formatPaise(health.totalOutstanding)}</Text>
+              </View>
+              <View style={styles.healthItem}>
+                <Text style={styles.healthLabel}>Overdue</Text>
+                <Text style={health.overdueCount > 0 ? styles.healthValueRed : styles.healthValueGreen}>
+                  {health.overdueCount} Months
+                </Text>
+              </View>
+            </View>
+            <View style={styles.healthRow}>
+               <View style={styles.healthItem}>
+                <Text style={styles.healthLabel}>Next Due</Text>
+                <Text style={styles.healthValue}>{health.nextDueDate ? formatShortDate(health.nextDueDate.toISOString()) : 'N/A'}</Text>
+              </View>
+              <View style={styles.healthItem}>
+                <Text style={styles.healthLabel}>Last Activity</Text>
+                <Text style={styles.healthValue}>{health.lastActivityDate ? formatShortDate(health.lastActivityDate.toISOString()) : 'None'}</Text>
+              </View>
+            </View>
+          </View>
+        </View>
+
+        <Text style={styles.sectionTitle}>Active Groups</Text>
+
+        {memberships.length === 0 ? (
+          <Text style={styles.emptyText}>No group data found for this customer.</Text>
+        ) : (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.groupsPillsScroll}>
+            {memberships.map((mem) => {
+              const group = mem.chit_groups;
+              return (
+                <View key={mem.id} style={styles.groupPill}>
+                  <Text style={styles.groupPillName}>{group.name}</Text>
+                  <Text style={styles.groupPillValue}>{formatPaise(group.value)} • {group.duration_months} M</Text>
+                </View>
+              );
+            })}
+          </ScrollView>
+        )}
+
+        <Text style={[styles.sectionTitle, { marginTop: 24 }]}>Payment Timeline</Text>
+        
+        {timeline.length === 0 ? (
+          <Text style={styles.emptyText}>No upcoming or past schedule found.</Text>
+        ) : (
+          <View style={styles.timelineList}>
+            {timeline.map((item) => {
+              
+              let statusBg = '#F1F5F9';
+              let statusColor = '#64748B';
+              if (item.status === 'Full' || item.status === 'Settled') {
+                statusBg = '#DCFCE7';
+                statusColor = '#166534';
+              } else if (item.status === 'Partial') {
+                statusBg = '#FEF3C7';
+                statusColor = '#92400E';
+              } else if (item.status === 'Unpaid') {
+                statusBg = item.isOverdue ? '#FEE2E2' : '#F1F5F9';
+                statusColor = item.isOverdue ? '#991B1B' : '#64748B';
+              }
+
+              const dDate = item.dueDate ? new Date(item.dueDate) : null;
+              const dateStr = dDate ? dDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'TBD';
+
+              return (
+                <View key={item.id} style={styles.timelineCard}>
+                   <View style={styles.timelineHeader}>
+                     <View>
+                       <Text style={styles.timelineMonth}>{new Date(item.monthDate).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</Text>
+                       <Text style={styles.timelineGroup}>{item.groupName} • Due: {dateStr}</Text>
+                     </View>
+                     <View style={[styles.statusBadge, { backgroundColor: statusBg }]}>
+                       <Text style={[styles.statusText, { color: statusColor }]}>{item.status === 'Settled' ? 'Settled' : (item.isOverdue ? 'Overdue' : item.status)}</Text>
+                     </View>
+                   </View>
+                   
+                   <View style={styles.timelineAmounts}>
+                     <View style={styles.amtBox}>
+                       <Text style={styles.amtLabel}>Payable</Text>
+                       <Text style={styles.amtValue}>{formatPaise(item.payableAmount)}</Text>
+                     </View>
+                     <View style={styles.amtBox}>
+                       <Text style={styles.amtLabel}>Paid</Text>
+                       <Text style={styles.amtValueGreen}>{formatPaise(item.paidAmount)}</Text>
+                     </View>
+                     <View style={styles.amtBox}>
+                       <Text style={styles.amtLabel}>Remaining</Text>
+                       <Text style={styles.amtValueRed}>{item.status === 'Settled' ? '₹0' : formatPaise(item.remainingAmount)}</Text>
+                     </View>
+                   </View>
+
+                   {/* Markers */}
+                   {(item.isPostWin || item.participatedInAuction) && (
+                     <View style={styles.markersRow}>
+                       {item.isPostWin && (
+                         <View style={styles.markerBadge}>
+                           <Text style={styles.markerText}>Post-Win</Text>
+                         </View>
+                       )}
+                       {item.participatedInAuction && (
+                         <View style={[styles.markerBadge, { backgroundColor: '#E0E7FF' }]}>
+                           <Text style={[styles.markerText, { color: '#3730A3' }]}>Participated</Text>
+                         </View>
+                       )}
+                     </View>
+                   )}
+
+                   {/* Sub transactions */}
+                   {item.transactions.length > 0 && (
+                     <View style={styles.subTxnsList}>
+                       {item.transactions.map((tx) => (
+                         <View key={tx.id} style={styles.subTxnItem}>
+                           <Text style={styles.subTxnDate}>{formatShortDate(tx.transaction_date)}</Text>
+                           <Text style={styles.subTxnType}>{tx.payment_type === 'installment' ? 'Installment' : tx.payment_type}</Text>
+                           <Text style={styles.subTxnAmt}>+{formatPaise(tx.amount)}</Text>
+                         </View>
+                       ))}
+                     </View>
+                   )}
+                </View>
+              );
+            })}
           </View>
         )}
 
-        <Text style={styles.sectionTitle}>Participating Groups</Text>
-
-        {memberships.length === 0 ? (
-          <Text style={styles.emptyText}>Not participating in any groups.</Text>
-        ) : (
-          memberships.map((mem) => {
-            const group = mem.chit_groups;
-            const isSelected = selectedMembership === mem.id;
-            
-            return (
-              <View key={mem.id} style={styles.groupCard}>
-                <TouchableOpacity 
-                  style={styles.groupHeader} 
-                  activeOpacity={0.7}
-                  onPress={() => {
-                    Haptics.selectionAsync();
-                    if (isSelected) {
-                      setSelectedMembership(null);
-                    } else {
-                      fetchTransactions(mem.id);
-                    }
-                  }}
-                >
-                  <View>
-                    <Text style={styles.groupName}>{group.name}</Text>
-                    <Text style={styles.groupDetails}>
-                      Value: {formatPaise(group.value)} • {group.duration_months} Months
-                    </Text>
-                  </View>
-                  <Svg width={24} height={24} viewBox="0 0 24 24" fill="#64748B" style={{ transform: [{ rotate: isSelected ? '180deg' : '0deg' }] }}>
-                    <Path d="M7 10l5 5 5-5H7z" />
-                  </Svg>
-                </TouchableOpacity>
-
-                {isSelected && (
-                  <View style={styles.transactionsContainer}>
-                    <Text style={styles.txTitle}>Timeline</Text>
-                    {transactions.length === 0 ? (
-                      <Text style={styles.emptyTxText}>No transactions yet.</Text>
-                    ) : (
-                      <View style={styles.timelineContainer}>
-                        {transactions.map((tx, index) => {
-                          const isLast = index === transactions.length - 1;
-                          const isDividend = tx.payment_type === 'dividend';
-                          const isPartial = !isDividend && tx.amount < group.monthly_installment;
-                          
-                          let nodeColor = '#3B82F6'; // Blue for Full Installment
-                          let title = 'FULL INSTALLMENT';
-                          let desc = `Successfully paid ${formatPaise(tx.amount)} towards the chit group.`;
-                          
-                          if (isDividend) {
-                            nodeColor = '#10B981'; // Green for Dividend
-                            title = 'DIVIDEND DISTRIBUTED';
-                            desc = `Received dividend payout of ${formatPaise(tx.amount)} directly.`;
-                          } else if (isPartial) {
-                            nodeColor = '#F59E0B'; // Orange for Partial
-                            title = 'PARTIAL PAYMENT';
-                            desc = `Paid ${formatPaise(tx.amount)} out of ${formatPaise(group.monthly_installment)} expected.`;
-                          }
-                          
-                          // Format date nicely (e.g., OCT 14, 2026)
-                          const d = new Date(tx.transaction_date);
-                          const dateString = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase();
-
-                          return (
-                            <View key={tx.id} style={styles.timelineItem}>
-                              <View style={styles.timelineGraphics}>
-                                <View style={[styles.timelineDot, { borderColor: nodeColor }]}>
-                                  <View style={[styles.timelineInnerDot, { backgroundColor: nodeColor }]} />
-                                </View>
-                                {!isLast && <View style={styles.timelineLine} />}
-                              </View>
-
-                              <View style={[styles.timelineContent, isLast && { paddingBottom: 0 }]}>
-                                <Text style={[styles.timelineDate, { color: nodeColor }]}>{dateString}</Text>
-                                <Text style={[styles.timelineTitle, { color: nodeColor }]}>{title}</Text>
-                                <Text style={styles.timelineDesc}>{desc}</Text>
-                              </View>
-                            </View>
-                          );
-                        })}
-                      </View>
-                    )}
-                  </View>
-                )}
-              </View>
-            );
-          })
+        {unlinkedPayments.length > 0 && (
+          <View style={styles.unlinkedContainer}>
+            <Text style={styles.sectionTitle}>Unlinked Payments</Text>
+            {unlinkedPayments.map(tx => (
+               <View key={tx.id} style={styles.unlinkedItem}>
+                 <View>
+                    <Text style={styles.unlinkedDate}>{formatShortDate(tx.date.toISOString())} • {tx.groupName || 'Unknown Group'}</Text>
+                    <Text style={styles.unlinkedType}>{tx.type}</Text>
+                 </View>
+                 <Text style={styles.unlinkedAmt}>{formatPaise(tx.amount)}</Text>
+               </View>
+            ))}
+          </View>
         )}
       </ScrollView>
     </SafeAreaView>
@@ -209,58 +266,85 @@ const styles = StyleSheet.create({
   iconButton: { padding: 8, borderRadius: 20, backgroundColor: '#F1F5F9' },
   appBarTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20, color: '#164E63' },
   scrollContent: { padding: 20, paddingBottom: 60 },
+  errorText: { fontFamily: 'Inter_500Medium', color: '#991B1B', textAlign: 'center', marginTop: 40 },
 
   profileCard: {
     backgroundColor: '#FFFFFF', padding: 20, borderRadius: 16, borderWidth: 1, borderColor: '#E2E8F0',
-    flexDirection: 'row', alignItems: 'center', gap: 16, marginBottom: 24,
+    marginBottom: 24,
+  },
+  profileHeader: {
+    flexDirection: 'row', alignItems: 'center', gap: 16, marginBottom: 16,
   },
   avatar: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#01789E', alignItems: 'center', justifyContent: 'center' },
   avatarText: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20, color: '#FFFFFF' },
   profileName: { fontFamily: 'Inter_700Bold', fontSize: 18, color: '#0B1C30' },
   profileId: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#64748B', marginTop: 2 },
-  profileContact: { fontFamily: 'Inter_400Regular', fontSize: 12, color: '#94A3B8', marginTop: 4 },
-
-  sectionTitle: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 18, color: '#164E63', marginBottom: 16 },
-  emptyText: { fontFamily: 'Inter_400Regular', color: '#64748B', fontStyle: 'italic' },
-  emptyTxText: { fontFamily: 'Inter_400Regular', color: '#94A3B8', fontSize: 12, marginTop: 8 },
-
-  groupCard: {
-    backgroundColor: '#FFFFFF', borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0',
-    marginBottom: 12, overflow: 'hidden',
-  },
-  groupHeader: {
-    padding: 16, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-  },
-  groupName: { fontFamily: 'Inter_600SemiBold', fontSize: 16, color: '#0B1C30' },
-  groupDetails: { fontFamily: 'Inter_400Regular', fontSize: 12, color: '#64748B', marginTop: 4 },
-
-  transactionsContainer: {
-    backgroundColor: '#FAFAFA', padding: 20, borderTopWidth: 1, borderTopColor: '#F1F5F9',
-  },
-  txTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 16, color: '#164E63', marginBottom: 20 },
   
-  timelineContainer: { paddingLeft: 4, marginTop: 8 },
-  timelineItem: { flexDirection: 'row' },
-  timelineGraphics: { alignItems: 'center', width: 24, marginRight: 20 },
-  timelineDot: { 
-    width: 20, height: 20, borderRadius: 10, borderWidth: 2, 
-    alignItems: 'center', justifyContent: 'center', zIndex: 2,
-    backgroundColor: '#FFFFFF'
+  contactActions: { flexDirection: 'row', gap: 12, marginBottom: 20 },
+  actionButton: { 
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    paddingVertical: 10, borderRadius: 8, backgroundColor: '#F1F5F9',
   },
-  timelineInnerDot: { width: 10, height: 10, borderRadius: 5 },
-  timelineLine: { width: 2, flex: 1, backgroundColor: '#334155', marginTop: -2, marginBottom: -2 },
-  
-  timelineContent: { flex: 1, paddingBottom: 32, paddingTop: 0 },
-  timelineDate: { 
-    fontFamily: 'SpaceGrotesk_700Bold', fontSize: 24, letterSpacing: -0.5, 
-    lineHeight: 28, marginBottom: 8,
-    borderBottomWidth: 1, borderBottomColor: '#CBD5E1', borderStyle: 'dashed', paddingBottom: 8
+  actionButtonDisabled: { backgroundColor: '#F8FAFC', opacity: 0.7 },
+  actionText: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: '#01789E' },
+  actionTextDisabled: { color: '#94A3B8' },
+
+  healthSummary: {
+    backgroundColor: '#F8FAFC', padding: 16, borderRadius: 12, gap: 12,
   },
-  timelineTitle: { 
-    fontFamily: 'Inter_700Bold', fontSize: 12, letterSpacing: 1.5, 
-    marginBottom: 4, marginTop: 4 
+  healthRow: { flexDirection: 'row', justifyContent: 'space-between' },
+  healthItem: { flex: 1 },
+  healthLabel: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#64748B', marginBottom: 4 },
+  healthValue: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: '#0B1C30' },
+  healthValueRed: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: '#991B1B' },
+  healthValueGreen: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: '#166534' },
+
+  sectionTitle: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 18, color: '#164E63', marginBottom: 12 },
+  emptyText: { fontFamily: 'Inter_400Regular', color: '#64748B', fontStyle: 'italic', marginBottom: 12 },
+
+  groupsPillsScroll: { marginBottom: 8 },
+  groupPill: {
+    backgroundColor: '#FFFFFF', paddingHorizontal: 16, paddingVertical: 12,
+    borderRadius: 24, borderWidth: 1, borderColor: '#E2E8F0', marginRight: 12,
   },
-  timelineDesc: { 
-    fontFamily: 'Inter_400Regular', fontSize: 13, color: '#64748B', lineHeight: 20 
+  groupPillName: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: '#0B1C30' },
+  groupPillValue: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#64748B', marginTop: 2 },
+
+  timelineList: { gap: 16 },
+  timelineCard: {
+    backgroundColor: '#FFFFFF', borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0', padding: 16,
   },
+  timelineHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 },
+  timelineMonth: { fontFamily: 'Inter_700Bold', fontSize: 16, color: '#0B1C30' },
+  timelineGroup: { fontFamily: 'Inter_400Regular', fontSize: 12, color: '#64748B', marginTop: 2 },
+  statusBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
+  statusText: { fontFamily: 'Inter_600SemiBold', fontSize: 12 },
+
+  timelineAmounts: {
+    flexDirection: 'row', justifyContent: 'space-between', backgroundColor: '#F8FAFC', 
+    padding: 12, borderRadius: 8, marginBottom: 12
+  },
+  amtBox: { alignItems: 'center' },
+  amtLabel: { fontFamily: 'Inter_500Medium', fontSize: 11, color: '#64748B', marginBottom: 4 },
+  amtValue: { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: '#0B1C30' },
+  amtValueGreen: { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: '#166534' },
+  amtValueRed: { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: '#991B1B' },
+
+  markersRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },
+  markerBadge: { 
+    backgroundColor: '#FEF3C7', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4 
+  },
+  markerText: { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: '#92400E' },
+
+  subTxnsList: { borderTopWidth: 1, borderTopColor: '#F1F5F9', paddingTop: 12, gap: 8 },
+  subTxnItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  subTxnDate: { fontFamily: 'Inter_400Regular', fontSize: 12, color: '#64748B', flex: 1 },
+  subTxnType: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#0B1C30', flex: 1, textAlign: 'center' },
+  subTxnAmt: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#166534', flex: 1, textAlign: 'right' },
+
+  unlinkedContainer: { marginTop: 24, padding: 16, backgroundColor: '#FFF7ED', borderRadius: 12, borderWidth: 1, borderColor: '#FED7AA' },
+  unlinkedItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  unlinkedDate: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#9A3412' },
+  unlinkedType: { fontFamily: 'Inter_400Regular', fontSize: 11, color: '#C2410C', marginTop: 2 },
+  unlinkedAmt: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: '#9A3412' },
 });
