@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Modal, TextInput, Platform, KeyboardAvoidingView, ActivityIndicator, RefreshControl, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
@@ -48,6 +48,10 @@ export default function AdminGroups() {
   const [biddingTime, setBiddingTime] = useState('');
   const [capacity, setCapacity] = useState(50);
   const [terms, setTerms] = useState('');
+
+  // Accounting Type
+  const [accountingType, setAccountingType] = useState<'accounted' | 'unaccounted'>('accounted');
+  const [showAccountingOptions, setShowAccountingOptions] = useState(false);
 
   // Live Data State
   const [groups, setGroups] = useState<any[]>([]);
@@ -155,7 +159,7 @@ export default function AdminGroups() {
     try {
       const { data, error } = await supabase
         .from('chit_groups')
-        .select('*, chit_members(id)')
+        .select('*, chit_members(id, participation_share)')
         .order('created_at', { ascending: false });
       if (error) throw error;
       if (data) setGroups(data);
@@ -186,6 +190,91 @@ export default function AdminGroups() {
     setRefreshing(false);
   };
 
+  const getGroupShares = (group: any) =>
+    (group.chit_members || []).reduce(
+      (sum: number, m: any) => sum + (Number(m.participation_share) || 1),
+      0,
+    );
+
+  const { accountedGroups, unaccountedGroups } = useMemo(() => {
+    const accounted: any[] = [];
+    const unaccounted: any[] = [];
+    groups.forEach((group) => {
+      if (group.accounting_type === 'unaccounted') unaccounted.push(group);
+      else accounted.push(group);
+    });
+    return { accountedGroups: accounted, unaccountedGroups: unaccounted };
+  }, [groups]);
+
+  const renderGroupCard = (group: any, isUnaccounted = false) => {
+    const filledShares = getGroupShares(group);
+    const groupCapacity = group.capacity || 50;
+    const fillPct = Math.min(100, (filledShares / groupCapacity) * 100);
+
+    return (
+      <TouchableOpacity
+        key={group.id}
+        style={[styles.groupCard, isUnaccounted && styles.groupCardUnaccounted]}
+        activeOpacity={0.9}
+        onPress={() => router.push(`/(admin)/groups/${group.group_code || group.id}`)}
+      >
+        <View style={styles.cardTop}>
+          <View>
+            <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
+              <View style={[styles.badge, { backgroundColor: group.status === 'active' ? 'rgba(84, 250, 239, 0.3)' : 'rgba(241, 245, 249, 1)' }]}>
+                <Text style={[styles.badgeText, { color: group.status === 'active' ? '#00716b' : '#64748B' }]}>{group.status?.toUpperCase() || 'ACTIVE'}</Text>
+              </View>
+              {isUnaccounted && (
+                <View style={[styles.badge, { backgroundColor: 'rgba(147, 51, 234, 0.15)' }]}>
+                  <Text style={[styles.badgeText, { color: '#7C3AED' }]}>💵 CASH ONLY</Text>
+                </View>
+              )}
+            </View>
+            <Text style={styles.groupName}>{group.name}</Text>
+          </View>
+          <View style={{ alignItems: 'flex-end' }}>
+            <Text style={styles.labelSmall}>Group ID</Text>
+            <Text style={styles.idText}>#{group.group_code || 'PENDING'}</Text>
+          </View>
+        </View>
+
+        <View style={styles.valueRow}>
+          <Text style={styles.valueText}>₹{(Number(group.value) / 100).toLocaleString('en-IN')}</Text>
+          <Text style={styles.labelSmall}>Total Value</Text>
+        </View>
+
+        <View style={styles.progressSection}>
+          <View style={styles.progressHeader}>
+            <Text style={styles.labelSmall}>Enrollment</Text>
+            <Text style={styles.labelSmall}>{group.duration_months} Months</Text>
+          </View>
+          <View style={styles.progressBarBg}>
+            <View
+              style={[
+                styles.progressBarFill,
+                {
+                  width: `${fillPct}%`,
+                  backgroundColor: isUnaccounted ? '#9333EA' : '#01789E',
+                },
+              ]}
+            />
+          </View>
+        </View>
+
+        <View style={styles.cardFooter}>
+          <View>
+            <Text style={styles.footerLabel}>START DATE</Text>
+            <Text style={styles.footerVal}>{group.start_date || 'TBD'}</Text>
+          </View>
+          <View style={{ alignItems: 'flex-end' }}>
+            <Text style={styles.footerLabel}>SHARES</Text>
+            <Text style={styles.footerVal}>{filledShares} / {groupCapacity}</Text>
+          </View>
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
   const parsePickerDate = (dateStr: string) => {
     if (!dateStr) return null;
     const parts = dateStr.split('/');
@@ -209,17 +298,21 @@ export default function AdminGroups() {
       Alert.alert('Validation Error', 'Please fill Group Name, Chit Amount, and Installments');
       return;
     }
-    if (!agrNumber || agrNumber.length < 3) {
-      Alert.alert('Validation Error', 'Please enter a valid Agreement Number');
-      return;
-    }
-    if (!psoNumber || psoNumber.length < 3) {
-      Alert.alert('Validation Error', 'Please enter a valid PSO Number');
-      return;
-    }
-    if (!fdNumber || fdNumber.length < 3) {
-      Alert.alert('Validation Error', 'Please enter a valid FD Number');
-      return;
+
+    // Regulatory validation only for accounted groups
+    if (accountingType === 'accounted') {
+      if (!agrNumber || agrNumber.length < 3) {
+        Alert.alert('Validation Error', 'Please enter a valid Agreement Number');
+        return;
+      }
+      if (!psoNumber || psoNumber.length < 3) {
+        Alert.alert('Validation Error', 'Please enter a valid PSO Number');
+        return;
+      }
+      if (!fdNumber || fdNumber.length < 3) {
+        Alert.alert('Validation Error', 'Please enter a valid FD Number');
+        return;
+      }
     }
 
     setIsSaving(true);
@@ -233,17 +326,18 @@ export default function AdminGroups() {
         agent_in_charge: agentInCharge,
         foreman_name: foremanName,
         description,
-        agr_number: agrNumber,
-        agr_date: parseDateStr(agrDate),
-        pso_number: psoNumber,
-        pso_date: parseDateStr(psoDate),
-        fd_number: fdNumber,
-        fd_date: parseDateStr(fdDate),
-        cdra_number: cdraNumber,
-        fd_closing_date: parseDateStr(fdClosingDate),
-        start_date: parseDateStr(startDate),
-        end_date: parseDateStr(endDate),
-        bank_name: bankName,
+        // Regulatory fields only for accounted groups
+        agr_number: accountingType === 'accounted' ? agrNumber : null,
+        agr_date: accountingType === 'accounted' ? parseDateStr(agrDate) : null,
+        pso_number: accountingType === 'accounted' ? psoNumber : null,
+        pso_date: accountingType === 'accounted' ? parseDateStr(psoDate) : null,
+        fd_number: accountingType === 'accounted' ? fdNumber : null,
+        fd_date: accountingType === 'accounted' ? parseDateStr(fdDate) : null,
+        cdra_number: accountingType === 'accounted' ? cdraNumber : null,
+        fd_closing_date: accountingType === 'accounted' ? parseDateStr(fdClosingDate) : null,
+        start_date: accountingType === 'accounted' ? parseDateStr(startDate) : null,
+        end_date: accountingType === 'accounted' ? parseDateStr(endDate) : null,
+        bank_name: accountingType === 'accounted' ? bankName : null,
         deposited_amount: Number(depositedAmount) * 100 || 0,
         interest_rate: Number(interestRate) || 0,
         no_of_installments: Number(installments),
@@ -255,6 +349,7 @@ export default function AdminGroups() {
         bidding_time: biddingTime,
         capacity,
         terms_conditions: terms,
+        accounting_type: accountingType, // NEW: Add accounting type
         status: 'active'
       };
 
@@ -268,6 +363,7 @@ export default function AdminGroups() {
 
         // Reset major fields
         setGroupCode(''); setGroupName(''); setChitAmount(''); setInstallments(''); setEmiAmount('');
+        setAccountingType('accounted'); // Reset accounting type
 
         closeModal();
         fetchGroups();
@@ -334,67 +430,28 @@ export default function AdminGroups() {
             <Text style={styles.addSubtitle}>Configure Duration & Slots</Text>
           </TouchableOpacity>
 
-          {/* Dynamic Active Groups */}
           {groups.length === 0 ? (
             <View style={{ alignItems: 'center', marginTop: 40 }}>
               <Text style={{ fontFamily: 'Inter_400Regular', color: '#64748B' }}>No active groups initialized yet.</Text>
             </View>
           ) : (
-            groups.map((group) => (
-              <TouchableOpacity
-                key={group.id}
-                style={styles.groupCard}
-                activeOpacity={0.9}
-                onPress={() => router.push(`/(admin)/groups/${group.group_code || group.id}`)}
-              >
-                <View style={styles.cardTop}>
-                  <View>
-                    <View style={[styles.badge, { backgroundColor: group.status === 'active' ? 'rgba(84, 250, 239, 0.3)' : 'rgba(241, 245, 249, 1)' }]}>
-                      <Text style={[styles.badgeText, { color: group.status === 'active' ? '#00716b' : '#64748B' }]}>{group.status?.toUpperCase() || 'ACTIVE'}</Text>
-                    </View>
-                    <Text style={styles.groupName}>{group.name}</Text>
-                  </View>
-                  <View style={{ alignItems: 'flex-end' }}>
-                    <Text style={styles.labelSmall}>Group ID</Text>
-                    <Text style={styles.idText}>#{group.group_code || 'PENDING'}</Text>
-                  </View>
+            <>
+              {accountedGroups.length > 0 && (
+                <View style={styles.listSectionBlock}>
+                  <Text style={styles.listSectionTitle}>💳 Accounted Chits</Text>
+                  <Text style={styles.listSectionSubtitle}>Digital payments via Razorpay</Text>
+                  {accountedGroups.map((group) => renderGroupCard(group, false))}
                 </View>
+              )}
 
-                <View style={styles.valueRow}>
-                  <Text style={styles.valueText}>₹{(Number(group.value) / 100).toLocaleString('en-IN')}</Text>
-                  <Text style={styles.labelSmall}>Total Value</Text>
+              {unaccountedGroups.length > 0 && (
+                <View style={styles.listSectionBlock}>
+                  <Text style={styles.listSectionTitle}>💵 Unaccounted Chits (Cash Only)</Text>
+                  <Text style={styles.listSectionSubtitle}>Physical cash collections with denomination tracking</Text>
+                  {unaccountedGroups.map((group) => renderGroupCard(group, true))}
                 </View>
-
-                <View style={styles.progressSection}>
-                  <View style={styles.progressHeader}>
-                    <Text style={styles.labelSmall}>Duration</Text>
-                    <Text style={styles.labelSmall}>{group.duration_months} Months</Text>
-                  </View>
-                  <View style={styles.progressBarBg}>
-                    <View
-                      style={[
-                        styles.progressBarFill,
-                        {
-                          width: `${Math.min(100, ((group.chit_members?.length || 0) / (group.capacity || 1)) * 100)}%`,
-                          backgroundColor: '#01789E'
-                        }
-                      ]}
-                    />
-                  </View>
-                </View>
-
-                <View style={styles.cardFooter}>
-                  <View>
-                    <Text style={styles.footerLabel}>START DATE</Text>
-                    <Text style={styles.footerVal}>{group.start_date || 'TBD'}</Text>
-                  </View>
-                  <View style={{ alignItems: 'flex-end' }}>
-                    <Text style={styles.footerLabel}>SUBSCRIBERS</Text>
-                    <Text style={styles.footerVal}>{group.chit_members?.length || 0} / {group.capacity || 50}</Text>
-                  </View>
-                </View>
-              </TouchableOpacity>
-            ))
+              )}
+            </>
           )}
         </View>
 
@@ -450,83 +507,138 @@ export default function AdminGroups() {
                 <Text style={styles.inputLabel}>DESCRIPTION</Text>
                 <TextInput style={[styles.input, { minHeight: 60 }]} placeholder="Short description..." multiline value={description} onChangeText={setDescription} />
               </View>
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>ACCOUNTING TYPE</Text>
+                <TouchableOpacity
+                  style={[styles.input, { justifyContent: 'center' }]}
+                  onPress={() => setShowAccountingOptions((prev) => !prev)}
+                  activeOpacity={0.8}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <Text style={{ color: '#0F172A' }}>
+                      {accountingType === 'accounted' ? '💳 Accounted (Digital Payments)' : '💵 Unaccounted (Cash Only)'}
+                    </Text>
+                    <Svg width={16} height={16} viewBox="0 0 24 24" fill="#64748B">
+                      <Path d="M7 10l5 5 5-5z" />
+                    </Svg>
+                  </View>
+                </TouchableOpacity>
+                {showAccountingOptions && (
+                  <View style={styles.dropdownList}>
+                    <TouchableOpacity
+                      style={[
+                        styles.dropdownOption,
+                        accountingType === 'accounted' ? styles.dropdownOptionActive : null
+                      ]}
+                      onPress={() => {
+                        setAccountingType('accounted');
+                        setShowAccountingOptions(false);
+                      }}
+                    >
+                      <Text style={styles.dropdownOptionText}>💳 Accounted (Digital Payments)</Text>
+                      <Text style={styles.dropdownOptionSubtext}>Online payments tracked automatically</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[
+                        styles.dropdownOption,
+                        accountingType === 'unaccounted' ? styles.dropdownOptionActive : null
+                      ]}
+                      onPress={() => {
+                        setAccountingType('unaccounted');
+                        setShowAccountingOptions(false);
+                      }}
+                    >
+                      <Text style={styles.dropdownOptionText}>💵 Unaccounted (Cash Only)</Text>
+                      <Text style={styles.dropdownOptionSubtext}>Manual cash recording by staff</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+                <Text style={styles.helpText}>
+                  {accountingType === 'accounted'
+                    ? 'Members pay online via Razorpay. Payments are tracked automatically.'
+                    : 'Members pay cash in person. Staff manually records collections with denomination breakdown.'}
+                </Text>
+              </View>
             </View>
 
-            {/* Section 2: REGULATORY & DATES */}
-            <View style={styles.formSection}>
-              <View style={styles.sectionHeader}>
-                <Svg width={20} height={20} viewBox="0 0 24 24" fill="#005E7D"><Path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z" /></Svg>
-                <Text style={styles.sectionTitle}>02. REGULATORY & DATES</Text>
-              </View>
+            {/* Section 2: REGULATORY & DATES - Only for Accounted Groups */}
+            {accountingType === 'accounted' && (
+              <View style={styles.formSection}>
+                <View style={styles.sectionHeader}>
+                  <Svg width={20} height={20} viewBox="0 0 24 24" fill="#005E7D"><Path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z" /></Svg>
+                  <Text style={styles.sectionTitle}>02. REGULATORY & DATES</Text>
+                </View>
 
-              <View style={styles.rowInputs}>
-                <View style={[styles.inputGroup, { flex: 1 }]}>
-                  <Text style={styles.inputLabel}>AGR NUMBER *</Text>
-                  <TextInput style={styles.input} value={agrNumber} onChangeText={setAgrNumber} />
+                <View style={styles.rowInputs}>
+                  <View style={[styles.inputGroup, { flex: 1 }]}>
+                    <Text style={styles.inputLabel}>AGR NUMBER *</Text>
+                    <TextInput style={styles.input} value={agrNumber} onChangeText={setAgrNumber} />
+                  </View>
+                  <View style={[styles.inputGroup, { flex: 1 }]}>
+                    <Text style={styles.inputLabel}>AGR DATE</Text>
+                    <TouchableOpacity style={[styles.input, { justifyContent: 'center' }]} onPress={() => openPicker('agrDate', agrDate)}>
+                      <Text style={{ color: agrDate ? '#0F172A' : '#94A3B8' }}>{agrDate || 'Select Date'}</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
-                <View style={[styles.inputGroup, { flex: 1 }]}>
-                  <Text style={styles.inputLabel}>AGR DATE</Text>
-                  <TouchableOpacity style={[styles.input, { justifyContent: 'center' }]} onPress={() => openPicker('agrDate', agrDate)}>
-                    <Text style={{ color: agrDate ? '#0F172A' : '#94A3B8' }}>{agrDate || 'Select Date'}</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
 
-              <View style={styles.rowInputs}>
-                <View style={[styles.inputGroup, { flex: 1 }]}>
-                  <Text style={styles.inputLabel}>PSO NUMBER *</Text>
-                  <TextInput style={styles.input} value={psoNumber} onChangeText={setPsoNumber} />
+                <View style={styles.rowInputs}>
+                  <View style={[styles.inputGroup, { flex: 1 }]}>
+                    <Text style={styles.inputLabel}>PSO NUMBER *</Text>
+                    <TextInput style={styles.input} value={psoNumber} onChangeText={setPsoNumber} />
+                  </View>
+                  <View style={[styles.inputGroup, { flex: 1 }]}>
+                    <Text style={styles.inputLabel}>PSO DATE</Text>
+                    <TouchableOpacity style={[styles.input, { justifyContent: 'center' }]} onPress={() => openPicker('psoDate', psoDate)}>
+                      <Text style={{ color: psoDate ? '#0F172A' : '#94A3B8' }}>{psoDate || 'Select Date'}</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
-                <View style={[styles.inputGroup, { flex: 1 }]}>
-                  <Text style={styles.inputLabel}>PSO DATE</Text>
-                  <TouchableOpacity style={[styles.input, { justifyContent: 'center' }]} onPress={() => openPicker('psoDate', psoDate)}>
-                    <Text style={{ color: psoDate ? '#0F172A' : '#94A3B8' }}>{psoDate || 'Select Date'}</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
 
-              <View style={styles.rowInputs}>
-                <View style={[styles.inputGroup, { flex: 1 }]}>
-                  <Text style={styles.inputLabel}>FD NUMBER *</Text>
-                  <TextInput style={styles.input} value={fdNumber} onChangeText={setFdNumber} />
+                <View style={styles.rowInputs}>
+                  <View style={[styles.inputGroup, { flex: 1 }]}>
+                    <Text style={styles.inputLabel}>FD NUMBER *</Text>
+                    <TextInput style={styles.input} value={fdNumber} onChangeText={setFdNumber} />
+                  </View>
+                  <View style={[styles.inputGroup, { flex: 1 }]}>
+                    <Text style={styles.inputLabel}>FD DATE</Text>
+                    <TouchableOpacity style={[styles.input, { justifyContent: 'center' }]} onPress={() => openPicker('fdDate', fdDate)}>
+                      <Text style={{ color: fdDate ? '#0F172A' : '#94A3B8' }}>{fdDate || 'Select Date'}</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
-                <View style={[styles.inputGroup, { flex: 1 }]}>
-                  <Text style={styles.inputLabel}>FD DATE</Text>
-                  <TouchableOpacity style={[styles.input, { justifyContent: 'center' }]} onPress={() => openPicker('fdDate', fdDate)}>
-                    <Text style={{ color: fdDate ? '#0F172A' : '#94A3B8' }}>{fdDate || 'Select Date'}</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
 
-              <View style={styles.rowInputs}>
-                <View style={[styles.inputGroup, { flex: 1 }]}>
-                  <Text style={styles.inputLabel}>CDRA NUMBER</Text>
-                  <TextInput style={styles.input} value={cdraNumber} onChangeText={setCdraNumber} />
+                <View style={styles.rowInputs}>
+                  <View style={[styles.inputGroup, { flex: 1 }]}>
+                    <Text style={styles.inputLabel}>CDRA NUMBER</Text>
+                    <TextInput style={styles.input} value={cdraNumber} onChangeText={setCdraNumber} />
+                  </View>
+                  <View style={[styles.inputGroup, { flex: 1 }]}>
+                    <Text style={styles.inputLabel}>FD CLOSING DATE</Text>
+                    <TouchableOpacity style={[styles.input, { justifyContent: 'center' }]} onPress={() => openPicker('fdClosingDate', fdClosingDate)}>
+                      <Text style={{ color: fdClosingDate ? '#0F172A' : '#94A3B8' }}>{fdClosingDate || 'Select Date'}</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
-                <View style={[styles.inputGroup, { flex: 1 }]}>
-                  <Text style={styles.inputLabel}>FD CLOSING DATE</Text>
-                  <TouchableOpacity style={[styles.input, { justifyContent: 'center' }]} onPress={() => openPicker('fdClosingDate', fdClosingDate)}>
-                    <Text style={{ color: fdClosingDate ? '#0F172A' : '#94A3B8' }}>{fdClosingDate || 'Select Date'}</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
 
-              <View style={styles.rowInputs}>
-                <View style={[styles.inputGroup, { flex: 1 }]}>
-                  <Text style={styles.inputLabel}>START DATE</Text>
-                  <TouchableOpacity style={[styles.input, { justifyContent: 'center' }]} onPress={() => openPicker('startDate', startDate)}>
-                    <Text style={{ color: startDate ? '#0F172A' : '#94A3B8' }}>{startDate || 'Select Date'}</Text>
-                  </TouchableOpacity>
+                <View style={styles.rowInputs}>
+                  <View style={[styles.inputGroup, { flex: 1 }]}>
+                    <Text style={styles.inputLabel}>START DATE</Text>
+                    <TouchableOpacity style={[styles.input, { justifyContent: 'center' }]} onPress={() => openPicker('startDate', startDate)}>
+                      <Text style={{ color: startDate ? '#0F172A' : '#94A3B8' }}>{startDate || 'Select Date'}</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <View style={[styles.inputGroup, { flex: 1 }]}>
+                    <Text style={styles.inputLabel}>END DATE</Text>
+                    <TouchableOpacity style={[styles.input, { justifyContent: 'center' }]} onPress={() => openPicker('endDate', endDate)}>
+                      <Text style={{ color: endDate ? '#0F172A' : '#94A3B8' }}>{endDate || 'Select Date'}</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
-                <View style={[styles.inputGroup, { flex: 1 }]}>
-                  <Text style={styles.inputLabel}>END DATE</Text>
-                  <TouchableOpacity style={[styles.input, { justifyContent: 'center' }]} onPress={() => openPicker('endDate', endDate)}>
-                    <Text style={{ color: endDate ? '#0F172A' : '#94A3B8' }}>{endDate || 'Select Date'}</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
 
-            </View>
+              </View>
+            )}
 
             {/* Section 3: FINANCIALS */}
             <View style={styles.formSection}>
@@ -825,6 +937,19 @@ const styles = StyleSheet.create({
   inputGroup: { gap: 8 },
   rowInputs: { flexDirection: 'row', gap: 16 },
   inputLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#64748B' },
+  helpText: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 12,
+    color: '#94A3B8',
+    lineHeight: 18,
+    marginTop: 4,
+  },
+  dropdownOptionSubtext: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 11,
+    color: '#94A3B8',
+    marginTop: 2,
+  },
   input: {
     backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 12,
     paddingHorizontal: 16, paddingVertical: 14, fontFamily: 'Inter_400Regular', fontSize: 16, color: '#0B1C30',
@@ -882,4 +1007,9 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 16,
   },
   pickerActions: { flexDirection: 'row', gap: 12, marginTop: 12 },
+
+  listSectionBlock: { width: '100%', marginBottom: 8 },
+  listSectionTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 18, color: '#0B1C30', marginBottom: 4 },
+  listSectionSubtitle: { fontFamily: 'Inter_400Regular', fontSize: 13, color: '#64748B', marginBottom: 16 },
+  groupCardUnaccounted: { backgroundColor: '#FAF5FF', borderColor: '#E9D5FF' },
 });

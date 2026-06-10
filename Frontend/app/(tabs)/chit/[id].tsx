@@ -36,6 +36,13 @@ type AuctionSettlement = {
   status: string; // 'upcoming' | 'live' | 'completed'
 };
 
+type CashCollectionRow = {
+  id: string;
+  month_number: number;
+  amount: number; // paise
+  recorded_at: string;
+};
+
 type ChitDetailData = {
   id: string;
   current_month: number;
@@ -48,6 +55,7 @@ type ChitDetailData = {
     monthly_installment: number;
     status: string;
     start_date?: string | null;
+    accounting_type: 'accounted' | 'unaccounted';
   };
   payments: PaymentRow[];
 };
@@ -93,7 +101,7 @@ function useChitDetail(membershipId: string, memberId: string | null) {
     queryFn: async () => {
       if (!memberId) return null;
       const { data: m } = await supabase.from('chit_members')
-        .select('id, current_month, bid_status, chit_group:chit_groups(id,name,value,duration_months,monthly_installment,status,start_date)')
+        .select('id, current_month, bid_status, chit_group:chit_groups(id,name,value,duration_months,monthly_installment,status,start_date,accounting_type)')
         .eq('id', membershipId)
         .eq('customer_id', memberId)
         .single();
@@ -183,6 +191,26 @@ function usePartialPayments(membershipId: string | undefined, auctions: AuctionS
   });
 }
 
+function useCashCollections(membershipId: string | undefined, isUnaccounted: boolean) {
+  return useQuery<Record<number, CashCollectionRow>>({
+    queryKey: ['cash-collections', membershipId],
+    queryFn: async () => {
+      if (!membershipId) return {};
+      const { data, error } = await supabase
+        .from('cash_collections')
+        .select('id, month_number, amount, recorded_at')
+        .eq('chit_member_id', membershipId);
+      if (error) throw error;
+      const byMonth: Record<number, CashCollectionRow> = {};
+      (data ?? []).forEach((row: any) => {
+        byMonth[row.month_number] = row as CashCollectionRow;
+      });
+      return byMonth;
+    },
+    enabled: !!membershipId && isUnaccounted,
+  });
+}
+
 const addMonthsKeepDay = (date: Date, months: number) => {
   const year = date.getFullYear();
   const month = date.getMonth() + months;
@@ -214,7 +242,7 @@ function getMonthPeriod(payment: PaymentRow, groupStartDate?: string | null): { 
 }
 
 function MonthTimelineItem({
-  p, isCurrentDue, onPay, paying, payableAmount, groupStartDate, auctionStatus, partialPaid,
+  p, isCurrentDue, onPay, paying, payableAmount, groupStartDate, auctionStatus, partialPaid, isUnaccountedGroup, cashCollection,
 }: {
   p: PaymentRow;
   isCurrentDue: boolean;
@@ -224,16 +252,23 @@ function MonthTimelineItem({
   groupStartDate?: string | null;
   auctionStatus?: string | null;
   partialPaid?: number;
+  isUnaccountedGroup?: boolean;
+  cashCollection?: CashCollectionRow;
 }) {
   const period = getMonthPeriod(p, groupStartDate);
-  const isPaid = p.paid;
+  // For unaccounted groups, cash_collections is the source of truth (not payment_schedules.paid).
+  const cashFull = isUnaccountedGroup && !!cashCollection && cashCollection.amount >= payableAmount;
+  const cashPartial = isUnaccountedGroup && !!cashCollection && cashCollection.amount > 0 && cashCollection.amount < payableAmount;
+  const isPaid = p.paid || cashFull;
   const today = Date.now();
   const daysLeft = Math.ceil((period.endDate.getTime() - today) / 86400000);
   const overdue = daysLeft < 0 && !isPaid;
 
   // Calculate if this is a partial payment scenario
-  const hasPartialPayment = !isPaid && (partialPaid || 0) > 0;
-  const remainingAmount = hasPartialPayment ? Math.max(0, payableAmount - (partialPaid || 0)) : payableAmount;
+  const cashPartialPaid = cashPartial ? (cashCollection?.amount ?? 0) : 0;
+  const effectivePartialPaid = cashPartialPaid || (partialPaid || 0);
+  const hasPartialPayment = !isPaid && effectivePartialPaid > 0;
+  const remainingAmount = hasPartialPayment ? Math.max(0, payableAmount - effectivePartialPaid) : payableAmount;
 
   // A month is payable when:
   // 1. Admin has started (live) or settled (completed) this month's auction, OR
@@ -287,7 +322,7 @@ function MonthTimelineItem({
             {hasPartialPayment && (
               <View style={ts.partialBadge}>
                 <Text style={ts.partialText}>
-                  {formatPaise(partialPaid || 0)} paid · {formatPaise(remainingAmount)} due
+                  {formatPaise(effectivePartialPaid)} paid · {formatPaise(remainingAmount)} remaining
                 </Text>
               </View>
             )}
@@ -310,12 +345,45 @@ function MonthTimelineItem({
             <Svg width={16} height={16} viewBox="0 0 24 24" fill={Colors.secondary}>
               <Path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
             </Svg>
-            <Text style={ts.statusPaid}>Paid on {formatShortDate(p.paid_at!)}</Text>
+            <Text style={ts.statusPaid}>
+              {isUnaccountedGroup && cashCollection
+                ? `Paid · Cash · ${formatShortDate(cashCollection.recorded_at)} · ${formatPaise(cashCollection.amount)}`
+                : isUnaccountedGroup
+                  ? 'Paid · Cash'
+                  : 'Paid · Online'}
+            </Text>
             {(p.dividend_amount ?? 0) > 0 && (
               <View style={ts.dividendBadge}>
                 <Text style={ts.dividendText}>+{formatPaise(p.dividend_amount!)} dividend</Text>
               </View>
             )}
+          </View>
+        ) : isUnaccountedGroup && cashPartial && cashCollection ? (
+          <View style={{ gap: 6 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <Svg width={16} height={16} viewBox="0 0 24 24" fill="#F59E0B">
+                <Path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" />
+              </Svg>
+              <Text style={[ts.statusPaid, { color: '#D97706' }]}>
+                {`Partial · Cash · ${formatShortDate(cashCollection.recorded_at)} · ${formatPaise(cashCollection.amount)} paid`}
+              </Text>
+            </View>
+            <View style={ts.remainingCashBadge}>
+              <Text style={ts.remainingCashText}>
+                {formatPaise(remainingAmount)} still to be paid · pay balance in cash to staff
+              </Text>
+            </View>
+          </View>
+        ) : isUnaccountedGroup ? (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Svg width={14} height={14} viewBox="0 0 24 24" fill="#9333EA">
+              <Path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z" />
+            </Svg>
+            <Text style={ts.statusScheduled}>
+              {hasPartialPayment
+                ? `${formatPaise(remainingAmount)} due · pay cash to staff`
+                : 'Cash payment · Staff will record'}
+            </Text>
           </View>
         ) : canPay ? (
           <TouchableOpacity
@@ -364,6 +432,8 @@ export default function ChitDetailScreen() {
   const { data, isLoading } = useChitDetail(id ?? '', memberId);
   const { data: auctions = [] } = useGroupAuctions(data?.chit_group?.id);
   const { data: partialPaymentTotals = {} } = usePartialPayments(id, auctions);
+  const isUnaccounted = data?.chit_group?.accounting_type === 'unaccounted';
+  const { data: cashByMonth = {} } = useCashCollections(id, isUnaccounted);
   const [payingId, setPayingId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -398,12 +468,14 @@ export default function ChitDetailScreen() {
       queryClient.invalidateQueries({ queryKey: ['active-chits', memberId] });
       queryClient.invalidateQueries({ queryKey: ['dashboard-stats', memberId] });
       queryClient.invalidateQueries({ queryKey: ['partial-payments', id] });
+      queryClient.invalidateQueries({ queryKey: ['cash-collections', id] });
     };
     const channel = supabase
       .channel(`chit-detail-${id}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chit_members', filter: `id=eq.${id}` }, invalidate)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'payment_schedules', filter: `chit_member_id=eq.${id}` }, invalidate)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chit_member_transactions', filter: `chit_member_id=eq.${id}` }, invalidate)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'cash_collections', filter: `chit_member_id=eq.${id}` }, invalidate)
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [id, memberId, queryClient]);
@@ -624,8 +696,6 @@ export default function ChitDetailScreen() {
   const payments: PaymentRow[] = data.payments;
   const currentMonth: number = data.current_month;
 
-  // First unpaid month (used as fallback for overdue detection even without an auction)
-  const firstUnpaid = payments.find(p => !p.paid);
   const settlementByMonth = new Map<number, AuctionSettlement>();
   auctions.forEach(a => {
     if (a.auction_number) settlementByMonth.set(a.auction_number, a);
@@ -653,9 +723,36 @@ export default function ChitDetailScreen() {
     return defaultInstallment;
   };
 
-  const totalPaid = payments.filter(p => p.paid).reduce((sum, p) => sum + p.amount, 0);
-  const totalDue = payments.filter(p => !p.paid).reduce((sum, p) => sum + getPayable(p), 0);
-  const paidCount = payments.filter(p => p.paid).length;
+  // First unpaid month — for unaccounted, a month is covered when cash paid >= payable amount.
+  const isCovered = (p: PaymentRow) => {
+    if (p.paid) return true;
+    if (isUnaccounted) {
+      const cc = cashByMonth[p.month_number];
+      if (cc && cc.amount >= getPayable(p)) return true;
+    }
+    return false;
+  };
+  const firstUnpaid = payments.find(p => !isCovered(p));
+
+  const totalPaid = payments.reduce((sum, p) => {
+    if (isUnaccounted) {
+      const cc = cashByMonth[p.month_number];
+      return cc ? sum + cc.amount : sum;
+    }
+    return p.paid ? sum + p.amount : sum;
+  }, 0);
+
+  const totalDue = payments.reduce((sum, p) => {
+    if (isCovered(p)) return sum;
+    const payable = getPayable(p);
+    if (isUnaccounted) {
+      const paidForMonth = cashByMonth[p.month_number]?.amount ?? 0;
+      return sum + Math.max(0, payable - paidForMonth);
+    }
+    return sum + payable;
+  }, 0);
+
+  const paidCount = payments.filter(isCovered).length;
 
   // isCurrentDue: true only for the very first unpaid month (used for the overdue/due-date badge logic)
   const isCurrentDue = (p: PaymentRow) =>
@@ -739,6 +836,7 @@ export default function ChitDetailScreen() {
             payments.map((p, idx) => {
               const auction = settlementByMonth.get(p.month_number);
               const partialPaid = partialPaymentTotals[p.month_number] || 0;
+              const cashCollection = cashByMonth[p.month_number];
               return (
                 <View key={p.id}>
                   <MonthTimelineItem
@@ -750,6 +848,8 @@ export default function ChitDetailScreen() {
                     groupStartDate={group?.start_date ?? null}
                     auctionStatus={auction?.status ?? null}
                     partialPaid={partialPaid}
+                    isUnaccountedGroup={isUnaccounted}
+                    cashCollection={cashCollection}
                   />
                   {idx < payments.length - 1 && <View style={ts.connector} />}
                 </View>
@@ -914,6 +1014,8 @@ const ts = StyleSheet.create({
   dividendText: { fontFamily: 'Inter_500Medium', fontSize: 11, color: '#1E40AF' },
   partialBadge: { backgroundColor: '#FEF3C7', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
   partialText: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: '#92400E' },
+  remainingCashBadge: { backgroundColor: '#FEF3C7', paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#FDE68A' },
+  remainingCashText: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#92400E' },
 });
 
 // ── Screen Styles ─────────────────────────────────────────────

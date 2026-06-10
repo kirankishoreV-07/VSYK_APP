@@ -119,6 +119,26 @@ export default function AdminLayout() {
         name="customers/[id]"
         options={{ href: null, title: 'Customer Detail' }}
       />
+      <Tabs.Screen
+        name="customers/[id]/groups"
+        options={{ href: null, title: 'Customer Groups' }}
+      />
+      <Tabs.Screen
+        name="customers/[id]/payments"
+        options={{ href: null, title: 'Customer Payments' }}
+      />
+      <Tabs.Screen
+        name="customers/[id]/auctions"
+        options={{ href: null, title: 'Customer Auctions' }}
+      />
+      <Tabs.Screen
+        name="customers/[id]/diagnostics"
+        options={{ href: null, title: 'Customer Diagnostics' }}
+      />
+      <Tabs.Screen
+        name="customers/[id]/activity"
+        options={{ href: null, title: 'Customer Activity' }}
+      />
     </Tabs>
   );
 }

@@ -32,14 +32,20 @@ function isDueSoon(chit: ActiveChit): boolean {
   return diff >= 0 && diff <= 3;
 }
 
+function isUnaccountedGroup(chit: ActiveChit): boolean {
+  return chit.chit_group.accounting_type === 'unaccounted';
+}
+
 function getStatusLabel(chit: ActiveChit): string {
   if (chit.bid_status === 'completed') return 'Completed';
   if (chit.bid_status === 'bidding') return 'Bidding';
   if (isDueSoon(chit)) return 'Due Soon';
+  if (isUnaccountedGroup(chit)) return 'Cash Only';
   return 'Active';
 }
 
-function getStatusColor(label: string): string {
+function getStatusColor(label: string, isUnaccounted: boolean): string {
+  if (label === 'Cash Only' || isUnaccounted) return '#9333EA'; // Purple for unaccounted
   if (label === 'Due Soon') return '#F59E0B';
   if (label === 'Completed') return '#10B981';
   if (label === 'Bidding') return Colors.secondary;
@@ -52,13 +58,17 @@ function ChitCard({ item }: { item: ActiveChit }) {
   const group = item.chit_group;
   const progress = item.current_month / group.duration_months;
   const pct = Math.round(progress * 100);
+  const isUnaccounted = isUnaccountedGroup(item);
   const statusLabel = getStatusLabel(item);
-  const statusColor = getStatusColor(statusLabel);
+  const statusColor = getStatusColor(statusLabel, isUnaccounted);
   const isDue = statusLabel === 'Due Soon';
 
   return (
     <TouchableOpacity
-      style={styles.card}
+      style={[
+        styles.card,
+        isUnaccounted && styles.cardUnaccounted,
+      ]}
       activeOpacity={0.88}
       onPress={() => {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -69,6 +79,12 @@ function ChitCard({ item }: { item: ActiveChit }) {
       <View style={[styles.badge, { backgroundColor: `${statusColor}22` }]}>
         <Text style={[styles.badgeText, { color: statusColor }]}>{statusLabel}</Text>
       </View>
+
+      {isUnaccounted && (
+        <View style={styles.cashBadge}>
+          <Text style={styles.cashBadgeText}>💵 Cash</Text>
+        </View>
+      )}
 
       {/* Header */}
       <View style={styles.cardHeader}>
@@ -102,7 +118,8 @@ function ChitCard({ item }: { item: ActiveChit }) {
             {item.next_payment ? formatPaise(item.next_payment.amount) : 'Paid up'}
           </Text>
         </View>
-        {isDue ? (
+        {/* Hide Pay Now button for unaccounted groups */}
+        {!isUnaccounted && isDue ? (
           <TouchableOpacity
             style={styles.payNowBtn}
             onPress={() => {
@@ -329,11 +346,31 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: '#F1F5F9', position: 'relative', overflow: 'hidden',
     ...Shadows.subtle,
   },
+  cardUnaccounted: {
+    backgroundColor: '#FAF5FF',
+    borderColor: '#E9D5FF',
+    borderWidth: 2,
+  },
   badge: {
     position: 'absolute', top: 14, right: 14,
     paddingHorizontal: 10, paddingVertical: 4, borderRadius: 100,
   },
   badgeText: { fontFamily: 'Inter_700Bold', fontSize: 10, letterSpacing: 0.5, textTransform: 'uppercase' },
+  cashBadge: {
+    position: 'absolute',
+    top: 48,
+    right: 14,
+    backgroundColor: '#9333EA',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 100,
+  },
+  cashBadgeText: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 10,
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+  },
   cardHeader: { gap: 2, paddingRight: 80 },
   cardCategory: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: Colors.primary, letterSpacing: 1.5 },
   cardName: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 18, color: '#0B1C30', letterSpacing: -0.3 },

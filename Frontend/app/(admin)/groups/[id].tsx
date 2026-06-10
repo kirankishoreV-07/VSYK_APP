@@ -8,6 +8,8 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { supabase } from '../../../lib/supabase';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { apiPost } from '../../../lib/api';
+import { RecordCashCollectionModal } from '../customers/_components/RecordCashCollectionModal';
+import type { ChitMember } from '../customers/_components/types';
 
 // ── Step3Review: extracted to avoid IIFE JSX parsing issues ──
 function Step3Review({
@@ -129,6 +131,8 @@ export default function AdminGroupDetail() {
   const [paymentAmount, setPaymentAmount] = useState('');
   const [selectedAuctionId, setSelectedAuctionId] = useState<string>('');
   const [loggingPayment, setLoggingPayment] = useState(false);
+  const [cashModalVisible, setCashModalVisible] = useState(false);
+  const [memberCashCollections, setMemberCashCollections] = useState<any[]>([]);
 
   // Auction Settlement Modal State
   const [showSettlementModal, setShowSettlementModal] = useState(false);
@@ -175,6 +179,8 @@ export default function AdminGroupDetail() {
   const capacity = group?.capacity || 50;
   const totalShares = members.reduce((sum, m) => sum + (Number(m.participation_share) || 1), 0);
   const memberCount = members.length;
+  const isAtCapacity = totalShares >= capacity;
+  const isUnaccountedGroup = group?.accounting_type === 'unaccounted';
   const calculatedEmi = ((Number(group?.value) || 0) / (Number(group?.no_of_installments) || Number(group?.duration_months) || 1));
   const baseEmi = (Number(group?.emi_amount) || Number(group?.monthly_installment) || calculatedEmi) / 100;
   const displayEmi = participation === 'full' ? baseEmi : baseEmi / 2;
@@ -568,9 +574,20 @@ export default function AdminGroupDetail() {
       return;
     }
 
+    const share = participation === 'full' ? 1.0 : 0.5;
+    if (totalShares + share > capacity) {
+      const remaining = Math.max(0, capacity - totalShares);
+      Alert.alert(
+        'Group Full',
+        remaining > 0
+          ? `Only ${remaining} share${remaining === 1 ? '' : 's'} remaining in this group (${totalShares}/${capacity} filled).`
+          : `This group is at full capacity (${capacity}/${capacity} shares).`,
+      );
+      return;
+    }
+
     setAdding(true);
     try {
-      const share = participation === 'full' ? 1.0 : 0.5;
       const { error } = await supabase.from('chit_members').insert([{
         chit_group_id: group.id,
         customer_id: selectedCustomer.id,
@@ -580,7 +597,9 @@ export default function AdminGroupDetail() {
 
       if (error) {
         if (error.code === '23505') Alert.alert('Already Added', 'This member is already in the group.');
-        else Alert.alert('Error', error.message);
+        else if (error.code === 'check_violation' || error.message?.toLowerCase().includes('capacity')) {
+          Alert.alert('Group Full', `Cannot add member — group is at full capacity (${capacity}/${capacity} shares).`);
+        } else Alert.alert('Error', error.message);
       } else {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         fetchMembers();
@@ -861,11 +880,49 @@ export default function AdminGroupDetail() {
     );
   };
 
-  // --- TRANSACTION LOGIC ---
+  // --- TRANSACTION / CASH COLLECTION LOGIC ---
+  const buildCashMembership = (member: any): ChitMember => ({
+    id: member.id,
+    chit_group_id: group.id,
+    customer_id: member.customer_id,
+    ticket_number: member.ticket_number ? String(member.ticket_number) : null,
+    current_month: member.current_month || 1,
+    bid_status: member.bid_status || 'active',
+    joined_at: member.joined_at || new Date().toISOString(),
+    chit_groups: {
+      id: group.id,
+      name: group.name,
+      value: group.value,
+      duration_months: group.duration_months,
+      monthly_installment: group.monthly_installment,
+      status: group.status,
+      start_date: group.start_date ?? null,
+      accounting_type: group.accounting_type || 'unaccounted',
+    },
+  });
+
   const openMemberTransactions = async (member: any, displayTicket: number) => {
     const memberWithTicket = { ...member, display_ticket: displayTicket };
     setSelectedMemberForTx(memberWithTicket);
-    fetchTransactions(member.id);
+    setShowLogPayment(false);
+    if (isUnaccountedGroup) {
+      fetchCashCollections(member.id);
+    } else {
+      fetchTransactions(member.id);
+    }
+  };
+
+  const fetchCashCollections = async (chitMemberId: string) => {
+    try {
+      const { data } = await supabase
+        .from('cash_collections')
+        .select('*')
+        .eq('chit_member_id', chitMemberId)
+        .order('month_number', { ascending: true });
+      setMemberCashCollections(data || []);
+    } catch (err) {
+      console.error('Error fetching cash collections:', err);
+    }
   };
 
   const fetchTransactions = async (chitMemberId: string) => {
@@ -996,8 +1053,20 @@ export default function AdminGroupDetail() {
 
           {/* Quick Actions */}
           <View style={{ flexDirection: 'row', gap: 12 }}>
-            <TouchableOpacity style={styles.executeBtn} onPress={() => { setSelectedCustomer(null); setShowAddModal(true); fetchCustomers(); }}>
-              <Text style={styles.executeBtnText}>+ ADD MEMBER</Text>
+            <TouchableOpacity
+              style={[styles.executeBtn, isAtCapacity && { opacity: 0.5 }]}
+              onPress={() => {
+                if (isAtCapacity) {
+                  Alert.alert('Group Full', `All ${capacity} shares are filled. Cannot add more members.`);
+                  return;
+                }
+                setSelectedCustomer(null);
+                setShowAddModal(true);
+                fetchCustomers();
+              }}
+              disabled={isAtCapacity}
+            >
+              <Text style={styles.executeBtnText}>{isAtCapacity ? 'GROUP FULL' : '+ ADD MEMBER'}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1291,20 +1360,67 @@ export default function AdminGroupDetail() {
                 <View style={styles.txSummaryCard}>
                   <Text style={styles.txSummaryLabel}>Total Amount Paid</Text>
                   <Text style={styles.txSummaryValue}>
-                    ₹{(transactions.reduce((sum, tx) => sum + (tx.amount || 0), 0) / 100).toLocaleString('en-IN')}
+                    ₹{(
+                      (isUnaccountedGroup
+                        ? memberCashCollections.reduce((sum, cc) => sum + (cc.amount || 0), 0)
+                        : transactions.reduce((sum, tx) => sum + (tx.amount || 0), 0)) / 100
+                    ).toLocaleString('en-IN')}
                   </Text>
                   <View style={styles.txSummaryDivider} />
                   <View style={styles.txSummaryRow}>
-                    <Text style={styles.txSummarySubText}>{transactions.length} Transactions</Text>
+                    <Text style={styles.txSummarySubText}>
+                      {isUnaccountedGroup
+                        ? `${memberCashCollections.length} Cash Collections`
+                        : `${transactions.length} Transactions`}
+                    </Text>
                     <View style={styles.statusBadge}>
-                      <Text style={[styles.statusText, { color: '#10B981' }]}>ACTIVE</Text>
+                      <Text style={[styles.statusText, { color: isUnaccountedGroup ? '#9333EA' : '#10B981' }]}>
+                        {isUnaccountedGroup ? 'CASH ONLY' : 'ACTIVE'}
+                      </Text>
                     </View>
                   </View>
                 </View>
 
-                <Text style={styles.sectionTitle}>Recent Transactions</Text>
+                <Text style={styles.sectionTitle}>
+                  {isUnaccountedGroup ? 'Cash Collections' : 'Recent Transactions'}
+                </Text>
 
-                {transactions.length === 0 ? (
+                {isUnaccountedGroup ? (
+                  memberCashCollections.length === 0 ? (
+                    <View style={{ alignItems: 'center', marginTop: 40, padding: 30, backgroundColor: '#FFFFFF', borderRadius: 16, borderWidth: 1, borderColor: '#F1F5F9' }}>
+                      <Text style={{ fontFamily: 'SpaceGrotesk_600SemiBold', color: '#0F172A', fontSize: 16, marginBottom: 8 }}>No Cash Collections Yet</Text>
+                      <Text style={{ fontFamily: 'Inter_400Regular', color: '#64748B', fontSize: 13, textAlign: 'center' }}>Record the first cash collection with denomination breakdown.</Text>
+                    </View>
+                  ) : (
+                    memberCashCollections.map(cc => {
+                      const monthlyDue = group?.monthly_installment || 0;
+                      const status = cc.amount >= monthlyDue ? 'Full' : cc.amount > 0 ? 'Partial' : 'Unpaid';
+                      const remaining = Math.max(0, monthlyDue - cc.amount);
+                      return (
+                        <View key={cc.id} style={styles.txRow}>
+                          <View style={[styles.txIconBoxAlt, { backgroundColor: '#FAF5FF' }]}>
+                            <Text style={{ fontSize: 18 }}>💵</Text>
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.txTitleAlt}>Month {cc.month_number} · {status}</Text>
+                            <Text style={styles.txDateAlt}>
+                              {formatDate(new Date(cc.recorded_at))} • {formatTime(new Date(cc.recorded_at))}
+                            </Text>
+                            {status === 'Partial' && (
+                              <Text style={{ fontFamily: 'Inter_600SemiBold', fontSize: 11, color: '#D97706', marginTop: 4 }}>
+                                ₹{(remaining / 100).toLocaleString('en-IN')} remaining
+                              </Text>
+                            )}
+                          </View>
+                          <View style={{ alignItems: 'flex-end' }}>
+                            <Text style={styles.txAmountAlt}>₹{(cc.amount / 100).toLocaleString('en-IN')}</Text>
+                            <Text style={styles.txStatusAlt}>Cash</Text>
+                          </View>
+                        </View>
+                      );
+                    })
+                  )
+                ) : transactions.length === 0 ? (
                   <View style={{ alignItems: 'center', marginTop: 40, padding: 30, backgroundColor: '#FFFFFF', borderRadius: 16, borderWidth: 1, borderColor: '#F1F5F9' }}>
                     <Svg width={48} height={48} viewBox="0 0 24 24" fill="#CBD5E1" style={{ marginBottom: 16 }}>
                       <Path d="M21 18v1c0 1.1-.9 2-2 2H5c-1.11 0-2-.9-2-2V5c0-1.1.89-2 2-2h14c1.1 0 2 .9 2 2v1h-9c-1.11 0-2 .9-2 2v8c0 1.1.89 2 2 2h9zm-9-2h10V8H12v8zm4-2.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z" />
@@ -1335,9 +1451,18 @@ export default function AdminGroupDetail() {
                 )}
               </ScrollView>
               <View style={{ padding: 20, backgroundColor: '#FFFFFF', borderTopWidth: 1, borderTopColor: '#F1F5F9', position: 'absolute', bottom: 0, width: '100%' }}>
-                <TouchableOpacity style={[styles.executeBtn, { flex: 0 }]} onPress={() => setShowLogPayment(true)}>
-                  <Text style={styles.executeBtnText}>LOG NEW PAYMENT</Text>
-                </TouchableOpacity>
+                {isUnaccountedGroup ? (
+                  <TouchableOpacity
+                    style={[styles.executeBtn, { flex: 0, backgroundColor: '#9333EA' }]}
+                    onPress={() => setCashModalVisible(true)}
+                  >
+                    <Text style={styles.executeBtnText}>RECORD CASH COLLECTION</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity style={[styles.executeBtn, { flex: 0 }]} onPress={() => setShowLogPayment(true)}>
+                    <Text style={styles.executeBtnText}>LOG NEW PAYMENT</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             </>
           ) : (
@@ -1871,6 +1996,17 @@ export default function AdminGroupDetail() {
           </Modal>
 
         </SafeAreaView>
+
+      {selectedMemberForTx && isUnaccountedGroup && (
+        <RecordCashCollectionModal
+          visible={cashModalVisible}
+          onClose={() => setCashModalVisible(false)}
+          membership={buildCashMembership(selectedMemberForTx)}
+          onSuccess={() => {
+            if (selectedMemberForTx?.id) fetchCashCollections(selectedMemberForTx.id);
+          }}
+        />
+      )}
     </SafeAreaView>
   );
 }

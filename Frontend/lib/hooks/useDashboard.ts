@@ -10,6 +10,7 @@ export type ChitGroup = {
   duration_months: number;
   monthly_installment: number; // in paise
   status: 'active' | 'completed' | 'cancelled';
+  accounting_type: 'accounted' | 'unaccounted';
 };
 
 export type PaymentSchedule = {
@@ -61,7 +62,7 @@ export function useActiveChits(memberId: string | null) {
           current_month,
           bid_status,
           chit_group:chit_groups (
-            id, name, value, duration_months, monthly_installment, status
+            id, name, value, duration_months, monthly_installment, status, accounting_type
           )
         `)
         .eq('customer_id', memberId)
