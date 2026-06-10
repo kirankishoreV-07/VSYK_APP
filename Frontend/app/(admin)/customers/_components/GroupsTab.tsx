@@ -2,9 +2,22 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 import type { ChitMember, InnerTab, PaymentSchedule, Transaction, Auction, AuctionParticipant, CashCollection } from './types';
-import { formatPaise, formatDateIST, formatDateTimeIST } from './utils';
+import {
+    formatPaise,
+    formatDateIST,
+    dedupeAuctionCycles,
+    getGroupChipLabel,
+} from './utils';
 import { supabase } from '../../../../lib/supabase';
 import { RecordCashCollectionModal } from './RecordCashCollectionModal';
+import { PaymentHistoryTab } from './PaymentHistoryTab';
+import { AdminColors } from './adminStyles';
+import {
+    getMemberWonAuctions,
+    isMemberAuctionWinner,
+    WINNER_HIGHLIGHT,
+} from '../../../../lib/auctionWinner';
+import { getFullyCollectedMonths } from '../../../../lib/chitPayments';
 
 interface GroupsTabProps {
     memberships: ChitMember[];
@@ -12,21 +25,29 @@ interface GroupsTabProps {
     transactions: Transaction[];
     auctions: Auction[];
     participants: AuctionParticipant[];
+    customerName?: string;
 }
 
 const INNER_TABS: Array<{ key: InnerTab; label: string }> = [
     { key: 'summary', label: 'Summary' },
     { key: 'payment-history', label: 'Payment History' },
     { key: 'auction-history', label: 'Auction History' },
-    { key: 'documents', label: 'Documents' },
+    { key: 'documents', label: 'Docs' },
     { key: 'ledger', label: 'Ledger' },
 ];
 
-export function GroupsTab({ memberships, schedules, transactions, auctions, participants }: GroupsTabProps) {
+export function GroupsTab({
+    memberships,
+    schedules,
+    transactions,
+    auctions,
+    participants,
+    customerName = 'Customer',
+}: GroupsTabProps) {
     const [selectedGroupId, setSelectedGroupId] = useState<string | null>(
         memberships.length > 0 ? memberships[0].id : null
     );
-    const [activeInnerTab, setActiveInnerTab] = useState<InnerTab>('summary');
+    const [activeInnerTab, setActiveInnerTab] = useState<InnerTab>('payment-history');
     const [cashCollections, setCashCollections] = useState<CashCollection[]>([]);
     const [cashModalVisible, setCashModalVisible] = useState(false);
     const [editingCollection, setEditingCollection] = useState<CashCollection | null>(null);
@@ -80,15 +101,14 @@ export function GroupsTab({ memberships, schedules, transactions, auctions, part
         [transactions, selectedGroupId]
     );
 
-    const groupAuctions = useMemo(() =>
-        auctions.filter(a => a.chit_group_id === selectedMembership?.chit_group_id),
-        [auctions, selectedMembership]
-    );
+    const groupAuctions = useMemo(() => {
+        const filtered = auctions.filter(a => a.chit_group_id === selectedMembership?.chit_group_id);
+        return dedupeAuctionCycles(filtered) as Auction[];
+    }, [auctions, selectedMembership]);
 
-    // Find if customer won any auction in this group
-    const wonAuction = useMemo(() =>
-        groupAuctions.find(a => a.winner_member_id === selectedGroupId),
-        [groupAuctions, selectedGroupId]
+    const wonAuctions = useMemo(
+        () => getMemberWonAuctions(groupAuctions, selectedGroupId),
+        [groupAuctions, selectedGroupId],
     );
 
     const groupCashCollections = useMemo(() =>
@@ -134,11 +154,19 @@ export function GroupsTab({ memberships, schedules, transactions, auctions, part
     };
 
     const isUnaccountedGroup = selectedMembership?.chit_groups.accounting_type === 'unaccounted';
-    const allMonthsCovered = groupSchedules.length > 0 &&
-        groupSchedules.every(s => {
-            const cc = groupCashCollections.find(c => c.month_number === s.month_number);
-            return cc && cc.amount >= s.amount;
-        });
+    const fullyCollectedMonths = useMemo(() => {
+        if (!selectedMembership) return [];
+        return getFullyCollectedMonths(
+            groupCashCollections,
+            selectedMembership.chit_groups.monthly_installment,
+            groupAuctions,
+            editingCollection?.id,
+        );
+    }, [groupCashCollections, selectedMembership, groupAuctions, editingCollection?.id]);
+
+    const allMonthsCovered =
+        selectedMembership != null
+        && fullyCollectedMonths.length >= selectedMembership.chit_groups.duration_months;
 
     if (memberships.length === 0) {
         return (
@@ -151,156 +179,152 @@ export function GroupsTab({ memberships, schedules, transactions, auctions, part
         );
     }
 
+    const renderTabContent = () => {
+        if (!selectedMembership) return null;
+
+        switch (activeInnerTab) {
+            case 'summary':
+                return (
+                    <SummaryInnerTab
+                        membership={selectedMembership}
+                        schedules={groupSchedules}
+                        transactions={groupTransactions}
+                        wonAuctions={wonAuctions}
+                        cashCollections={groupCashCollections}
+                    />
+                );
+            case 'payment-history':
+                return (
+                    <PaymentHistoryTab
+                        membership={selectedMembership}
+                        schedules={groupSchedules}
+                        transactions={groupTransactions}
+                        cashCollections={groupCashCollections}
+                        groupAuctions={groupAuctions}
+                        customerName={customerName}
+                        onEditCash={handleEditCashCollection}
+                        onDeleteCash={handleDeleteCashCollection}
+                    />
+                );
+            case 'auction-history':
+                return (
+                    <AuctionHistoryInnerTab
+                        membership={selectedMembership}
+                        auctions={groupAuctions}
+                        participants={participants}
+                    />
+                );
+            case 'documents':
+                return (
+                    <View style={styles.placeholderCard}>
+                        <Text style={styles.placeholderTitle}>Documents Module Coming Soon</Text>
+                        <Text style={styles.placeholderText}>
+                            Will display KYC documents (Aadhaar, PAN), signed agreements, and nominee forms once the
+                            customer_documents table is created.
+                        </Text>
+                    </View>
+                );
+            case 'ledger':
+                return (
+                    <LedgerInnerTab
+                        membership={selectedMembership}
+                        schedules={groupSchedules}
+                        transactions={groupTransactions}
+                        auctions={groupAuctions}
+                    />
+                );
+            default:
+                return null;
+        }
+    };
+
     return (
         <View style={styles.container}>
-            {/* Group Selector - Horizontal Chip Strip */}
-            <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                style={styles.groupSelector}
-                contentContainerStyle={styles.groupSelectorContent}
-            >
-                {memberships.map((membership) => {
-                    const isSelected = membership.id === selectedGroupId;
-                    return (
-                        <TouchableOpacity
-                            key={membership.id}
-                            style={[styles.groupChip, isSelected && styles.groupChipActive]}
-                            onPress={() => setSelectedGroupId(membership.id)}
-                        >
-                            <Text style={[styles.groupChipName, isSelected && styles.groupChipNameActive]}>
-                                {membership.chit_groups.name}
-                            </Text>
-                            <Text style={[styles.groupChipMeta, isSelected && styles.groupChipMetaActive]}>
-                                {membership.current_month}/{membership.chit_groups.duration_months} months
-                            </Text>
-                            {membership.ticket_number && (
-                                <Text style={[styles.groupChipTicket, isSelected && styles.groupChipTicketActive]}>
-                                    #{membership.ticket_number}
-                                </Text>
-                            )}
-                            <View
-                                style={[
-                                    styles.groupChipBadge,
-                                    {
-                                        backgroundColor: isSelected
-                                            ? 'rgba(255,255,255,0.3)'
-                                            : membership.bid_status === 'active'
-                                                ? '#DCFCE7'
-                                                : '#FEF3C7',
-                                    },
-                                ]}
-                            >
-                                <Text
-                                    style={[
-                                        styles.groupChipBadgeText,
-                                        {
-                                            color: isSelected
-                                                ? '#FFFFFF'
-                                                : membership.bid_status === 'active'
-                                                    ? '#16A34A'
-                                                    : '#B45309',
-                                        },
-                                    ]}
-                                >
-                                    {membership.bid_status.toUpperCase()}
-                                </Text>
-                            </View>
-                        </TouchableOpacity>
-                    );
-                })}
-            </ScrollView>
-
-            {/* Inner Tabs */}
-            {selectedMembership && (
-                <>
-                    {/* Record Cash Collection Button for Unaccounted Groups */}
-                    {isUnaccountedGroup && !allMonthsCovered && (
-                        <View style={styles.cashButtonContainer}>
+            {/* Fixed header: group chips + tabs */}
+            <View style={styles.headerSection}>
+                <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.groupSelectorContent}
+                >
+                    {memberships.map((membership) => {
+                        const isSelected = membership.id === selectedGroupId;
+                        const chipLabel = getGroupChipLabel(
+                            membership.chit_groups.name,
+                            membership.ticket_number,
+                            membership.chit_groups.value,
+                        );
+                        return (
                             <TouchableOpacity
-                                style={styles.recordCashBtn}
-                                onPress={handleRecordCash}
+                                key={membership.id}
+                                style={[styles.groupChip, isSelected && styles.groupChipActive]}
+                                onPress={() => setSelectedGroupId(membership.id)}
+                                activeOpacity={0.85}
                             >
-                                <Svg width={20} height={20} viewBox="0 0 24 24" fill="#FFFFFF">
-                                    <Path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z" />
-                                </Svg>
-                                <Text style={styles.recordCashBtnText}>Record Cash Collection</Text>
-                            </TouchableOpacity>
-                        </View>
-                    )}
-
-                    <ScrollView
-                        horizontal
-                        showsHorizontalScrollIndicator={false}
-                        style={styles.innerTabsContainer}
-                        contentContainerStyle={styles.innerTabs}
-                    >
-                        {INNER_TABS.map((tab) => {
-                            const isActive = activeInnerTab === tab.key;
-                            return (
-                                <TouchableOpacity
-                                    key={tab.key}
-                                    style={[styles.innerTab, isActive && styles.innerTabActive]}
-                                    onPress={() => setActiveInnerTab(tab.key)}
+                                <View
+                                    style={[
+                                        styles.groupChipDot,
+                                        isSelected ? styles.groupChipDotActive : styles.groupChipDotInactive,
+                                    ]}
+                                />
+                                <Text
+                                    style={[styles.groupChipName, isSelected && styles.groupChipNameActive]}
+                                    numberOfLines={1}
                                 >
-                                    <Text style={[styles.innerTabText, isActive && styles.innerTabTextActive]}>
-                                        {tab.label}
-                                    </Text>
-                                </TouchableOpacity>
-                            );
-                        })}
-                    </ScrollView>
-
-                    {/* Tab Content */}
-                    <ScrollView style={styles.tabContent} contentContainerStyle={styles.tabContentInner}>
-                        {activeInnerTab === 'summary' && selectedMembership && (
-                            <SummaryInnerTab
-                                membership={selectedMembership}
-                                schedules={groupSchedules}
-                                transactions={groupTransactions}
-                                wonAuction={wonAuction}
-                                cashCollections={groupCashCollections}
-                            />
-                        )}
-                        {activeInnerTab === 'payment-history' && selectedMembership && (
-                            <PaymentHistoryInnerTab
-                                membership={selectedMembership}
-                                schedules={groupSchedules}
-                                transactions={groupTransactions}
-                                wonAuction={wonAuction}
-                                cashCollections={groupCashCollections}
-                                onEditCash={handleEditCashCollection}
-                                onDeleteCash={handleDeleteCashCollection}
-                            />
-                        )}
-                        {activeInnerTab === 'auction-history' && selectedMembership && (
-                            <AuctionHistoryInnerTab
-                                membership={selectedMembership}
-                                auctions={groupAuctions}
-                                participants={participants}
-                            />
-                        )}
-                        {activeInnerTab === 'documents' && (
-                            <View style={styles.placeholderCard}>
-                                <Text style={styles.placeholderTitle}>Documents Module Coming Soon</Text>
-                                <Text style={styles.placeholderText}>
-                                    Will display KYC documents (Aadhaar, PAN), signed agreements, and nominee forms once the customer_documents table is created.
-                                    {'\n\n'}
-                                    Required table: customer_documents{'\n'}
-                                    Required columns: id, customer_id, document_type, file_url, uploaded_at, verified_status
+                                    {chipLabel}
                                 </Text>
+                            </TouchableOpacity>
+                        );
+                    })}
+                </ScrollView>
+
+                {selectedMembership && (
+                    <>
+                        {isUnaccountedGroup && !allMonthsCovered && (
+                            <View style={styles.cashButtonContainer}>
+                                <TouchableOpacity style={styles.recordCashBtn} onPress={handleRecordCash}>
+                                    <Svg width={20} height={20} viewBox="0 0 24 24" fill="#FFFFFF">
+                                        <Path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z" />
+                                    </Svg>
+                                    <Text style={styles.recordCashBtnText}>Record Cash Collection</Text>
+                                </TouchableOpacity>
                             </View>
                         )}
-                        {activeInnerTab === 'ledger' && selectedMembership && (
-                            <LedgerInnerTab
-                                membership={selectedMembership}
-                                schedules={groupSchedules}
-                                transactions={groupTransactions}
-                                auctions={groupAuctions}
-                            />
-                        )}
-                    </ScrollView>
-                </>
+
+                        <ScrollView
+                            horizontal
+                            showsHorizontalScrollIndicator={false}
+                            contentContainerStyle={styles.innerTabs}
+                        >
+                            {INNER_TABS.map((tab) => {
+                                const isActive = activeInnerTab === tab.key;
+                                return (
+                                    <TouchableOpacity
+                                        key={tab.key}
+                                        style={[styles.innerTab, isActive && styles.innerTabActive]}
+                                        onPress={() => setActiveInnerTab(tab.key)}
+                                    >
+                                        <Text style={[styles.innerTabText, isActive && styles.innerTabTextActive]}>
+                                            {tab.label}
+                                        </Text>
+                                    </TouchableOpacity>
+                                );
+                            })}
+                        </ScrollView>
+                    </>
+                )}
+            </View>
+
+            {/* Scrollable tab body — no nested flex collapse */}
+            {selectedMembership && (
+                <ScrollView
+                    style={styles.tabContent}
+                    contentContainerStyle={styles.tabContentInner}
+                    showsVerticalScrollIndicator
+                    keyboardShouldPersistTaps="handled"
+                >
+                    {renderTabContent()}
+                </ScrollView>
             )}
 
             {/* Record Cash Collection Modal */}
@@ -312,8 +336,12 @@ export function GroupsTab({ memberships, schedules, transactions, auctions, part
                         setEditingCollection(null);
                     }}
                     membership={selectedMembership}
+                    auctions={groupAuctions}
+                    cashCollections={groupCashCollections}
+                    coveredMonths={fullyCollectedMonths}
                     onSuccess={() => {
-                        // Modal will close and real-time subscription will update the list
+                        setCashModalVisible(false);
+                        setEditingCollection(null);
                     }}
                     existingCollection={editingCollection}
                 />
@@ -330,11 +358,11 @@ interface SummaryInnerTabProps {
     membership: ChitMember;
     schedules: PaymentSchedule[];
     transactions: Transaction[];
-    wonAuction?: Auction;
+    wonAuctions: Auction[];
     cashCollections: CashCollection[];
 }
 
-function SummaryInnerTab({ membership, schedules, transactions, wonAuction, cashCollections }: SummaryInnerTabProps) {
+function SummaryInnerTab({ membership, schedules, transactions, wonAuctions, cashCollections }: SummaryInnerTabProps) {
     const group = membership.chit_groups;
 
     // Calculate metrics
@@ -495,299 +523,35 @@ function SummaryInnerTab({ membership, schedules, transactions, wonAuction, cash
                 </View>
             )}
 
-            {/* Won Auction Info */}
-            {wonAuction && (
-                <View style={[styles.summaryCard, { backgroundColor: '#FEF3C7', borderColor: '#FDE047' }]}>
-                    <Text style={[styles.summaryCardTitle, { color: '#92400E' }]}>🏆 Auction Won</Text>
-                    <View style={styles.summaryRow}>
-                        <Text style={styles.summaryLabel}>Cycle:</Text>
-                        <Text style={styles.summaryValue}>{wonAuction.auction_number}</Text>
-                    </View>
-                    <View style={styles.summaryRow}>
-                        <Text style={styles.summaryLabel}>Prize Amount:</Text>
-                        <Text style={[styles.summaryValue, { color: '#16A34A' }]}>{formatPaise(wonAuction.winner_prize_amount || 0)}</Text>
-                    </View>
-                    <View style={styles.summaryRow}>
-                        <Text style={styles.summaryLabel}>Date Won:</Text>
-                        <Text style={styles.summaryValue}>{formatDateIST(wonAuction.ended_at || wonAuction.scheduled_at)}</Text>
-                    </View>
-                </View>
-            )}
-        </View>
-    );
-}
-
-interface PaymentHistoryInnerTabProps {
-    membership: ChitMember;
-    schedules: PaymentSchedule[];
-    transactions: Transaction[];
-    wonAuction?: Auction;
-    cashCollections: CashCollection[];
-    onEditCash: (collection: CashCollection) => void;
-    onDeleteCash: (collection: CashCollection) => void;
-}
-
-function PaymentHistoryInnerTab({ membership, schedules, transactions, wonAuction, cashCollections, onEditCash, onDeleteCash }: PaymentHistoryInnerTabProps) {
-    const [expandedMonth, setExpandedMonth] = useState<number | null>(null);
-
-    const wonMonth = wonAuction?.auction_number || null;
-    const isUnaccounted = membership.chit_groups.accounting_type === 'unaccounted';
-
-    // Build payment rows
-    const paymentRows = schedules
-        .sort((a, b) => a.month_number - b.month_number)
-        .map(schedule => {
-            // For unaccounted groups, use cash collections instead of transactions
-            if (isUnaccounted) {
-                const cashCollection = cashCollections.find(c => c.month_number === schedule.month_number);
-                const netPaid = cashCollection?.amount || 0;
-                const remaining = Math.max(0, schedule.amount - netPaid);
-                const status = netPaid >= schedule.amount ? 'Full' : netPaid > 0 ? 'Partial' : 'Unpaid';
-                const isOverdue = !cashCollection && new Date(schedule.due_date) < new Date();
-
-                return {
-                    schedule,
-                    cashCollection,
-                    monthTxs: [],
-                    completedTxs: [],
-                    failedTxs: [],
-                    refundedTxs: [],
-                    netPaid,
-                    remaining,
-                    status,
-                    isOverdue,
-                    isLate: false,
-                    daysLate: 0,
-                    isWonMonth: schedule.month_number === wonMonth,
-                    isPostWin: wonMonth !== null && schedule.month_number > wonMonth,
-                };
-            }
-
-            // For accounted groups, use transactions (original logic)
-            const monthTxs = transactions.filter(t =>
-                t.payment_type === 'installment' &&
-                Math.abs(new Date(t.transaction_date).getMonth() - new Date(schedule.due_date).getMonth()) <= 1
-            );
-
-            const completedTxs = monthTxs.filter(t => t.status === 'completed' || t.status === 'success');
-            const failedTxs = monthTxs.filter(t => t.status === 'failed');
-            const refundedTxs = monthTxs.filter(t => t.status === 'refunded');
-
-            const totalPaid = completedTxs.reduce((sum, t) => sum + t.amount, 0);
-            const refunded = refundedTxs.reduce((sum, t) => sum + t.amount, 0);
-            const netPaid = totalPaid - refunded;
-
-            const remaining = Math.max(0, schedule.amount - netPaid);
-            const status = netPaid >= schedule.amount ? 'Full' : netPaid > 0 ? 'Partial' : 'Unpaid';
-            const isOverdue = !schedule.paid && new Date(schedule.due_date) < new Date();
-
-            // Check if late
-            const latestCompletedTx = completedTxs.sort((a, b) =>
-                new Date(b.transaction_date).getTime() - new Date(a.transaction_date).getTime()
-            )[0];
-            const isLate = latestCompletedTx && new Date(latestCompletedTx.transaction_date) > new Date(schedule.due_date);
-            const daysLate = isLate ? Math.floor(
-                (new Date(latestCompletedTx.transaction_date).getTime() - new Date(schedule.due_date).getTime()) / (24 * 60 * 60 * 1000)
-            ) : 0;
-
-            return {
-                schedule,
-                cashCollection: undefined,
-                monthTxs,
-                completedTxs,
-                failedTxs,
-                refundedTxs,
-                netPaid,
-                remaining,
-                status,
-                isOverdue,
-                isLate,
-                daysLate,
-                isWonMonth: schedule.month_number === wonMonth,
-                isPostWin: wonMonth !== null && schedule.month_number > wonMonth,
-            };
-        });
-
-    return (
-        <View>
-            {paymentRows.map(row => (
-                <View key={row.schedule.id} style={[
-                    styles.paymentRow,
-                    row.isOverdue && styles.paymentRowOverdue,
-                    row.isWonMonth && styles.paymentRowWon,
-                ]}>
-                    <TouchableOpacity
-                        style={styles.paymentRowHeader}
-                        onPress={() => setExpandedMonth(expandedMonth === row.schedule.month_number ? null : row.schedule.month_number)}
-                    >
-                        <View style={styles.paymentRowLeft}>
-                            <Text style={styles.paymentMonth}>Month {row.schedule.month_number}</Text>
-                            {row.isWonMonth && <Text style={styles.wonBadge}>🏆 WON</Text>}
-                            {row.isPostWin && <Text style={styles.postWinBadge}>Post-Win</Text>}
-                            <Text style={styles.paymentDueDate}>{formatDateIST(row.schedule.due_date)}</Text>
-                        </View>
-                        <View style={styles.paymentRowRight}>
-                            <Text style={styles.paymentAmount}>{formatPaise(row.schedule.amount)}</Text>
-                            <Text style={[
-                                styles.paymentStatus,
-                                {
-                                    color: row.status === 'Full' ? '#16A34A' :
-                                        row.status === 'Partial' ? '#F59E0B' : '#64748B'
-                                }
-                            ]}>{row.status}</Text>
-                        </View>
-                    </TouchableOpacity>
-
-                    {expandedMonth === row.schedule.month_number && (
-                        <View style={styles.paymentRowExpanded}>
-                            <View style={styles.paymentDetailRow}>
-                                <Text style={styles.paymentDetailLabel}>Amount Due:</Text>
-                                <Text style={styles.paymentDetailValue}>{formatPaise(row.schedule.amount)}</Text>
-                            </View>
-                            {row.schedule.dividend_amount > 0 && (
-                                <View style={styles.paymentDetailRow}>
-                                    <Text style={styles.paymentDetailLabel}>Dividend Applied:</Text>
-                                    <Text style={[styles.paymentDetailValue, { color: '#10B981' }]}>
-                                        -{formatPaise(row.schedule.dividend_amount)}
+            {wonAuctions.length > 0 && (
+                <View style={[styles.summaryCard, styles.wonAuctionSummaryCard]}>
+                    <Text style={[styles.summaryCardTitle, { color: WINNER_HIGHLIGHT.text }]}>
+                        Auction{wonAuctions.length > 1 ? 's' : ''} Won
+                    </Text>
+                    {wonAuctions
+                        .sort((a, b) => (a.auction_number || 0) - (b.auction_number || 0))
+                        .map((wonAuction, idx) => (
+                            <View key={wonAuction.id} style={[styles.wonAuctionEntry, idx > 0 && styles.wonAuctionEntryDivider]}>
+                                <View style={styles.wonAuctionEntryHeader}>
+                                    <Text style={styles.summaryLabel}>Cycle {wonAuction.auction_number}</Text>
+                                    <View style={styles.winnerPill}>
+                                        <Text style={styles.winnerPillText}>WINNER</Text>
+                                    </View>
+                                </View>
+                                <View style={styles.summaryRow}>
+                                    <Text style={styles.summaryLabel}>Prize Amount:</Text>
+                                    <Text style={[styles.summaryValue, { color: '#16A34A' }]}>
+                                        {formatPaise(wonAuction.winner_prize_amount || 0)}
                                     </Text>
                                 </View>
-                            )}
-                            <View style={styles.paymentDetailRow}>
-                                <Text style={styles.paymentDetailLabel}>Amount Paid:</Text>
-                                <Text style={[styles.paymentDetailValue, { color: '#16A34A' }]}>
-                                    {formatPaise(row.netPaid)}
-                                </Text>
+                                <View style={styles.summaryRow}>
+                                    <Text style={styles.summaryLabel}>Date Won:</Text>
+                                    <Text style={styles.summaryValue}>
+                                        {formatDateIST(wonAuction.ended_at || wonAuction.scheduled_at)}
+                                    </Text>
+                                </View>
                             </View>
-                            <View style={styles.paymentDetailRow}>
-                                <Text style={styles.paymentDetailLabel}>Remaining:</Text>
-                                <Text style={[styles.paymentDetailValue, { color: row.remaining > 0 ? '#EF4444' : '#16A34A' }]}>
-                                    {formatPaise(row.remaining)}
-                                </Text>
-                            </View>
-
-                            {row.isLate && (
-                                <View style={styles.lateIndicator}>
-                                    <Text style={styles.lateText}>⏰ Paid {row.daysLate} days late</Text>
-                                </View>
-                            )}
-
-                            {/* Cash Collection Details (Unaccounted Groups) */}
-                            {isUnaccounted && row.cashCollection && (
-                                <View style={styles.cashSection}>
-                                    <View style={styles.cashSectionHeader}>
-                                        <Text style={styles.txSectionTitle}>💵 Cash Collection Recorded</Text>
-                                        <View style={{ flexDirection: 'row', gap: 8 }}>
-                                            <TouchableOpacity
-                                                style={styles.editCashBtn}
-                                                onPress={() => onEditCash(row.cashCollection!)}
-                                            >
-                                                <Svg width={16} height={16} viewBox="0 0 24 24" fill="#01789E">
-                                                    <Path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" />
-                                                </Svg>
-                                            </TouchableOpacity>
-                                            <TouchableOpacity
-                                                style={styles.deleteCashBtn}
-                                                onPress={() => onDeleteCash(row.cashCollection!)}
-                                            >
-                                                <Svg width={16} height={16} viewBox="0 0 24 24" fill="#EF4444">
-                                                    <Path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" />
-                                                </Svg>
-                                            </TouchableOpacity>
-                                        </View>
-                                    </View>
-                                    <View style={styles.txRow}>
-                                        <Text style={styles.txDate}>
-                                            Collected: {formatDateTimeIST(row.cashCollection.recorded_at)}
-                                        </Text>
-                                        <Text style={[styles.txAmount, { color: '#16A34A' }]}>
-                                            {formatPaise(row.cashCollection.amount)}
-                                        </Text>
-                                    </View>
-                                    <View style={styles.cashDenominationGrid}>
-                                        {row.cashCollection.denomination_500 > 0 && (
-                                            <Text style={styles.cashDenomText}>
-                                                ₹500 × {row.cashCollection.denomination_500}
-                                            </Text>
-                                        )}
-                                        {row.cashCollection.denomination_200 > 0 && (
-                                            <Text style={styles.cashDenomText}>
-                                                ₹200 × {row.cashCollection.denomination_200}
-                                            </Text>
-                                        )}
-                                        {row.cashCollection.denomination_100 > 0 && (
-                                            <Text style={styles.cashDenomText}>
-                                                ₹100 × {row.cashCollection.denomination_100}
-                                            </Text>
-                                        )}
-                                        {row.cashCollection.denomination_50 > 0 && (
-                                            <Text style={styles.cashDenomText}>
-                                                ₹50 × {row.cashCollection.denomination_50}
-                                            </Text>
-                                        )}
-                                        {row.cashCollection.denomination_20 > 0 && (
-                                            <Text style={styles.cashDenomText}>
-                                                ₹20 × {row.cashCollection.denomination_20}
-                                            </Text>
-                                        )}
-                                        {row.cashCollection.denomination_10 > 0 && (
-                                            <Text style={styles.cashDenomText}>
-                                                ₹10 × {row.cashCollection.denomination_10}
-                                            </Text>
-                                        )}
-                                    </View>
-                                    {row.cashCollection.notes && (
-                                        <View style={styles.cashNotesBox}>
-                                            <Text style={styles.cashNotesLabel}>Internal Notes:</Text>
-                                            <Text style={styles.cashNotesText}>{row.cashCollection.notes}</Text>
-                                        </View>
-                                    )}
-                                </View>
-                            )}
-
-                            {/* Transaction List (Accounted Groups) */}
-                            {!isUnaccounted && row.completedTxs.length > 0 && (
-                                <View style={styles.txSection}>
-                                    <Text style={styles.txSectionTitle}>Completed Transactions:</Text>
-                                    {row.completedTxs.map(tx => (
-                                        <View key={tx.id} style={styles.txRow}>
-                                            <Text style={styles.txDate}>{formatDateTimeIST(tx.transaction_date)}</Text>
-                                            <Text style={styles.txAmount}>{formatPaise(tx.amount)}</Text>
-                                        </View>
-                                    ))}
-                                </View>
-                            )}
-
-                            {!isUnaccounted && row.failedTxs.length > 0 && (
-                                <View style={styles.txSection}>
-                                    <Text style={[styles.txSectionTitle, { color: '#EF4444' }]}>Failed Attempts:</Text>
-                                    {row.failedTxs.map(tx => (
-                                        <View key={tx.id} style={[styles.txRow, styles.txRowFailed]}>
-                                            <Text style={styles.txDateFailed}>{formatDateTimeIST(tx.transaction_date)}</Text>
-                                            <Text style={styles.txAmountFailed}>{formatPaise(tx.amount)}</Text>
-                                        </View>
-                                    ))}
-                                </View>
-                            )}
-
-                            {!isUnaccounted && row.refundedTxs.length > 0 && (
-                                <View style={styles.txSection}>
-                                    <Text style={[styles.txSectionTitle, { color: '#EF4444' }]}>Refunds:</Text>
-                                    {row.refundedTxs.map(tx => (
-                                        <View key={tx.id} style={styles.txRow}>
-                                            <Text style={styles.txDate}>🔄 {formatDateTimeIST(tx.transaction_date)}</Text>
-                                            <Text style={[styles.txAmount, { color: '#EF4444' }]}>-{formatPaise(tx.amount)}</Text>
-                                        </View>
-                                    ))}
-                                </View>
-                            )}
-                        </View>
-                    )}
-                </View>
-            ))}
-
-            {schedules.length === 0 && (
-                <View style={styles.placeholderCard}>
-                    <Text style={styles.emptyText}>No payment schedules found for this group</Text>
+                        ))}
                 </View>
             )}
         </View>
@@ -805,7 +569,7 @@ function AuctionHistoryInnerTab({ membership, auctions, participants }: AuctionH
         .sort((a, b) => (b.auction_number || 0) - (a.auction_number || 0))
         .map(auction => {
             const participated = participants.some(p => p.auction_id === auction.id);
-            const won = auction.winner_member_id === membership.id;
+            const won = isMemberAuctionWinner(auction, membership.id);
 
             return { auction, participated, won };
         });
@@ -813,45 +577,41 @@ function AuctionHistoryInnerTab({ membership, auctions, participants }: AuctionH
     return (
         <View>
             {auctionRows.map(({ auction, participated, won }) => (
-                <View key={auction.id} style={styles.auctionCard}>
+                <View key={auction.id} style={[styles.auctionCard, won && styles.auctionCardWinner]}>
                     <View style={styles.auctionHeader}>
                         <View>
-                            <Text style={styles.auctionCycle}>Cycle {auction.auction_number}</Text>
+                            <Text style={[styles.auctionCycle, won && { color: WINNER_HIGHLIGHT.text }]}>
+                                Cycle {auction.auction_number}
+                            </Text>
                             <Text style={styles.auctionDate}>{formatDateIST(auction.ended_at || auction.scheduled_at)}</Text>
                         </View>
                         <View style={[
                             styles.auctionBadge,
                             {
-                                backgroundColor: won ? '#EDE9FE' : participated ? '#CCFBF1' : '#F1F5F9',
+                                backgroundColor: won ? WINNER_HIGHLIGHT.badgeBg : participated ? '#CCFBF1' : '#F1F5F9',
+                                borderWidth: won ? 1 : 0,
+                                borderColor: won ? WINNER_HIGHLIGHT.border : 'transparent',
                             }
                         ]}>
                             <Text style={[
                                 styles.auctionBadgeText,
                                 {
-                                    color: won ? '#7C3AED' : participated ? '#0F766E' : '#64748B',
+                                    color: won ? WINNER_HIGHLIGHT.badgeText : participated ? '#0F766E' : '#64748B',
                                 }
                             ]}>
-                                {won ? 'WON' : participated ? 'BID' : 'NO BID'}
+                                {won ? 'WINNER' : participated ? 'BID' : 'NO BID'}
                             </Text>
                         </View>
                     </View>
 
-                    {auction.status === 'completed' && (
+                    {auction.status === 'completed' && won && (
                         <View style={styles.auctionDetails}>
-                            {auction.winner_name && (
-                                <View style={styles.auctionDetailRow}>
-                                    <Text style={styles.auctionDetailLabel}>Winner:</Text>
-                                    <Text style={styles.auctionDetailValue}>{auction.winner_name}</Text>
-                                </View>
-                            )}
-                            {auction.winner_prize_amount !== null && (
-                                <View style={styles.auctionDetailRow}>
-                                    <Text style={styles.auctionDetailLabel}>Prize:</Text>
-                                    <Text style={[styles.auctionDetailValue, { color: '#16A34A' }]}>
-                                        {formatPaise(auction.winner_prize_amount)}
-                                    </Text>
-                                </View>
-                            )}
+                            <View style={styles.auctionDetailRow}>
+                                <Text style={styles.auctionDetailLabel}>Prize Received:</Text>
+                                <Text style={[styles.auctionDetailValue, { color: '#16A34A' }]}>
+                                    {formatPaise(auction.winner_prize_amount || 0)}
+                                </Text>
+                            </View>
                             {auction.discount_amount !== null && (
                                 <View style={styles.auctionDetailRow}>
                                     <Text style={styles.auctionDetailLabel}>Discount:</Text>
@@ -927,17 +687,17 @@ function LedgerInnerTab({ membership, schedules, transactions, auctions }: Ledge
             });
         });
 
-    // Add prize if won
-    const wonAuction = auctions.find(a => a.winner_member_id === membership.id);
-    if (wonAuction && wonAuction.winner_prize_amount) {
-        movements.push({
-            date: wonAuction.ended_at || wonAuction.scheduled_at,
-            desc: `Auction Prize (Cycle ${wonAuction.auction_number})`,
-            debit: 0,
-            credit: wonAuction.winner_prize_amount,
-            type: 'prize'
+    auctions
+        .filter(a => isMemberAuctionWinner(a, membership.id) && a.winner_prize_amount)
+        .forEach(wonAuction => {
+            movements.push({
+                date: wonAuction.ended_at || wonAuction.scheduled_at,
+                desc: `Auction Prize (Cycle ${wonAuction.auction_number})`,
+                debit: 0,
+                credit: wonAuction.winner_prize_amount!,
+                type: 'prize',
+            });
         });
-    }
 
     // Add refunds as credits
     transactions
@@ -1031,7 +791,7 @@ function LedgerInnerTab({ membership, schedules, transactions, auctions }: Ledge
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: '#F8FAFC',
+        backgroundColor: AdminColors.bgTertiary,
     },
     emptyContainer: {
         flex: 1,
@@ -1052,96 +812,92 @@ const styles = StyleSheet.create({
         color: '#64748B',
         textAlign: 'center',
     },
-    groupSelector: {
-        backgroundColor: '#FFFFFF',
+    headerSection: {
+        backgroundColor: AdminColors.bgTertiary,
         borderBottomWidth: 1,
-        borderBottomColor: '#E2E8F0',
+        borderBottomColor: 'rgba(190,200,206,0.5)',
     },
     groupSelectorContent: {
-        paddingHorizontal: 16,
-        paddingVertical: 12,
-        gap: 12,
+        paddingHorizontal: 20,
+        paddingTop: 12,
+        paddingBottom: 8,
+        gap: 10,
+        alignItems: 'center',
     },
     groupChip: {
-        backgroundColor: '#F8FAFC',
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 10,
+        backgroundColor: '#FFFFFF',
         borderRadius: 12,
-        padding: 12,
-        borderWidth: 2,
-        borderColor: '#E2E8F0',
-        minWidth: 160,
+        paddingHorizontal: 16,
+        paddingVertical: 12,
+        borderWidth: 1,
+        borderColor: '#BEC8CE',
+        maxWidth: 200,
+        flexShrink: 0,
     },
     groupChipActive: {
-        backgroundColor: '#0EA5E9',
-        borderColor: '#0284C7',
+        backgroundColor: AdminColors.primaryContainer,
+        borderColor: AdminColors.primaryContainer,
+        shadowColor: '#01789E',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.15,
+        shadowRadius: 8,
+        elevation: 4,
+    },
+    groupChipDot: {
+        width: 8,
+        height: 8,
+        borderRadius: 4,
+    },
+    groupChipDotActive: {
+        backgroundColor: '#54FAEF',
+    },
+    groupChipDotInactive: {
+        backgroundColor: AdminColors.secondary,
     },
     groupChipName: {
-        fontFamily: 'Inter_700Bold',
-        fontSize: 14,
-        color: '#0B1C30',
-        marginBottom: 4,
+        fontFamily: 'SpaceGrotesk_600SemiBold',
+        fontSize: 13,
+        color: '#3F484E',
+        flexShrink: 1,
     },
     groupChipNameActive: {
         color: '#FFFFFF',
     },
-    groupChipMeta: {
-        fontFamily: 'Inter_400Regular',
-        fontSize: 12,
-        color: '#64748B',
-        marginBottom: 4,
-    },
-    groupChipMetaActive: {
-        color: 'rgba(255,255,255,0.9)',
-    },
-    groupChipTicket: {
-        fontFamily: 'Inter_600SemiBold',
-        fontSize: 12,
-        color: '#0EA5E9',
-        marginBottom: 6,
-    },
-    groupChipTicketActive: {
-        color: 'rgba(255,255,255,0.9)',
-    },
-    groupChipBadge: {
-        paddingHorizontal: 8,
-        paddingVertical: 4,
-        borderRadius: 4,
-        alignSelf: 'flex-start',
-    },
-    groupChipBadgeText: {
-        fontFamily: 'Inter_600SemiBold',
-        fontSize: 10,
-    },
-    innerTabsContainer: {
-        backgroundColor: '#FFFFFF',
-        borderBottomWidth: 1,
-        borderBottomColor: '#E2E8F0',
-    },
     innerTabs: {
-        paddingHorizontal: 16,
-        gap: 4,
+        paddingHorizontal: 20,
+        gap: 20,
+        paddingBottom: 0,
     },
     innerTab: {
-        paddingVertical: 10,
-        paddingHorizontal: 12,
+        paddingVertical: 14,
+        paddingHorizontal: 4,
         borderBottomWidth: 2,
         borderBottomColor: 'transparent',
     },
     innerTabActive: {
-        borderBottomColor: '#0EA5E9',
+        borderBottomColor: AdminColors.primary,
     },
     innerTabText: {
         fontFamily: 'Inter_600SemiBold',
-        fontSize: 13,
-        color: '#64748B',
+        fontSize: 12,
+        color: '#3F484E',
+        letterSpacing: 0.5,
     },
     innerTabTextActive: {
-        color: '#0EA5E9',
+        color: AdminColors.primary,
+        fontFamily: 'Inter_700Bold',
     },
     tabContent: {
         flex: 1,
     },
     tabContentInner: {
-        padding: 16,
+        paddingHorizontal: 20,
+        paddingTop: 16,
+        paddingBottom: 120,
+        flexGrow: 0,
     },
     placeholderCard: {
         backgroundColor: '#FFFFFF',
@@ -1232,8 +988,9 @@ const styles = StyleSheet.create({
         backgroundColor: '#FEF2F2',
     },
     paymentRowWon: {
-        borderColor: '#FDE047',
-        backgroundColor: '#FEFCE8',
+        borderColor: WINNER_HIGHLIGHT.borderStrong,
+        borderWidth: 2,
+        backgroundColor: WINNER_HIGHLIGHT.bg,
     },
     paymentRowHeader: {
         flexDirection: 'row',
@@ -1249,17 +1006,41 @@ const styles = StyleSheet.create({
         color: '#0B1C30',
         marginBottom: 4,
     },
-    wonBadge: {
-        fontFamily: 'Inter_600SemiBold',
-        fontSize: 11,
-        color: '#92400E',
+    winnerPill: {
+        alignSelf: 'flex-start',
+        backgroundColor: WINNER_HIGHLIGHT.badgeBg,
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+        borderRadius: 6,
+        borderWidth: 1,
+        borderColor: WINNER_HIGHLIGHT.border,
         marginBottom: 4,
     },
-    postWinBadge: {
-        fontFamily: 'Inter_600SemiBold',
-        fontSize: 11,
-        color: '#7C3AED',
-        marginBottom: 4,
+    winnerPillText: {
+        fontFamily: 'Inter_700Bold',
+        fontSize: 9,
+        color: WINNER_HIGHLIGHT.badgeText,
+        letterSpacing: 0.6,
+    },
+    wonAuctionSummaryCard: {
+        backgroundColor: WINNER_HIGHLIGHT.bg,
+        borderColor: WINNER_HIGHLIGHT.borderStrong,
+        borderWidth: 2,
+    },
+    wonAuctionEntry: {
+        paddingTop: 4,
+    },
+    wonAuctionEntryDivider: {
+        paddingTop: 10,
+        marginTop: 10,
+        borderTopWidth: 1,
+        borderTopColor: WINNER_HIGHLIGHT.border,
+    },
+    wonAuctionEntryHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: 6,
     },
     paymentDueDate: {
         fontFamily: 'Inter_400Regular',
@@ -1359,6 +1140,11 @@ const styles = StyleSheet.create({
         marginBottom: 12,
         borderWidth: 1,
         borderColor: '#E2E8F0',
+    },
+    auctionCardWinner: {
+        backgroundColor: WINNER_HIGHLIGHT.bg,
+        borderColor: WINNER_HIGHLIGHT.borderStrong,
+        borderWidth: 2,
     },
     auctionHeader: {
         flexDirection: 'row',

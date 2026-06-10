@@ -1,15 +1,24 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Modal, TextInput, Alert, ActivityIndicator, RefreshControl, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Image } from 'expo-image';
+import { AppLogo } from '../../../../components/AppLogo';
 import Svg, { Path, Circle } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { supabase } from '../../../lib/supabase';
+import { supabase } from '../../../../lib/supabase';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { apiPost } from '../../../lib/api';
-import { RecordCashCollectionModal } from '../customers/_components/RecordCashCollectionModal';
-import type { ChitMember } from '../customers/_components/types';
+import { apiPost } from '../../../../lib/api';
+import { AuctionSettlementModal } from '../../customers/_components/AuctionSettlementModal';
+import { getAuctionWinnerDisplayName } from '../../../../lib/auctionWinner';
+import {
+  dedupeAuctionCycles,
+  getMemberDueAfterAuction,
+} from '../../../../lib/chitPayments';
+import {
+  isAuctionScheduledDisplay,
+  sanitizePlaceholderAuctionSchedules,
+  getPlaceholderAuctionScheduleDate,
+} from '../../../../lib/auctionUtils';
 
 // ── Step3Review: extracted to avoid IIFE JSX parsing issues ──
 function Step3Review({
@@ -123,28 +132,11 @@ export default function AdminGroupDetail() {
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null);
   const [participation, setParticipation] = useState<'full' | 'half'>('full');
 
-  // Transaction History Modal State
-  const [selectedMemberForTx, setSelectedMemberForTx] = useState<any>(null);
-  const [transactions, setTransactions] = useState<any[]>([]);
   const [auctions, setAuctions] = useState<any[]>([]);
-  const [showLogPayment, setShowLogPayment] = useState(false);
-  const [paymentAmount, setPaymentAmount] = useState('');
-  const [selectedAuctionId, setSelectedAuctionId] = useState<string>('');
-  const [loggingPayment, setLoggingPayment] = useState(false);
-  const [cashModalVisible, setCashModalVisible] = useState(false);
-  const [memberCashCollections, setMemberCashCollections] = useState<any[]>([]);
 
   // Auction Settlement Modal State
   const [showSettlementModal, setShowSettlementModal] = useState(false);
   const [settlementAuction, setSettlementAuction] = useState<any>(null);
-  const [settlementWinnerId, setSettlementWinnerId] = useState('');
-  const [settlementInstallment, setSettlementInstallment] = useState('');
-  const [settlementDividend, setSettlementDividend] = useState('');
-  const [settlementDiscount, setSettlementDiscount] = useState('');
-  const [settlementFinalDue, setSettlementFinalDue] = useState('');
-  const [settlementPrize, setSettlementPrize] = useState('');
-  const [settlementSavings, setSettlementSavings] = useState('');
-  const [savingSettlement, setSavingSettlement] = useState(false);
 
   // Create Auction Modal State
   const [auctionDrafts, setAuctionDrafts] = useState<Record<number, {
@@ -206,30 +198,6 @@ export default function AdminGroupDetail() {
     }
   };
 
-  const commissionRate = 0.05;
-  const shareCount = totalShares > 0 ? totalShares : (memberCount > 0 ? memberCount : capacity);
-  const chitValueRupees = (Number(group?.value || 0) / 100);
-
-  useEffect(() => {
-    const installment = Number(settlementInstallment || baseEmi || 0);
-    const bidAmount = Number(settlementDiscount || 0);
-    const commission = chitValueRupees * commissionRate;
-    const dividendPool = Math.max(bidAmount - commission, 0);
-    const dividendPerShare = shareCount > 0 ? dividendPool / shareCount : 0;
-    const payableInstallment = Math.max(installment - dividendPerShare, 0);
-    const prizeAmount = Math.max(chitValueRupees - bidAmount, 0);
-    const savingsPct = installment > 0 ? (dividendPerShare / installment) * 100 : 0;
-
-    const roundedInstallment = Math.round(baseEmi || 0);
-    if (!settlementInstallment || Number(settlementInstallment) !== roundedInstallment) {
-      setSettlementInstallment(String(roundedInstallment));
-    }
-    setSettlementDividend(String(Math.round(dividendPerShare)));
-    setSettlementFinalDue(String(Math.round(payableInstallment)));
-    setSettlementPrize(String(Math.round(prizeAmount)));
-    setSettlementSavings(savingsPct.toFixed(2));
-  }, [settlementDiscount, chitValueRupees, shareCount, baseEmi, settlementInstallment]);
-
   const fetchMembers = async () => {
     if (!group?.id) return;
     try {
@@ -261,7 +229,18 @@ export default function AdminGroupDetail() {
         .select('*')
         .eq('chit_group_id', group.id)
         .order('auction_number', { ascending: false });
-      setAuctions(data || []);
+      const rows = data || [];
+      const sanitized = await sanitizePlaceholderAuctionSchedules(supabase, rows);
+      if (sanitized) {
+        const { data: refreshed } = await supabase
+          .from('auctions')
+          .select('*')
+          .eq('chit_group_id', group.id)
+          .order('auction_number', { ascending: false });
+        setAuctions(refreshed || []);
+      } else {
+        setAuctions(rows);
+      }
 
       // Auto-sync: for any completed auction, make sure payment_schedules reflects
       // the correct final_due_amount. This repairs stale rows created before the
@@ -310,30 +289,16 @@ export default function AdminGroupDetail() {
     }
   };
 
-  const addMonthsKeepDay = (date: Date, months: number) => {
-    const year = date.getFullYear();
-    const month = date.getMonth() + months;
-    const day = date.getDate();
-    const lastDay = new Date(year, month + 1, 0).getDate();
-    const targetDay = Math.min(day, lastDay);
-    return new Date(year, month, targetDay);
-  };
-
   const ensureAuctionsExist = async (g: any, currentAuctions: any[]) => {
     if (!g?.id) return;
     const totalNeeded = g.no_of_installments || g.duration_months || 0;
     if (totalNeeded <= 0) return;
 
-    const baseDate = g.start_date ? new Date(g.start_date) : new Date();
     const existingNumbers = new Set(currentAuctions.map((a: any) => a.auction_number));
+    const placeholderAt = getPlaceholderAuctionScheduleDate();
     const missing = [];
     for (let i = 1; i <= totalNeeded; i++) {
       if (!existingNumbers.has(i)) {
-        const scheduled = addMonthsKeepDay(baseDate, i - 1);
-        scheduled.setHours(10, 0, 0, 0);
-        const closes = new Date(scheduled);
-        closes.setHours(11, 0, 0, 0);
-
         missing.push({
           chit_group_id: g.id,
           auction_number: i,
@@ -342,8 +307,8 @@ export default function AdminGroupDetail() {
           min_bid: 0,
           max_bid: 0,
           current_bid: 0,
-          scheduled_at: scheduled.toISOString(),
-          closes_at: closes.toISOString(),
+          scheduled_at: placeholderAt,
+          closes_at: placeholderAt,
         });
       }
     }
@@ -405,19 +370,10 @@ export default function AdminGroupDetail() {
     setAuctionDrafts(nextDrafts);
   }, [group, auctions]);
 
-  const deduplicatedAuctions = React.useMemo(() => {
-    const map = new Map<number, any>();
-    const statusPriority: Record<string, number> = { 'live': 3, 'completed': 2, 'upcoming': 1 };
-
-    [...auctions].forEach(a => {
-      const existing = map.get(a.auction_number);
-      if (!existing || (statusPriority[a.status] || 0) > (statusPriority[existing.status] || 0)) {
-        map.set(a.auction_number, a);
-      }
-    });
-
-    return Array.from(map.values()).sort((a, b) => a.auction_number - b.auction_number);
-  }, [auctions]);
+  const deduplicatedAuctions = React.useMemo(
+    () => dedupeAuctionCycles(auctions) as typeof auctions,
+    [auctions],
+  );
 
   useEffect(() => {
     if (!group?.id) return;
@@ -427,15 +383,12 @@ export default function AdminGroupDetail() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chit_groups', filter: `id=eq.${group.id}` }, fetchGroup)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chit_members', filter: `chit_group_id=eq.${group.id}` }, fetchMembers)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'auctions', filter: `chit_group_id=eq.${group.id}` }, fetchAuctions)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'chit_member_transactions' }, () => {
-        if (selectedMemberForTx?.id) fetchTransactions(selectedMemberForTx.id);
-      })
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [group?.id, selectedMemberForTx?.id]);
+  }, [group?.id]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -727,253 +680,26 @@ export default function AdminGroupDetail() {
   const formatRupees = (value: number | null | undefined) =>
     `₹${Math.round(Number(value || 0) / 100).toLocaleString('en-IN')}`;
 
-  const openSettlementModal = async (auction: any) => {
-    setSettlementAuction(auction);
-    setShowSettlementModal(true);
+  const handleOpenSettlement = (auction: any) => {
+    const open = () => {
+      setSettlementAuction(auction);
+      setShowSettlementModal(true);
+    };
 
-    // Always try to auto-populate from the actual highest bid in auction_bids.
-    // This covers:
-    //  a) Auction ended via "Stop Bidding" (discount_amount not yet written)
-    //  b) Re-opening a settled auction to review/correct values
-    try {
-      const { data: topBidRow } = await supabase
-        .from('auction_bids')
-        .select('bid_amount, customer_id, bidder_name, customers(full_name)')
-        .eq('auction_id', auction.id)
-        .eq('is_retracted', false)
-        .order('bid_amount', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (topBidRow && topBidRow.bid_amount > 0) {
-        // Auto-populate discount from highest bid
-        setSettlementDiscount(String(topBidRow.bid_amount / 100));
-
-        // Auto-select the winning member based on their customer_id
-        if (topBidRow.customer_id) {
-          const winnerMember = members.find(m => m.customer_id === topBidRow.customer_id);
-          if (winnerMember) {
-            setSettlementWinnerId(winnerMember.id);
-          }
-        }
-      } else {
-        // No bids — fall back to whatever was previously saved on the auction row
-        setSettlementDiscount(String((auction?.discount_amount || 0) / 100 || ''));
-        setSettlementWinnerId(auction?.winner_member_id || '');
-      }
-    } catch {
-      // On any error fall back gracefully
-      setSettlementDiscount(String((auction?.discount_amount || 0) / 100 || ''));
-      setSettlementWinnerId(auction?.winner_member_id || '');
-    }
-  };
-
-  const handleSaveSettlement = async () => {
-    if (!settlementAuction?.id || !group?.id) return;
-
-    const toPaise = (val: string) => Math.max(0, Math.round(Number(val || 0) * 100));
-    const finalDuePaise = toPaise(settlementFinalDue);
-    const dividendPaise = toPaise(settlementDividend);
-    const auctionNumber = settlementAuction.auction_number;
-
-    setSavingSettlement(true);
-    try {
-      // 1. Update the auction row with all settlement fields
-      const { error: auctionError } = await supabase
-        .from('auctions')
-        .update({
-          winner_member_id: settlementWinnerId || null,
-          status: 'completed',
-          installment_due: toPaise(String(baseEmi || 0)),
-          dividend_amount: dividendPaise,
-          discount_amount: toPaise(settlementDiscount),
-          final_due_amount: finalDuePaise,
-          winner_prize_amount: toPaise(settlementPrize),
-        })
-        .eq('id', settlementAuction.id);
-
-      if (auctionError) throw auctionError;
-
-      // 2. Directly update payment_schedules for every member of this group —
-      //    no backend needed. This is the source of truth the member app reads.
-      if (auctionNumber != null) {
-        // Get all chit_member IDs for this group
-        const { data: groupMembers, error: membersError } = await supabase
-          .from('chit_members')
-          .select('id, participation_share')
-          .eq('chit_group_id', group.id);
-
-        if (membersError) throw membersError;
-
-        if (groupMembers && groupMembers.length > 0) {
-          // Update each member's payment schedule row for this month
-          const updatePromises = groupMembers.map((member: any) => {
-            const share = Number(member.participation_share || 1);
-            // Pro-rate for half-shares; full share members pay full amount
-            const memberFinalDue = Math.round(finalDuePaise * share);
-            const memberDividend = Math.round(dividendPaise * share);
-
-            return supabase
-              .from('payment_schedules')
-              .update({
-                amount: memberFinalDue,
-                dividend_amount: memberDividend,
-              })
-              .eq('chit_member_id', member.id)
-              .eq('month_number', auctionNumber);
-          });
-
-          const results = await Promise.all(updatePromises);
-          const updateError = results.find(r => r.error);
-          if (updateError?.error) {
-            // Non-fatal: log but don't block — the auctions table is the primary source
-            console.warn('payment_schedules update partial failure:', updateError.error.message);
-          }
-        }
-      }
-
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert('Settlement Saved', `Auction #${auctionNumber} settled. Members' installment updated to ₹${Math.round(finalDuePaise / 100).toLocaleString('en-IN')}.`);
-      setShowSettlementModal(false);
-      fetchAuctions();
-
-      // 3. Try backend API for push notifications only (non-critical)
-      try {
-        await apiPost('/api/auctions/notify-installments', {
-          auctionId: settlementAuction.id,
-          message: `Installment for Auction #${auctionNumber || ''} is due. Please pay now.`,
-        });
-      } catch (notifyErr) {
-        // Ignore — push notifications are non-critical
-        console.warn('Push notification failed (non-critical):', notifyErr);
-      }
-    } catch (err: any) {
-      Alert.alert('Error', err?.message || 'Failed to save settlement.');
-    } finally {
-      setSavingSettlement(false);
-    }
-  };
-
-  const handleRemoveMember = (member: any) => {
-    if (!member?.id) return;
-    Alert.alert(
-      'Remove Member',
-      `Are you sure you want to remove ${member?.customers?.full_name || 'this member'}? All their transaction history will be permanently deleted.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Remove',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              const { error } = await supabase.from('chit_members').delete().eq('id', member.id);
-              if (error) throw error;
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              setSelectedMemberForTx(null);
-              fetchMembers();
-            } catch (err: any) {
-              Alert.alert('Error', err.message);
-            }
-          }
-        }
-      ]
-    );
-  };
-
-  // --- TRANSACTION / CASH COLLECTION LOGIC ---
-  const buildCashMembership = (member: any): ChitMember => ({
-    id: member.id,
-    chit_group_id: group.id,
-    customer_id: member.customer_id,
-    ticket_number: member.ticket_number ? String(member.ticket_number) : null,
-    current_month: member.current_month || 1,
-    bid_status: member.bid_status || 'active',
-    joined_at: member.joined_at || new Date().toISOString(),
-    chit_groups: {
-      id: group.id,
-      name: group.name,
-      value: group.value,
-      duration_months: group.duration_months,
-      monthly_installment: group.monthly_installment,
-      status: group.status,
-      start_date: group.start_date ?? null,
-      accounting_type: group.accounting_type || 'unaccounted',
-    },
-  });
-
-  const openMemberTransactions = async (member: any, displayTicket: number) => {
-    const memberWithTicket = { ...member, display_ticket: displayTicket };
-    setSelectedMemberForTx(memberWithTicket);
-    setShowLogPayment(false);
-    if (isUnaccountedGroup) {
-      fetchCashCollections(member.id);
-    } else {
-      fetchTransactions(member.id);
-    }
-  };
-
-  const fetchCashCollections = async (chitMemberId: string) => {
-    try {
-      const { data } = await supabase
-        .from('cash_collections')
-        .select('*')
-        .eq('chit_member_id', chitMemberId)
-        .order('month_number', { ascending: true });
-      setMemberCashCollections(data || []);
-    } catch (err) {
-      console.error('Error fetching cash collections:', err);
-    }
-  };
-
-  const fetchTransactions = async (chitMemberId: string) => {
-    try {
-      const { data } = await supabase
-        .from('chit_member_transactions')
-        .select('*, auctions(auction_number)')
-        .eq('chit_member_id', chitMemberId)
-        .order('transaction_date', { ascending: false });
-      setTransactions(data || []);
-    } catch (err) {
-      console.error('Error fetching tx:', err);
-    }
-  };
-
-  const handleLogPayment = async () => {
-    if (!selectedMemberForTx || !selectedAuctionId || !paymentAmount) {
-      Alert.alert('Error', 'Please enter amount and select an auction.');
+    if (auction.status === 'live') {
+      Alert.alert(
+        'Manual Settlement',
+        'This auction is currently live in the app. Only use manual settlement if it was conducted outside the app.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Continue', onPress: open },
+        ],
+      );
       return;
     }
 
-    const amountInPaise = Math.round(parseFloat(paymentAmount) * 100);
-    if (isNaN(amountInPaise) || amountInPaise <= 0) {
-      Alert.alert('Error', 'Invalid amount.');
-      return;
-    }
-
-    setLoggingPayment(true);
-    try {
-      const { error } = await supabase.from('chit_member_transactions').insert([{
-        chit_member_id: selectedMemberForTx.id,
-        auction_id: selectedAuctionId,
-        amount: amountInPaise,
-        payment_type: 'installment',
-        status: 'completed',
-      }]);
-
-      if (error) throw error;
-
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setPaymentAmount('');
-      setSelectedAuctionId('');
-      setShowLogPayment(false);
-      fetchTransactions(selectedMemberForTx.id);
-    } catch (err: any) {
-      Alert.alert('Error', err.message);
-    } finally {
-      setLoggingPayment(false);
-    }
+    open();
   };
-
 
   const filteredCustomers = customers.filter(c => {
     const matchesSearch = c.full_name?.toLowerCase().includes(searchQuery.toLowerCase()) || c.phone?.includes(searchQuery);
@@ -1000,13 +726,7 @@ export default function AdminGroupDetail() {
             <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
           </Svg>
         </TouchableOpacity>
-        <View style={styles.avatarContainer}>
-          <Image
-            source={require('../../../assets/cropped_logo.png')}
-            style={styles.avatar}
-            contentFit="contain"
-          />
-        </View>
+        <AppLogo size={36} />
         <View style={styles.headerTitleBox}>
           <Text style={styles.appBarTitle} numberOfLines={1}>{group?.name || 'Group'}</Text>
           <Text style={styles.appBarSubtitle}>{group?.group_code || id} • {group?.duration_months || 0} Months</Text>
@@ -1072,32 +792,52 @@ export default function AdminGroupDetail() {
         </View>
 
         {/* Enrollment Status */}
-        <View style={styles.healthCard}>
-          <View style={styles.healthLeft}>
-            <Text style={styles.healthTitle}>Enrollment Status</Text>
-            <Text style={styles.healthSub}>{totalShares} of {capacity} shares filled</Text>
-            <View style={{ marginTop: 12 }}>
-              <View style={styles.healthLegendRow}>
-                <View style={[styles.legendDot, { backgroundColor: '#10B981' }]} />
-                <Text style={styles.legendText}>Enrolled ({totalShares})</Text>
+        <View style={styles.enrollmentBlock}>
+          <View style={styles.healthCard}>
+            <View style={styles.healthLeft}>
+              <Text style={styles.healthTitle}>Enrollment Status</Text>
+              <Text style={styles.healthSub}>{totalShares} of {capacity} shares filled</Text>
+              <View style={{ marginTop: 12 }}>
+                <View style={styles.healthLegendRow}>
+                  <View style={[styles.legendDot, { backgroundColor: '#10B981' }]} />
+                  <Text style={styles.legendText}>Enrolled ({totalShares})</Text>
+                </View>
+                <View style={styles.healthLegendRow}>
+                  <View style={[styles.legendDot, { backgroundColor: '#F59E0B' }]} />
+                  <Text style={styles.legendText}>Available ({capacity - totalShares})</Text>
+                </View>
               </View>
-              <View style={styles.healthLegendRow}>
-                <View style={[styles.legendDot, { backgroundColor: '#F59E0B' }]} />
-                <Text style={styles.legendText}>Available ({capacity - totalShares})</Text>
+            </View>
+            <View style={styles.progressCircle}>
+              <Svg width={100} height={100} viewBox="0 0 100 100">
+                <Circle cx="50" cy="50" r="40" stroke="#F1F5F9" strokeWidth="12" fill="none" />
+                <Circle cx="50" cy="50" r="40" stroke="#10B981" strokeWidth="12" fill="none"
+                  strokeDasharray="251" strokeDashoffset={String(251 - (totalShares / capacity) * 251)}
+                  strokeLinecap="round" transform="rotate(-90 50 50)" />
+              </Svg>
+              <View style={styles.circleInner}>
+                <Text style={styles.circleText}>{capacity > 0 ? Math.round((totalShares / capacity) * 100) : 0}%</Text>
               </View>
             </View>
           </View>
-          <View style={styles.progressCircle}>
-            <Svg width={100} height={100} viewBox="0 0 100 100">
-              <Circle cx="50" cy="50" r="40" stroke="#F1F5F9" strokeWidth="12" fill="none" />
-              <Circle cx="50" cy="50" r="40" stroke="#10B981" strokeWidth="12" fill="none"
-                strokeDasharray="251" strokeDashoffset={String(251 - (totalShares / capacity) * 251)}
-                strokeLinecap="round" transform="rotate(-90 50 50)" />
+          <TouchableOpacity
+            style={styles.viewMembersBtn}
+            onPress={() => router.push(`/(admin)/groups/${id}/members`)}
+            activeOpacity={0.85}
+          >
+            <View style={styles.viewMembersBtnLeft}>
+              <Svg width={18} height={18} viewBox="0 0 24 24" fill="#01789E">
+                <Path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z" />
+              </Svg>
+              <View>
+                <Text style={styles.viewMembersBtnTitle}>View Enrolled Members</Text>
+                <Text style={styles.viewMembersBtnSub}>{members.length} member{members.length === 1 ? '' : 's'} · Tap for payment history</Text>
+              </View>
+            </View>
+            <Svg width={20} height={20} viewBox="0 0 24 24" fill="#94A3B8">
+              <Path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z" />
             </Svg>
-            <View style={styles.circleInner}>
-              <Text style={styles.circleText}>{capacity > 0 ? Math.round((totalShares / capacity) * 100) : 0}%</Text>
-            </View>
-          </View>
+          </TouchableOpacity>
         </View>
 
         {/* Monthly Auctions Roadmap */}
@@ -1116,7 +856,7 @@ export default function AdminGroupDetail() {
               const isCompleted = auction.status === 'completed';
               const isLive = auction.status === 'live';
               const isUpcoming = auction.status === 'upcoming';
-              const isScheduled = !!auction.scheduled_at;
+              const isScheduled = isAuctionScheduledDisplay(auction);
               const isLast = idx === deduplicatedAuctions.length - 1;
 
               let statusColor = '#CBD5E1';
@@ -1134,11 +874,7 @@ export default function AdminGroupDetail() {
                     {!isLast && <View style={[styles.timelineLine, { backgroundColor: isCompleted ? '#005E7D' : '#E2E8F0' }]} />}
                   </View>
 
-                  <TouchableOpacity
-                    style={[styles.timelineCard, isLive && styles.timelineCardLive, isCompleted && styles.timelineCardCompleted]}
-                    onPress={() => isCompleted ? openSettlementModal(auction) : handleOpenScheduleModal(auction)}
-                    activeOpacity={0.7}
-                  >
+                  <View style={[styles.timelineCard, isLive && styles.timelineCardLive, isCompleted && styles.timelineCardCompleted]}>
                     <View style={styles.timelineCardHeader}>
                       <View>
                         <Text style={styles.timelineMonth}>Auction #{auction.auction_number}</Text>
@@ -1155,16 +891,31 @@ export default function AdminGroupDetail() {
 
                     {isCompleted ? (
                       <View style={styles.timelineSummary}>
-                        <View style={styles.summaryItem}>
-                          <Text style={styles.summaryLabel}>WINNER</Text>
-                          <Text style={styles.summaryVal} numberOfLines={1}>{auction.winner_name || 'Member'}</Text>
+                        <View style={styles.timelineResultRow}>
+                          <View style={styles.summaryItem}>
+                            <Text style={styles.summaryLabel}>WINNER</Text>
+                            <Text style={styles.summaryVal} numberOfLines={1}>
+                              {getAuctionWinnerDisplayName(auction, members)}
+                            </Text>
+                          </View>
+                          <View style={styles.summaryItem}>
+                            <Text style={styles.summaryLabel}>PRIZE</Text>
+                            <Text style={[styles.summaryVal, { color: '#10B981' }]}>{formatRupees(auction.winner_prize_amount)}</Text>
+                          </View>
                         </View>
-                        <View style={styles.summaryItem}>
-                          <Text style={styles.summaryLabel}>PRIZE</Text>
-                          <Text style={[styles.summaryVal, { color: '#10B981' }]}>{formatRupees(auction.winner_prize_amount)}</Text>
-                        </View>
+                        {(() => {
+                          const payable = getMemberDueAfterAuction(auction, group?.monthly_installment || 0);
+                          if (payable == null) return null;
+                          return (
+                            <View style={styles.timelinePayableBar}>
+                              <Text style={styles.timelinePayableLabel}>Payable Installment</Text>
+                              <Text style={styles.timelinePayableValue}>{formatRupees(payable)}</Text>
+                            </View>
+                          );
+                        })()}
                       </View>
-                    ) : (
+                    ) : null}
+                    {!isCompleted && (
                       <View style={styles.timelineActions}>
                         {isLive ? (
                           <TouchableOpacity style={styles.timelineActionBtnLive} onPress={() => router.push('/(admin)/auctions/live')}>
@@ -1182,52 +933,31 @@ export default function AdminGroupDetail() {
                         )}
                       </View>
                     )}
-                  </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[styles.timelineSettlementBtn, isCompleted && styles.timelineSettlementBtnCompleted]}
+                      onPress={() => handleOpenSettlement(auction)}
+                      activeOpacity={0.85}
+                    >
+                      <Svg width={14} height={14} viewBox="0 0 24 24" fill={isCompleted ? '#005E7D' : '#01789E'}>
+                        <Path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 14l-5-5 1.41-1.41L12 14.17l7.59-7.59L19 8l-9 9z" />
+                      </Svg>
+                      <Text style={[styles.timelineSettlementBtnText, isCompleted && styles.timelineSettlementBtnTextCompleted]}>
+                        {isCompleted ? 'EDIT SETTLEMENT' : 'SET AUCTION SETTLEMENT'}
+                      </Text>
+                    </TouchableOpacity>
+                    {!isCompleted && (
+                      <Text style={styles.timelineSettlementHint}>
+                        For auctions held outside the app — unlocks collection for this cycle
+                      </Text>
+                    )}
+                  </View>
                 </View>
               );
             })}
           </View>
         </View>
 
-        {/* Enrolled Members */}
-        <View style={styles.membersSection}>
-          <Text style={styles.sectionTitle}>Enrolled Members ({members.length})</Text>
-          <Text style={{ fontFamily: 'Inter_400Regular', fontSize: 12, color: '#64748B', marginBottom: 12, marginLeft: 4 }}>Tap a member to view transaction history.</Text>
-          {members.length === 0 ? (
-            <Text style={{ fontFamily: 'Inter_400Regular', color: '#94A3B8', textAlign: 'center', marginTop: 24 }}>
-              No members enrolled yet. Tap "Add Member" above.
-            </Text>
-          ) : (
-            members.map((m, index) => {
-              const displayTicket = index + 1;
-              const name = m.customers?.full_name || `Member #${displayTicket}`;
-              const initial = name.charAt(0).toUpperCase();
-              const isHalf = m.participation_type === 'half';
-
-              return (
-                <TouchableOpacity key={m.id} style={styles.memberCard} onPress={() => openMemberTransactions(m, displayTicket)}>
-                  <View style={styles.memberInfo}>
-                    <View style={styles.avatarMini}><Text style={styles.avatarMiniText}>{initial}</Text></View>
-                    <View>
-                      <Text style={styles.memberName}>{name}</Text>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
-                        <Text style={styles.memberId}>Ticket #{displayTicket}</Text>
-                        <View style={[styles.partBadge, { backgroundColor: isHalf ? '#FEF2F2' : '#EFF6FF' }]}>
-                          <Text style={[styles.partBadgeText, { color: isHalf ? '#DC2626' : '#2563EB' }]}>
-                            {isHalf ? '½ Share' : '1 Share'}
-                          </Text>
-                        </View>
-                      </View>
-                    </View>
-                  </View>
-                  <Svg width={20} height={20} viewBox="0 0 24 24" fill="#CBD5E1">
-                    <Path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z" />
-                  </Svg>
-                </TouchableOpacity>
-              );
-            })
-          )}
-        </View>
       </ScrollView>
 
       {/* --- ADD MEMBER MODAL --- */}
@@ -1333,305 +1063,21 @@ export default function AdminGroupDetail() {
         </SafeAreaView>
       </Modal>
 
-      {/* --- TRANSACTION HISTORY MODAL --- */}
-      <Modal visible={!!selectedMemberForTx} animationType="slide" presentationStyle="pageSheet">
-        <SafeAreaView style={{ flex: 1, backgroundColor: '#F8FAFC' }}>
-          <View style={[styles.modalHeader, { backgroundColor: '#FFFFFF' }]}>
-            <TouchableOpacity onPress={() => { setSelectedMemberForTx(null); setShowLogPayment(false); }} style={styles.closeBtn}>
-              <Svg width={24} height={24} viewBox="0 0 24 24" fill="#64748B">
-                <Path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
-              </Svg>
-            </TouchableOpacity>
-            <View style={{ alignItems: 'center' }}>
-              <Text style={styles.modalTitle}>Payment History</Text>
-              <Text style={styles.appBarSubtitle}>{selectedMemberForTx?.customers?.full_name} • Ticket #{selectedMemberForTx?.display_ticket}</Text>
-            </View>
-            <TouchableOpacity onPress={() => handleRemoveMember(selectedMemberForTx)} style={[styles.closeBtn, { backgroundColor: '#FEF2F2' }]}>
-              <Svg width={20} height={20} viewBox="0 0 24 24" fill="#EF4444">
-                <Path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" />
-              </Svg>
-            </TouchableOpacity>
-          </View>
 
-          {!showLogPayment ? (
-            <>
-              <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 100 }}>
-                {/* Summary Card */}
-                <View style={styles.txSummaryCard}>
-                  <Text style={styles.txSummaryLabel}>Total Amount Paid</Text>
-                  <Text style={styles.txSummaryValue}>
-                    ₹{(
-                      (isUnaccountedGroup
-                        ? memberCashCollections.reduce((sum, cc) => sum + (cc.amount || 0), 0)
-                        : transactions.reduce((sum, tx) => sum + (tx.amount || 0), 0)) / 100
-                    ).toLocaleString('en-IN')}
-                  </Text>
-                  <View style={styles.txSummaryDivider} />
-                  <View style={styles.txSummaryRow}>
-                    <Text style={styles.txSummarySubText}>
-                      {isUnaccountedGroup
-                        ? `${memberCashCollections.length} Cash Collections`
-                        : `${transactions.length} Transactions`}
-                    </Text>
-                    <View style={styles.statusBadge}>
-                      <Text style={[styles.statusText, { color: isUnaccountedGroup ? '#9333EA' : '#10B981' }]}>
-                        {isUnaccountedGroup ? 'CASH ONLY' : 'ACTIVE'}
-                      </Text>
-                    </View>
-                  </View>
-                </View>
-
-                <Text style={styles.sectionTitle}>
-                  {isUnaccountedGroup ? 'Cash Collections' : 'Recent Transactions'}
-                </Text>
-
-                {isUnaccountedGroup ? (
-                  memberCashCollections.length === 0 ? (
-                    <View style={{ alignItems: 'center', marginTop: 40, padding: 30, backgroundColor: '#FFFFFF', borderRadius: 16, borderWidth: 1, borderColor: '#F1F5F9' }}>
-                      <Text style={{ fontFamily: 'SpaceGrotesk_600SemiBold', color: '#0F172A', fontSize: 16, marginBottom: 8 }}>No Cash Collections Yet</Text>
-                      <Text style={{ fontFamily: 'Inter_400Regular', color: '#64748B', fontSize: 13, textAlign: 'center' }}>Record the first cash collection with denomination breakdown.</Text>
-                    </View>
-                  ) : (
-                    memberCashCollections.map(cc => {
-                      const monthlyDue = group?.monthly_installment || 0;
-                      const status = cc.amount >= monthlyDue ? 'Full' : cc.amount > 0 ? 'Partial' : 'Unpaid';
-                      const remaining = Math.max(0, monthlyDue - cc.amount);
-                      return (
-                        <View key={cc.id} style={styles.txRow}>
-                          <View style={[styles.txIconBoxAlt, { backgroundColor: '#FAF5FF' }]}>
-                            <Text style={{ fontSize: 18 }}>💵</Text>
-                          </View>
-                          <View style={{ flex: 1 }}>
-                            <Text style={styles.txTitleAlt}>Month {cc.month_number} · {status}</Text>
-                            <Text style={styles.txDateAlt}>
-                              {formatDate(new Date(cc.recorded_at))} • {formatTime(new Date(cc.recorded_at))}
-                            </Text>
-                            {status === 'Partial' && (
-                              <Text style={{ fontFamily: 'Inter_600SemiBold', fontSize: 11, color: '#D97706', marginTop: 4 }}>
-                                ₹{(remaining / 100).toLocaleString('en-IN')} remaining
-                              </Text>
-                            )}
-                          </View>
-                          <View style={{ alignItems: 'flex-end' }}>
-                            <Text style={styles.txAmountAlt}>₹{(cc.amount / 100).toLocaleString('en-IN')}</Text>
-                            <Text style={styles.txStatusAlt}>Cash</Text>
-                          </View>
-                        </View>
-                      );
-                    })
-                  )
-                ) : transactions.length === 0 ? (
-                  <View style={{ alignItems: 'center', marginTop: 40, padding: 30, backgroundColor: '#FFFFFF', borderRadius: 16, borderWidth: 1, borderColor: '#F1F5F9' }}>
-                    <Svg width={48} height={48} viewBox="0 0 24 24" fill="#CBD5E1" style={{ marginBottom: 16 }}>
-                      <Path d="M21 18v1c0 1.1-.9 2-2 2H5c-1.11 0-2-.9-2-2V5c0-1.1.89-2 2-2h14c1.1 0 2 .9 2 2v1h-9c-1.11 0-2 .9-2 2v8c0 1.1.89 2 2 2h9zm-9-2h10V8H12v8zm4-2.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z" />
-                    </Svg>
-                    <Text style={{ fontFamily: 'SpaceGrotesk_600SemiBold', color: '#0F172A', fontSize: 16, marginBottom: 8 }}>No Payments Yet</Text>
-                    <Text style={{ fontFamily: 'Inter_400Regular', color: '#64748B', fontSize: 13, textAlign: 'center' }}>This member hasn't made any payments for this group yet.</Text>
-                  </View>
-                ) : (
-                  transactions.map(tx => (
-                    <View key={tx.id} style={styles.txRow}>
-                      <View style={styles.txIconBoxAlt}>
-                        <Svg width={20} height={20} viewBox="0 0 24 24" fill="#005E7D">
-                          <Path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" />
-                        </Svg>
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.txTitleAlt}>Auction #{tx.auctions?.auction_number || '?'}</Text>
-                        <Text style={styles.txDateAlt}>
-                          {formatDate(new Date(tx.transaction_date))} • {formatTime(new Date(tx.transaction_date))}
-                        </Text>
-                      </View>
-                      <View style={{ alignItems: 'flex-end' }}>
-                        <Text style={styles.txAmountAlt}>+ ₹{(tx.amount / 100).toLocaleString('en-IN')}</Text>
-                        <Text style={styles.txStatusAlt}>Success</Text>
-                      </View>
-                    </View>
-                  ))
-                )}
-              </ScrollView>
-              <View style={{ padding: 20, backgroundColor: '#FFFFFF', borderTopWidth: 1, borderTopColor: '#F1F5F9', position: 'absolute', bottom: 0, width: '100%' }}>
-                {isUnaccountedGroup ? (
-                  <TouchableOpacity
-                    style={[styles.executeBtn, { flex: 0, backgroundColor: '#9333EA' }]}
-                    onPress={() => setCashModalVisible(true)}
-                  >
-                    <Text style={styles.executeBtnText}>RECORD CASH COLLECTION</Text>
-                  </TouchableOpacity>
-                ) : (
-                  <TouchableOpacity style={[styles.executeBtn, { flex: 0 }]} onPress={() => setShowLogPayment(true)}>
-                    <Text style={styles.executeBtnText}>LOG NEW PAYMENT</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-            </>
-          ) : (
-            <ScrollView contentContainerStyle={{ padding: 20 }}>
-              <TouchableOpacity onPress={() => setShowLogPayment(false)} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 24 }}>
-                <Svg width={20} height={20} viewBox="0 0 24 24" fill="#64748B"><Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" /></Svg>
-                <Text style={{ fontFamily: 'Inter_500Medium', color: '#64748B', marginLeft: 8 }}>Back to History</Text>
-              </TouchableOpacity>
-
-              <Text style={styles.sectionTitle}>Select Auction Cycle</Text>
-              {auctions.length === 0 ? (
-                <Text style={{ fontFamily: 'Inter_400Regular', color: '#94A3B8', marginBottom: 20 }}>No auctions exist for this group yet.</Text>
-              ) : (
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 24 }}>
-                  {auctions.map(a => (
-                    <TouchableOpacity
-                      key={a.id}
-                      style={[styles.auctionChip, selectedAuctionId === a.id && styles.auctionChipActive]}
-                      onPress={() => setSelectedAuctionId(a.id)}
-                    >
-                      <Text style={[styles.auctionChipText, selectedAuctionId === a.id && styles.auctionChipTextActive]}>
-                        Auction #{a.auction_number}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              )}
-
-              <Text style={styles.sectionTitle}>Payment Amount (₹)</Text>
-              <TextInput
-                style={[styles.searchInput, { fontSize: 24, fontFamily: 'SpaceGrotesk_700Bold', paddingVertical: 16 }]}
-                placeholder="0.00"
-                keyboardType="numeric"
-                value={paymentAmount}
-                onChangeText={setPaymentAmount}
-              />
-              <Text style={{ fontFamily: 'Inter_400Regular', fontSize: 12, color: '#64748B', marginTop: 8, marginBottom: 32 }}>
-                Enter partial or full amount paid by the member.
-              </Text>
-
-              <TouchableOpacity
-                style={[styles.executeBtn, (!selectedAuctionId || !paymentAmount) && { opacity: 0.5 }]}
-                onPress={handleLogPayment}
-                disabled={loggingPayment || !selectedAuctionId || !paymentAmount}
-              >
-                {loggingPayment ? <ActivityIndicator color="#0F172A" /> : <Text style={styles.executeBtnText}>SAVE PAYMENT</Text>}
-              </TouchableOpacity>
-            </ScrollView>
-          )}
-        </SafeAreaView>
-      </Modal>
-
-      {/* --- AUCTION SETTLEMENT MODAL --- */}
-      <Modal visible={showSettlementModal} animationType="slide" presentationStyle="pageSheet">
-        <SafeAreaView style={{ flex: 1, backgroundColor: '#FFFFFF' }}>
-          <View style={styles.modalHeader}>
-            <TouchableOpacity onPress={() => setShowSettlementModal(false)} style={styles.closeBtn}>
-              <Svg width={24} height={24} viewBox="0 0 24 24" fill="#64748B">
-                <Path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
-              </Svg>
-            </TouchableOpacity>
-            <Text style={styles.modalTitle}>Set Auction Settlement</Text>
-            <View style={{ width: 40 }} />
-          </View>
-
-          <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 40 }}>
-            <Text style={styles.sectionTitle}>Winner Selection</Text>
-            {members.length === 0 ? (
-              <Text style={styles.emptyNote}>No members to select.</Text>
-            ) : (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 20 }}>
-                {members.map((m, idx) => {
-                  const name = m.customers?.full_name || `Member #${idx + 1}`;
-                  const isActive = settlementWinnerId === m.id;
-                  return (
-                    <TouchableOpacity
-                      key={m.id}
-                      style={[styles.auctionChip, isActive && styles.auctionChipActive]}
-                      onPress={() => setSettlementWinnerId(m.id)}
-                    >
-                      <Text style={[styles.auctionChipText, isActive && styles.auctionChipTextActive]}>{name}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-            )}
-
-            <Text style={styles.sectionTitle}>Auction Inputs</Text>
-            {settlementDiscount && Number(settlementDiscount) > 0 && (
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#F0FDF4', borderRadius: 10, padding: 10, marginBottom: 12, borderWidth: 1, borderColor: '#BBF7D0' }}>
-                <Svg width={16} height={16} viewBox="0 0 24 24" fill="#16A34A">
-                  <Path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
-                </Svg>
-                <Text style={{ fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#16A34A', flex: 1 }}>
-                  Auto-filled from highest bid · You can still edit the Bid Amount below
-                </Text>
-              </View>
-            )}
-            <View style={styles.settlementGrid}>
-              <View style={styles.settlementField}>
-                <Text style={styles.settlementLabel}>Monthly Installment</Text>
-                <TextInput
-                  style={styles.searchInput}
-                  keyboardType="numeric"
-                  value={settlementInstallment}
-                  editable={false}
-                />
-              </View>
-              <View style={styles.settlementField}>
-                <Text style={styles.settlementLabel}>Bid Amount (Discount)</Text>
-                <TextInput
-                  style={styles.searchInput}
-                  keyboardType="numeric"
-                  value={settlementDiscount}
-                  onChangeText={setSettlementDiscount}
-                  placeholder="0"
-                />
-              </View>
-              <View style={styles.settlementField}>
-                <Text style={styles.settlementLabel}>Dividend per Person (Net)</Text>
-                <TextInput
-                  style={styles.searchInput}
-                  keyboardType="numeric"
-                  value={settlementDividend}
-                  editable={false}
-                />
-              </View>
-              <View style={styles.settlementField}>
-                <Text style={styles.settlementLabel}>Payable Installment</Text>
-                <TextInput
-                  style={styles.searchInput}
-                  keyboardType="numeric"
-                  value={settlementFinalDue}
-                  editable={false}
-                />
-              </View>
-              <View style={styles.settlementField}>
-                <Text style={styles.settlementLabel}>Monthly Savings (%)</Text>
-                <TextInput
-                  style={styles.searchInput}
-                  keyboardType="numeric"
-                  value={settlementSavings}
-                  editable={false}
-                />
-              </View>
-              <View style={styles.settlementField}>
-                <Text style={styles.settlementLabel}>Bidder Get (Prize)</Text>
-                <TextInput
-                  style={styles.searchInput}
-                  keyboardType="numeric"
-                  value={settlementPrize}
-                  editable={false}
-                />
-              </View>
-            </View>
-
-            <TouchableOpacity
-              style={[styles.executeBtn, { flex: 0, marginTop: 16 }, savingSettlement && { opacity: 0.7 }]}
-              onPress={handleSaveSettlement}
-              disabled={savingSettlement}
-            >
-              {savingSettlement
-                ? <ActivityIndicator color="#0F172A" />
-                : <Text style={styles.executeBtnText}>SAVE SETTLEMENT</Text>
-              }
-            </TouchableOpacity>
-          </ScrollView>
-        </SafeAreaView>
-      </Modal>
+      <AuctionSettlementModal
+        visible={showSettlementModal}
+        auction={settlementAuction}
+        group={group}
+        members={members}
+        memberCount={memberCount}
+        totalShares={totalShares}
+        onClose={() => { setShowSettlementModal(false); setSettlementAuction(null); }}
+        onSaved={() => {
+          setShowSettlementModal(false);
+          setSettlementAuction(null);
+          fetchAuctions();
+        }}
+      />
 
       {/* --- AUCTION PREP CENTER (STEPPED MODAL) --- */}
       <Modal
@@ -1778,7 +1224,7 @@ export default function AdminGroupDetail() {
                     </TouchableOpacity>
 
                     {/* Show current schedule if one exists */}
-                    {selectedAuctionForSchedule?.scheduled_at && (
+                    {selectedAuctionForSchedule && isAuctionScheduledDisplay(selectedAuctionForSchedule) && (
                       <View style={{ backgroundColor: '#F1F5F9', borderRadius: 12, padding: 12 }}>
                         <Text style={{ fontFamily: 'Inter_500Medium', fontSize: 12, color: '#64748B' }}>
                           Currently scheduled: {formatDate(selectedAuctionForSchedule.scheduled_at)} at {formatTime(selectedAuctionForSchedule.scheduled_at)}
@@ -1997,16 +1443,6 @@ export default function AdminGroupDetail() {
 
         </SafeAreaView>
 
-      {selectedMemberForTx && isUnaccountedGroup && (
-        <RecordCashCollectionModal
-          visible={cashModalVisible}
-          onClose={() => setCashModalVisible(false)}
-          membership={buildCashMembership(selectedMemberForTx)}
-          onSuccess={() => {
-            if (selectedMemberForTx?.id) fetchCashCollections(selectedMemberForTx.id);
-          }}
-        />
-      )}
     </SafeAreaView>
   );
 }
@@ -2046,7 +1482,21 @@ const styles = StyleSheet.create({
   engineDivider: { width: 1, backgroundColor: 'rgba(255,255,255,0.1)', marginHorizontal: 16 },
   executeBtn: { backgroundColor: '#00D1C1', paddingHorizontal: 16, paddingVertical: 16, borderRadius: 12, flex: 1, alignItems: 'center' },
   executeBtnText: { fontFamily: 'Inter_700Bold', fontSize: 14, color: '#0F172A', letterSpacing: 0.5 },
-  healthCard: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 20, marginBottom: 24, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderWidth: 1, borderColor: '#F1F5F9' },
+  enrollmentBlock: { marginBottom: 24, gap: 12 },
+  healthCard: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 20, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderWidth: 1, borderColor: '#F1F5F9' },
+  viewMembersBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#F0F9FF',
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    borderRadius: 16,
+    padding: 16,
+  },
+  viewMembersBtnLeft: { flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 },
+  viewMembersBtnTitle: { fontFamily: 'Inter_700Bold', fontSize: 14, color: '#005E7D' },
+  viewMembersBtnSub: { fontFamily: 'Inter_400Regular', fontSize: 12, color: '#64748B', marginTop: 2 },
   healthLeft: { flex: 1 },
   healthTitle: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 18, color: '#0B1C30' },
   healthSub: { fontFamily: 'Inter_400Regular', fontSize: 12, color: '#64748B', marginBottom: 16 },
@@ -2116,6 +1566,24 @@ const styles = StyleSheet.create({
   auctionChipActive: { backgroundColor: '#F0F9FF', borderColor: '#005E7D' },
   auctionChipText: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: '#64748B' },
   auctionChipTextActive: { color: '#005E7D' },
+  auctionCycleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    backgroundColor: '#FFFFFF',
+  },
+  auctionCycleRowActive: { borderColor: '#005E7D', backgroundColor: '#F0F9FF' },
+  auctionCycleTitle: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: '#0F172A' },
+  auctionCycleTitleActive: { color: '#005E7D' },
+  auctionCycleDate: { fontFamily: 'Inter_400Regular', fontSize: 12, color: '#64748B', marginTop: 2 },
+  auctionCyclePayable: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#01789E', marginTop: 4 },
+  auctionCyclePending: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#94A3B8', marginTop: 4, fontStyle: 'italic' },
+  auctionCycleRowPending: { opacity: 0.55 },
+  auctionCycleStatus: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#64748B', letterSpacing: 0.3 },
 
   auctionsSection: { marginBottom: 24 },
   auctionCard: { backgroundColor: '#FFFFFF', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#F1F5F9', marginBottom: 12 },
@@ -2207,7 +1675,22 @@ const styles = StyleSheet.create({
   timelineStatus: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#94A3B8', marginTop: 2, letterSpacing: 0.5 },
   timeTag: { backgroundColor: '#FFFBEB', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#FEF3C7' },
   timeTagText: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: '#D97706' },
-  timelineSummary: { flexDirection: 'row', gap: 24, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#F1F5F9' },
+  timelineSummary: { gap: 10, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#F1F5F9' },
+  timelineResultRow: { flexDirection: 'row', gap: 24 },
+  timelinePayableBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#F0F9FF',
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginTop: 4,
+  },
+  timelinePayableLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: '#005E7D', letterSpacing: 0.4 },
+  timelinePayableValue: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 16, color: '#01789E' },
   summaryItem: { flex: 1 },
   summaryLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 9, color: '#94A3B8', letterSpacing: 0.6 },
   summaryVal: { fontFamily: 'Inter_700Bold', fontSize: 13, color: '#0B1C30', marginTop: 2 },
@@ -2219,6 +1702,37 @@ const styles = StyleSheet.create({
   timelineActionBtnText: { fontFamily: 'Inter_700Bold', fontSize: 11, color: '#64748B', letterSpacing: 0.5 },
   timelineActionBtnLive: { backgroundColor: '#10B981', paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
   timelineActionBtnTextLive: { fontFamily: 'Inter_700Bold', fontSize: 12, color: '#FFFFFF', letterSpacing: 0.5 },
+  timelineSettlementBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 10,
+    paddingVertical: 11,
+    borderRadius: 10,
+    backgroundColor: '#F0F9FF',
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+  },
+  timelineSettlementBtnCompleted: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#E2E8F0',
+  },
+  timelineSettlementBtnText: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 11,
+    color: '#01789E',
+    letterSpacing: 0.4,
+  },
+  timelineSettlementBtnTextCompleted: { color: '#005E7D' },
+  timelineSettlementHint: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 10,
+    color: '#94A3B8',
+    textAlign: 'center',
+    marginTop: 6,
+    lineHeight: 14,
+  },
 
   stepperContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 16, backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
   stepCircle: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#E2E8F0' },

@@ -8,8 +8,11 @@ import type {
     Transaction,
     Auction,
     AuctionParticipant,
+    CashCollection,
     KPIMetrics,
 } from '../../../app/(admin)/customers/_components/types';
+import { buildMemberPaymentMonths } from '../../memberGroupHistory';
+import { dedupeAuctionCycles } from '../../chitPayments';
 
 interface CustomerDetailData {
     customer: Customer | null;
@@ -18,6 +21,7 @@ interface CustomerDetailData {
     transactions: Transaction[];
     auctions: Auction[];
     participants: AuctionParticipant[];
+    cashCollections: CashCollection[];
     kpiMetrics: KPIMetrics;
 }
 
@@ -62,6 +66,7 @@ export function useCustomerDetailData(customerId: string) {
                     transactions: [],
                     auctions: [],
                     participants: [],
+                    cashCollections: [],
                     kpiMetrics: {
                         activeChits: 0,
                         lifetimePaid: 0,
@@ -73,7 +78,7 @@ export function useCustomerDetailData(customerId: string) {
             }
 
             // Parallel fetch for schedules, transactions, auctions, participants
-            const [schedulesRes, transactionsRes, auctionsRes, participantsRes] = await Promise.all([
+            const [schedulesRes, transactionsRes, auctionsRes, participantsRes, cashRes] = await Promise.all([
                 supabase
                     .from('payment_schedules')
                     .select('*')
@@ -86,56 +91,81 @@ export function useCustomerDetailData(customerId: string) {
                     .order('transaction_date', { ascending: false }),
                 supabase.from('auctions').select('*').in('chit_group_id', groupIds),
                 supabase.from('auction_participants').select('*').eq('customer_id', customerId),
+                supabase
+                    .from('cash_collections')
+                    .select('*')
+                    .in('chit_member_id', memberIds)
+                    .order('month_number', { ascending: true }),
             ]);
 
             if (schedulesRes.error) throw schedulesRes.error;
             if (transactionsRes.error) throw transactionsRes.error;
             if (auctionsRes.error) throw auctionsRes.error;
             if (participantsRes.error) throw participantsRes.error;
+            if (cashRes.error) throw cashRes.error;
 
             const schedules = (schedulesRes.data || []) as PaymentSchedule[];
             const transactions = (transactionsRes.data || []) as Transaction[];
             const auctions = (auctionsRes.data || []) as Auction[];
             const participants = (participantsRes.data || []) as AuctionParticipant[];
+            const cashCollections = (cashRes.data || []) as CashCollection[];
 
             // Calculate KPI metrics
             const activeChits = (memberships || []).filter(
                 (m) => m.bid_status === 'active' || m.bid_status === 'bidding'
             ).length;
 
-            const lifetimePaid = transactions
-                .filter((t) => t.status === 'completed' && t.payment_type === 'installment')
-                .reduce((sum, t) => sum + t.amount, 0);
+            let lifetimePaid = 0;
+            let outstanding = 0;
+            let paidMonthCount = 0;
+            let onTimeCount = 0;
+
+            for (const membership of memberships || []) {
+                const group = membership.chit_groups;
+                const memberSchedules = schedules.filter((s) => s.chit_member_id === membership.id);
+                const memberCash = cashCollections.filter((c) => c.chit_member_id === membership.id);
+                const memberTx = transactions.filter((t) => t.chit_member_id === membership.id);
+                const groupAuctions = dedupeAuctionCycles(
+                    auctions.filter((a) => a.chit_group_id === membership.chit_group_id),
+                );
+
+                const months = buildMemberPaymentMonths({
+                    membershipId: membership.id,
+                    durationMonths: group.duration_months,
+                    monthlyInstallment: group.monthly_installment,
+                    accountingType: group.accounting_type,
+                    startDate: group.start_date,
+                    schedules: memberSchedules,
+                    cashRows: memberCash,
+                    transactions: memberTx,
+                    auctions: groupAuctions,
+                });
+
+                const scheduleByMonth = new Map(memberSchedules.map((s) => [s.month_number, s]));
+
+                for (const m of months) {
+                    lifetimePaid += m.paidAmount;
+
+                    if (m.status === 'paid') {
+                        paidMonthCount += 1;
+                        const schedule = scheduleByMonth.get(m.monthNumber);
+                        if (m.paidAt && schedule?.due_date) {
+                            if (new Date(m.paidAt) <= new Date(schedule.due_date)) onTimeCount += 1;
+                        }
+                    } else if (m.status === 'partial' && m.dueAmount != null) {
+                        outstanding += Math.max(0, m.dueAmount - m.paidAmount);
+                    } else if (m.status === 'pending' && m.dueAmount != null) {
+                        outstanding += Math.max(0, m.dueAmount - m.paidAmount);
+                    }
+                }
+            }
 
             const dividendEarned = schedules
                 .filter((s) => s.paid)
                 .reduce((sum, s) => sum + s.dividend_amount, 0);
 
-            const outstanding = schedules
-                .filter((s) => !s.paid)
-                .reduce((sum, s) => {
-                    const paid = transactions
-                        .filter(
-                            (t) =>
-                                t.chit_member_id === s.chit_member_id &&
-                                t.status === 'completed' &&
-                                t.payment_type === 'installment'
-                        )
-                        .reduce((tSum, t) => tSum + t.amount, 0);
-                    return sum + Math.max(0, s.amount - paid);
-                }, 0);
-
-            // Calculate on-time percentage
-            const paidSchedules = schedules.filter((s) => s.paid);
-            const onTimeCount = paidSchedules.filter((s) => {
-                if (!s.paid_at || !s.due_date) return false;
-                const paidDate = new Date(s.paid_at);
-                const dueDate = new Date(s.due_date);
-                return paidDate <= dueDate;
-            }).length;
-
             const onTimePercentage =
-                paidSchedules.length > 0 ? Math.round((onTimeCount / paidSchedules.length) * 100) : 0;
+                paidMonthCount > 0 ? Math.round((onTimeCount / paidMonthCount) * 100) : 0;
 
             return {
                 customer: customer as Customer,
@@ -144,6 +174,7 @@ export function useCustomerDetailData(customerId: string) {
                 transactions,
                 auctions,
                 participants,
+                cashCollections,
                 kpiMetrics: {
                     activeChits,
                     lifetimePaid,
@@ -172,19 +203,14 @@ export function useCustomerDetailData(customerId: string) {
 
         const channel = supabase.channel(channelName);
 
+        const invalidate = () => {
+            queryClient.invalidateQueries({ queryKey: ['admin', 'customer-detail', customerId] });
+        };
+
         channel
-            .on(
-                'postgres_changes',
-                {
-                    event: '*',
-                    schema: 'public',
-                    table: 'chit_member_transactions',
-                },
-                () => {
-                    // Invalidate the query to refetch data
-                    queryClient.invalidateQueries({ queryKey: ['admin', 'customer-detail', customerId] });
-                }
-            )
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'chit_member_transactions' }, invalidate)
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'cash_collections' }, invalidate)
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'payment_schedules' }, invalidate)
             .subscribe();
 
         return () => {

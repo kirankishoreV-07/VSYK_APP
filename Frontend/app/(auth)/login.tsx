@@ -123,10 +123,11 @@ export default function LoginScreen() {
           {/* Hero Branding */}
           <View style={styles.heroSection}>
             <View style={styles.logoContainer}>
-              <Image 
-                source={require('../../assets/logo.png')} 
-                style={styles.logoImage} 
+              <Image
+                source={require('../../assets/logo.png')}
+                style={styles.logoImage}
                 contentFit="contain"
+                contentPosition="center"
                 transition={200}
               />
             </View>
@@ -359,11 +360,12 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.xxl,
   },
   logoContainer: {
-    width: 160,
-    height: 146, // 160 * (986/1080) to maintain exact aspect ratio
+    width: 148,
+    height: 148,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: Spacing.md,
+    padding: 12,
   },
   logoImage: {
     width: '100%',

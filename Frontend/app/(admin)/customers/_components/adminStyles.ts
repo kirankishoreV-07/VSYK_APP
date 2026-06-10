@@ -1,8 +1,9 @@
 import { StyleSheet } from 'react-native';
 
-// Shared color palette matching admin design system
+// Shared color palette matching Stitch / admin design system
 export const AdminColors = {
     primary: '#005E7D',
+    primaryContainer: '#01789E',
     primaryLight: '#C1E8FF',
     secondary: '#006A65',
     accent: '#54FAEF',
@@ -15,6 +16,11 @@ export const AdminColors = {
     bgPrimary: '#FFFFFF',
     bgSecondary: '#F8FAFC',
     bgTertiary: '#F8F9FF',
+    cyan50: '#ECFEFF',
+    slate100: '#F1F5F9',
+    slate200: '#E2E8F0',
+    slate400: '#94A3B8',
+    slate500: '#64748B',
     success: '#10B981',
     successBg: '#F0FDF4',
     successBorder: '#DCFCE7',
@@ -111,6 +117,15 @@ export const getBadgeStyle = (type: 'verified' | 'pending' | 'rejected' | 'activ
                 color: AdminColors.textSecondary,
             };
     }
+};
+
+/** Stitch soft-elevation shadow */
+export const softElevation = {
+    shadowColor: '#01789E',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.08,
+    shadowRadius: 40,
+    elevation: 4,
 };
 
 export const AdminBadgeStyles = StyleSheet.create({

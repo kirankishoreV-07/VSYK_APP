@@ -180,6 +180,8 @@ export function useUpcomingAuctions(memberId: string | null) {
         `)
         .in('chit_group_id', groupIds)
         .eq('status', 'upcoming')
+        .gt('min_bid', 0)
+        .not('scheduled_at', 'is', null)
         .gte('scheduled_at', now)
         .order('scheduled_at', { ascending: true })
         .limit(20);

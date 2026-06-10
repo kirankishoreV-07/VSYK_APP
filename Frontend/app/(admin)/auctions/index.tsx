@@ -1,11 +1,17 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Image } from 'expo-image';
+import { AppLogo } from '../../../components/AppLogo';
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
 import { supabase } from '../../../lib/supabase';
+import {
+  dedupeAuctionRows,
+  filterScheduledUpcomingForTab,
+  sanitizePlaceholderAuctionSchedules,
+} from '../../../lib/auctionUtils';
+import { getAuctionWinnerDisplayName } from '../../../lib/auctionWinner';
 
 // ─── Types ────────────────────────────────────────────────────
 type AuctionRow = {
@@ -24,8 +30,10 @@ type AuctionRow = {
   final_due_amount: number;
   winner_prize_amount: number;
   winner_name: string | null;
+  winner_member_id: string | null;
   chit_groups: { name: string; group_code: string; value: number; capacity: number } | null;
   _bid_count?: number;
+  _winner_display?: string;
 };
 
 // ─── Helpers ──────────────────────────────────────────────────
@@ -59,8 +67,18 @@ export default function AdminAuctionsIndex() {
         .order('scheduled_at', { ascending: false });
       if (error) throw error;
 
-      // Enrich with bid counts
-      const rows = (data || []) as AuctionRow[];
+      let rows = (data || []) as AuctionRow[];
+      const sanitized = await sanitizePlaceholderAuctionSchedules(supabase, rows);
+      if (sanitized) {
+        const { data: refreshed, error: refreshError } = await supabase
+          .from('auctions')
+          .select('*, chit_groups(name, group_code, value, capacity)')
+          .order('scheduled_at', { ascending: false });
+        if (refreshError) throw refreshError;
+        rows = (refreshed || []) as AuctionRow[];
+      }
+      rows = dedupeAuctionRows(rows);
+
       const ids = rows.map(r => r.id);
       if (ids.length > 0) {
         const { data: bidCounts } = await supabase
@@ -71,6 +89,32 @@ export default function AdminAuctionsIndex() {
         const countMap: Record<string, number> = {};
         for (const b of (bidCounts || [])) countMap[b.auction_id] = (countMap[b.auction_id] || 0) + 1;
         rows.forEach(r => { r._bid_count = countMap[r.id] || 0; });
+      }
+
+      const winnerMemberIds = [
+        ...new Set(
+          rows
+            .map((r) => r.winner_member_id)
+            .filter((id): id is string => !!id),
+        ),
+      ];
+      if (winnerMemberIds.length > 0) {
+        const { data: winnerMembers } = await supabase
+          .from('chit_members')
+          .select('id, ticket_number, customers(full_name)')
+          .in('id', winnerMemberIds);
+        const memberRefs = (winnerMembers || []).map((m: any) => ({
+          id: m.id,
+          ticket_number: m.ticket_number,
+          customers: Array.isArray(m.customers) ? m.customers[0] : m.customers,
+        }));
+        rows.forEach((r) => {
+          r._winner_display = getAuctionWinnerDisplayName(r, memberRefs);
+        });
+      } else {
+        rows.forEach((r) => {
+          r._winner_display = getAuctionWinnerDisplayName(r, []);
+        });
       }
 
       setAllAuctions(rows);
@@ -100,9 +144,7 @@ export default function AdminAuctionsIndex() {
   }, []);
 
   const live = allAuctions.find(a => a.status === 'live');
-  const upcoming = allAuctions.filter(a => a.status === 'upcoming').sort((a, b) =>
-    new Date(a.scheduled_at || 0).getTime() - new Date(b.scheduled_at || 0).getTime()
-  );
+  const scheduledUpcoming = filterScheduledUpcomingForTab(allAuctions);
   const history = allAuctions.filter(a => a.status === 'completed' || a.status === 'cancelled');
 
   // Summary stats
@@ -118,9 +160,7 @@ export default function AdminAuctionsIndex() {
       {/* App Bar */}
       <View style={st.appBar}>
         <View style={st.appBarLeft}>
-          <View style={st.avatarContainer}>
-            <Image source={require('../../../assets/cropped_logo.png')} style={st.avatar} contentFit="contain" />
-          </View>
+          <AppLogo size={36} />
           <Text style={st.appBarTitle}>Auctions</Text>
         </View>
         <TouchableOpacity
@@ -137,7 +177,7 @@ export default function AdminAuctionsIndex() {
         {(['upcoming', 'history'] as const).map(t => (
           <TouchableOpacity key={t} style={[st.tab, activeTab === t && st.tabActive]} onPress={() => { setActiveTab(t); Haptics.selectionAsync(); }}>
             <Text style={[st.tabText, activeTab === t && st.tabTextActive]}>
-              {t === 'upcoming' ? `Upcoming  ${upcoming.length > 0 ? `(${upcoming.length})` : ''}` : 'History'}
+              {t === 'upcoming' ? `Upcoming  ${scheduledUpcoming.length > 0 ? `(${scheduledUpcoming.length})` : ''}` : 'History'}
             </Text>
           </TouchableOpacity>
         ))}
@@ -149,7 +189,7 @@ export default function AdminAuctionsIndex() {
         {loading ? (
           <ActivityIndicator color="#005E7D" size="large" style={{ marginTop: 60 }} />
         ) : activeTab === 'upcoming' ? (
-          <UpcomingTab live={live} upcoming={upcoming} router={router} />
+          <UpcomingTab live={live} upcoming={scheduledUpcoming} router={router} />
         ) : (
           <HistoryTab history={history} stats={{ totalSettled, totalPrizePaid, totalDividend, avgDiscount }} />
         )}
@@ -189,13 +229,10 @@ function UpcomingTab({ live, upcoming, router }: { live: AuctionRow | undefined;
         </View>
       )}
 
-      {/* Upcoming list — only show scheduled (has a real scheduled_at in the future or recently) */}
       {upcoming.length > 0 && (
         <>
           <Text style={st.sectionTitle}>Scheduled Auctions</Text>
-          {upcoming
-            .filter(a => a.scheduled_at != null && a.min_bid > 0) // only those actually configured by admin
-            .map(a => (
+          {upcoming.map(a => (
               <View key={a.id} style={st.upcomingCard}>
                 <View style={st.upcomingHeader}>
                   <View style={{ flex: 1 }}>
@@ -227,15 +264,10 @@ function UpcomingTab({ live, upcoming, router }: { live: AuctionRow | undefined;
                 </View>
               </View>
             ))}
-          {upcoming.filter(a => a.scheduled_at != null && a.min_bid > 0).length === 0 && (
-            <View style={st.emptyCard}>
-              <Text style={st.emptyText}>No configured upcoming auctions. Go to a Chit Group → roadmap → START AUCTION to schedule one.</Text>
-            </View>
-          )}
         </>
       )}
 
-      {!live && upcoming.filter(a => a.min_bid > 0).length === 0 && (
+      {!live && upcoming.length === 0 && (
         <View style={st.emptyCard}>
           <Text style={st.emptyText}>No upcoming auctions configured yet.</Text>
         </View>
@@ -309,11 +341,13 @@ function HistoryTab({ history, stats }: {
                 {/* Winner bar */}
                 <View style={st.winnerBar}>
                   <View style={st.winnerAvatar}>
-                    <Text style={st.winnerAvatarText}>{(a.winner_name || 'W').charAt(0).toUpperCase()}</Text>
+                    <Text style={st.winnerAvatarText}>
+                      {(a._winner_display || a.winner_name || 'W').charAt(0).toUpperCase()}
+                    </Text>
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={st.winnerLabel}>WINNER</Text>
-                    <Text style={st.winnerName}>{a.winner_name || 'Member'}</Text>
+                    <Text style={st.winnerName}>{a._winner_display || getAuctionWinnerDisplayName(a, [])}</Text>
                   </View>
                   <View style={{ alignItems: 'flex-end' }}>
                     <Text style={st.winnerLabel}>PRIZE</Text>

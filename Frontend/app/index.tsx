@@ -73,10 +73,11 @@ export default function SplashScreen() {
       >
         {/* Render the user's provided logo */}
         <View style={styles.logoContainer}>
-          <Image 
-            source={require('../assets/logo.png')} 
-            style={styles.logoImage} 
+          <Image
+            source={require('../assets/logo.png')}
+            style={styles.logoImage}
             contentFit="contain"
+            contentPosition="center"
             transition={500}
           />
         </View>
@@ -128,11 +129,12 @@ const styles = StyleSheet.create({
     marginTop: -40,
   },
   logoContainer: {
-    width: 200,
-    height: 182, // 200 * (986/1080) to maintain exact aspect ratio
+    width: 180,
+    height: 180,
     marginBottom: 32,
     alignItems: 'center',
     justifyContent: 'center',
+    padding: 16,
   },
   logoImage: {
     width: '100%',

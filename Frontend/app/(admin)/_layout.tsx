@@ -116,6 +116,10 @@ export default function AdminLayout() {
         options={{ href: null, title: 'Group Detail' }}
       />
       <Tabs.Screen
+        name="groups/[id]/members"
+        options={{ href: null, title: 'Group Members' }}
+      />
+      <Tabs.Screen
         name="customers/[id]"
         options={{ href: null, title: 'Customer Detail' }}
       />

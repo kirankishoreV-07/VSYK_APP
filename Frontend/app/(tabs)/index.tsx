@@ -14,6 +14,7 @@ import { useRouter } from 'expo-router';
 import Svg, { Circle, Path, G } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { Colors, Shadows } from '../../lib/constants';
+import { AppLogo } from '../../components/AppLogo';
 import { useMemberSession } from '../../lib/MemberSessionContext';
 import { getHealthLabel, getHealthSubtext } from '../../lib/hooks/useProfile';
 import { useQueryClient } from '@tanstack/react-query';
@@ -248,20 +249,12 @@ export default function HomeScreen() {
 
   const profileLoading = !memberProfile;
 
-  const avatarInitial = memberProfile?.full_name
-    ? memberProfile.full_name.charAt(0).toUpperCase()
-    : memberProfile?.phone?.slice(-1) ?? 'V';
-
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
       {/* ── App Bar ── */}
       <View style={styles.appBar}>
         <View style={styles.appBarLeft}>
-          <View style={styles.avatarRing}>
-            <View style={styles.avatarInner}>
-              <Text style={styles.avatarInitial}>{avatarInitial}</Text>
-            </View>
-          </View>
+          <AppLogo size={40} />
           <View>
             <Text style={styles.appBarTitle}>VSYK CHITS</Text>
             {memberProfile?.full_name ? (

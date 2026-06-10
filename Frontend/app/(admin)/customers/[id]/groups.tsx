@@ -1,12 +1,11 @@
 import React from 'react';
-import { View, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { View, StyleSheet, ActivityIndicator, TouchableOpacity, Text } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
-import { Colors } from '../../../../lib/constants';
 import { useCustomerDetailData } from '../../../../lib/hooks/admin/useCustomerDetailData';
 import { GroupsTab } from '../_components/GroupsTab';
-import { Text } from 'react-native';
+import { AdminColors } from '../_components/adminStyles';
 
 export default function GroupsScreen() {
     const { id } = useLocalSearchParams<{ id: string }>();
@@ -20,13 +19,12 @@ export default function GroupsScreen() {
             <SafeAreaView style={styles.container}>
                 <View style={styles.appBar}>
                     <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-                        <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.primary}>
+                        <Svg width={24} height={24} viewBox="0 0 24 24" fill={AdminColors.textPrimary}>
                             <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
                         </Svg>
                     </TouchableOpacity>
-                    <Text style={styles.appBarTitle}>Groups</Text>
                 </View>
-                <ActivityIndicator size="large" color={Colors.primary} style={{ marginTop: 100 }} />
+                <ActivityIndicator size="large" color={AdminColors.primaryContainer} style={{ marginTop: 100 }} />
             </SafeAreaView>
         );
     }
@@ -36,11 +34,10 @@ export default function GroupsScreen() {
             <SafeAreaView style={styles.container}>
                 <View style={styles.appBar}>
                     <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-                        <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.primary}>
+                        <Svg width={24} height={24} viewBox="0 0 24 24" fill={AdminColors.textPrimary}>
                             <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
                         </Svg>
                     </TouchableOpacity>
-                    <Text style={styles.appBarTitle}>Groups</Text>
                 </View>
                 <View style={styles.errorContainer}>
                     <Text style={styles.errorText}>{error?.message || 'An error occurred'}</Text>
@@ -50,29 +47,39 @@ export default function GroupsScreen() {
     }
 
     const { customer, memberships, schedules, transactions, auctions, participants } = data;
+    const initials = (customer?.full_name || 'C')
+        .split(' ')
+        .map((n) => n[0])
+        .join('')
+        .substring(0, 2)
+        .toUpperCase();
 
     return (
         <SafeAreaView style={styles.container}>
-            {/* App Bar */}
             <View style={styles.appBar}>
                 <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-                    <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.primary}>
+                    <Svg width={24} height={24} viewBox="0 0 24 24" fill="#3F484E">
                         <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
                     </Svg>
                 </TouchableOpacity>
-                <Text style={styles.appBarTitle}>
-                    {customer?.name || 'Customer'} - Groups
-                </Text>
+                <View style={styles.appBarCenter}>
+                    <View style={styles.avatar}>
+                        <Text style={styles.avatarText}>{initials}</Text>
+                    </View>
+                    <Text style={styles.appBarTitle}>{customer?.full_name || 'Customer'}</Text>
+                </View>
             </View>
 
-            {/* Groups Tab Content */}
-            <GroupsTab
-                memberships={memberships}
-                schedules={schedules}
-                transactions={transactions}
-                auctions={auctions}
-                participants={participants}
-            />
+            <View style={styles.body}>
+                <GroupsTab
+                    memberships={memberships}
+                    schedules={schedules}
+                    transactions={transactions}
+                    auctions={auctions}
+                    participants={participants}
+                    customerName={customer?.full_name || 'Customer'}
+                />
+            </View>
         </SafeAreaView>
     );
 }
@@ -80,25 +87,50 @@ export default function GroupsScreen() {
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: '#F8FAFC',
+        backgroundColor: AdminColors.bgTertiary,
     },
     appBar: {
         flexDirection: 'row',
         alignItems: 'center',
-        backgroundColor: '#FFFFFF',
-        paddingHorizontal: 16,
+        backgroundColor: 'rgba(255,255,255,0.9)',
+        paddingHorizontal: 20,
         paddingVertical: 12,
         borderBottomWidth: 1,
-        borderBottomColor: '#E2E8F0',
+        borderBottomColor: 'rgba(226,232,240,0.5)',
     },
     backButton: {
-        padding: 4,
-        marginRight: 12,
+        width: 40,
+        height: 40,
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: 20,
+    },
+    appBarCenter: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+        flex: 1,
+    },
+    avatar: {
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        backgroundColor: AdminColors.primaryContainer,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    avatarText: {
+        fontFamily: 'Inter_700Bold',
+        fontSize: 14,
+        color: '#E8F6FF',
     },
     appBarTitle: {
-        fontFamily: 'Inter_600SemiBold',
-        fontSize: 18,
-        color: '#0B1C30',
+        fontFamily: 'SpaceGrotesk_600SemiBold',
+        fontSize: 20,
+        color: AdminColors.primaryContainer,
+        letterSpacing: -0.3,
+    },
+    body: {
         flex: 1,
     },
     errorContainer: {

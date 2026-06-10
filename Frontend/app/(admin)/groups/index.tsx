@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Modal, TextInput, Platform, KeyboardAvoidingView, ActivityIndicator, RefreshControl, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Image } from 'expo-image';
+import { AppLogo } from '../../../components/AppLogo';
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
@@ -225,8 +225,8 @@ export default function AdminGroups() {
                 <Text style={[styles.badgeText, { color: group.status === 'active' ? '#00716b' : '#64748B' }]}>{group.status?.toUpperCase() || 'ACTIVE'}</Text>
               </View>
               {isUnaccounted && (
-                <View style={[styles.badge, { backgroundColor: 'rgba(147, 51, 234, 0.15)' }]}>
-                  <Text style={[styles.badgeText, { color: '#7C3AED' }]}>💵 CASH ONLY</Text>
+                <View style={[styles.badge, { backgroundColor: '#E0F2FE' }]}>
+                  <Text style={[styles.badgeText, { color: '#005E7D' }]}>💵 CASH ONLY</Text>
                 </View>
               )}
             </View>
@@ -254,7 +254,7 @@ export default function AdminGroups() {
                 styles.progressBarFill,
                 {
                   width: `${fillPct}%`,
-                  backgroundColor: isUnaccounted ? '#9333EA' : '#01789E',
+                  backgroundColor: '#01789E',
                 },
               ]}
             />
@@ -391,13 +391,7 @@ export default function AdminGroups() {
       {/* Top App Bar */}
       <View style={styles.appBar}>
         <View style={styles.appBarLeft}>
-          <View style={styles.avatarContainer}>
-            <Image
-              source={require('../../../assets/cropped_logo.png')}
-              style={styles.avatar}
-              contentFit="contain"
-            />
-          </View>
+          <AppLogo size={36} />
           <Text style={styles.appBarTitle}>VSYK CHITS</Text>
         </View>
         <TouchableOpacity style={styles.iconButton} onPress={() => Haptics.selectionAsync()}>
@@ -1011,5 +1005,5 @@ const styles = StyleSheet.create({
   listSectionBlock: { width: '100%', marginBottom: 8 },
   listSectionTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 18, color: '#0B1C30', marginBottom: 4 },
   listSectionSubtitle: { fontFamily: 'Inter_400Regular', fontSize: 13, color: '#64748B', marginBottom: 16 },
-  groupCardUnaccounted: { backgroundColor: '#FAF5FF', borderColor: '#E9D5FF' },
+  groupCardUnaccounted: { backgroundColor: '#F0F9FF', borderColor: '#BAE6FD' },
 });

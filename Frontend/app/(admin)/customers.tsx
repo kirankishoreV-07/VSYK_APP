@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, Modal, Animated, Platform, KeyboardAvoidingView, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Image } from 'expo-image';
+import { AppLogo } from '../../components/AppLogo';
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { Colors } from '../../lib/constants';
@@ -182,13 +182,7 @@ export default function AdminCustomers() {
       {/* Top App Bar */}
       <View style={styles.appBar}>
         <View style={styles.appBarLeft}>
-          <View style={styles.avatarContainer}>
-            <Image
-              source={require('../../assets/cropped_logo.png')}
-              style={styles.avatar}
-              contentFit="contain"
-            />
-          </View>
+          <AppLogo size={36} />
           <Text style={styles.appBarTitle}>VSYK CHITS</Text>
         </View>
         <TouchableOpacity style={styles.iconButton} onPress={() => Haptics.selectionAsync()}>

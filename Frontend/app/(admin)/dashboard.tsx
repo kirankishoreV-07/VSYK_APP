@@ -1,12 +1,25 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Platform, RefreshControl } from 'react-native';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Image } from 'expo-image';
-import Svg, { Path, Circle, Line, Defs, LinearGradient, Stop } from 'react-native-svg';
+import { AppLogo } from '../../components/AppLogo';
+import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { supabase } from '../../lib/supabase';
 import { useRouter } from 'expo-router';
 import { formatPaise } from '../../lib/hooks/useDashboard';
+import {
+  buildCollectionPieData,
+  countTodayActivity,
+  EMPTY_COLLECTION_PIE_DATA,
+  formatMomLabel,
+  formatRelativeTime,
+  mergeDashboardActivity,
+  sumCollectionAmounts,
+  type CollectionPieData,
+  type DashboardActivity,
+} from '../../lib/dashboardAnalytics';
+import { filterScheduledUpcomingForTab } from '../../lib/auctionUtils';
+import { CollectionPieChart } from './_components/CollectionPieChart';
 
 export default function AdminDashboard() {
   const router = useRouter();
@@ -17,21 +30,10 @@ export default function AdminDashboard() {
     auctions: 0,
     dividends: 0,
   });
-  const [recentActivity, setRecentActivity] = useState<any[]>([]);
+  const [recentActivity, setRecentActivity] = useState<DashboardActivity[]>([]);
   const [showAllActivity, setShowAllActivity] = useState(false);
-  const [chartData, setChartData] = useState<{
-    labels: string[],
-    points: { x: number, y: number, amount: number }[],
-    pathArea: string,
-    pathLine: string,
-    lastPoint: { x: number, y: number, amount: number } | null
-  }>({
-    labels: ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN'],
-    points: [],
-    pathArea: 'M0 160 L400 160 Z',
-    pathLine: 'M0 160 L400 160',
-    lastPoint: null
-  });
+  const [selectedPieIndex, setSelectedPieIndex] = useState<number | null>(null);
+  const [pieData, setPieData] = useState<CollectionPieData>(EMPTY_COLLECTION_PIE_DATA);
   const [refreshing, setRefreshing] = useState(false);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -44,17 +46,22 @@ export default function AdminDashboard() {
       // Members
       const { count: memberCount } = await supabase.from('customers').select('*', { count: 'exact', head: true });
 
-      // Collection (Sum of chit_member_transactions where payment_type=installment and status=completed)
       const { data: deposits } = await supabase
         .from('chit_member_transactions')
-        .select('amount, transaction_date')
-        .eq('payment_type', 'installment')
+        .select('amount, transaction_date, payment_type, status')
         .eq('status', 'completed');
-        
-      const collection = deposits ? deposits.reduce((acc, d) => acc + Number(d.amount || 0), 0) : 0;
 
-      // Auctions
-      const { count: auctionCount } = await supabase.from('auctions').select('*', { count: 'exact', head: true }).in('status', ['upcoming', 'live']);
+      const { data: cashCollections } = await supabase
+        .from('cash_collections')
+        .select('amount, recorded_at');
+
+      const collection = sumCollectionAmounts(deposits || [], cashCollections || []);
+
+      const { data: auctionRows } = await supabase
+        .from('auctions')
+        .select('id, chit_group_id, auction_number, status, min_bid, max_bid, scheduled_at, closes_at');
+      const auctionCount = filterScheduledUpcomingForTab(auctionRows || []).length
+        + (auctionRows || []).filter((a) => a.status === 'live').length;
 
       // Dividends (payment_type=dividend and status=completed)
       const { data: dividendTx } = await supabase
@@ -73,81 +80,50 @@ export default function AdminDashboard() {
         dividends: dividends,
       });
 
-      // Recent Activity
-      const { data: rawActivity } = await supabase
-        .from('chit_member_transactions')
-        .select('*, chit_members(chit_groups(name), customers(full_name))')
-        .eq('status', 'completed')
-        .order('transaction_date', { ascending: false })
-        .limit(20);
+      const [{ data: rawActivity }, { data: rawCashActivity }] = await Promise.all([
+        supabase
+          .from('chit_member_transactions')
+          .select(`
+            id, amount, payment_type, transaction_date, status,
+            chit_members (
+              customers (full_name),
+              chit_groups (name)
+            )
+          `)
+          .eq('status', 'completed')
+          .order('transaction_date', { ascending: false })
+          .limit(30),
+        supabase
+          .from('cash_collections')
+          .select(`
+            id, amount, month_number, recorded_at,
+            chit_members (
+              customers (full_name),
+              chit_groups (name)
+            )
+          `)
+          .order('recorded_at', { ascending: false })
+          .limit(30),
+      ]);
 
-      if (rawActivity) {
-        const mappedActivity = rawActivity.map((tx: any) => {
-          const customerName = tx.chit_members?.customers?.full_name || 'Member';
-          const groupName = tx.chit_members?.chit_groups?.name || 'Group';
-          return {
-            id: tx.id,
-            amount: tx.amount,
-            type: tx.payment_type === 'dividend' ? 'debit' : 'credit', // Debit from admin's perspective for dividend, credit for installment
-            description: `${tx.payment_type === 'dividend' ? 'Dividend to' : 'Installment from'} ${customerName}`,
-            category: groupName,
-            created_at: tx.transaction_date,
-          };
-        });
-        setRecentActivity(mappedActivity);
-      }
+      const mergedActivity = mergeDashboardActivity(rawActivity || [], rawCashActivity || []);
+      setRecentActivity(mergedActivity.slice(0, 20));
 
-      // --- Process Chart Data (Last 6 Months Collection Trends) ---
-      const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-      const now = new Date();
-      const last6Months: any[] = [];
-      for (let i = 5; i >= 0; i--) {
-        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-        last6Months.push({
-          label: monthNames[d.getMonth()],
-          year: d.getFullYear(),
-          month: d.getMonth(),
-          amount: 0
-        });
-      }
+      const installmentTx = (deposits || [])
+        .filter((d) => d.payment_type === 'installment')
+        .map((d) => ({ date: d.transaction_date, amount: d.amount }));
+      const cashForChart = (cashCollections || []).map((c) => ({
+        date: c.recorded_at,
+        amount: c.amount,
+      }));
 
-      if (deposits) {
-        deposits.forEach(d => {
-          const date = new Date(d.transaction_date);
-          const m = last6Months.find(m => m.month === date.getMonth() && m.year === date.getFullYear());
-          if (m) {
-            m.amount += Number(d.amount || 0);
-          }
-        });
-      }
-
-      const maxAmount = Math.max(...last6Months.map(m => m.amount), 1); // Avoid div by 0
-      const width = 400;
-      const height = 160;
-      const paddingTop = 30;
-      const paddingBottom = 20;
-      const graphHeight = height - paddingTop - paddingBottom;
-
-      const points = last6Months.map((m, index) => {
-        const x = (index / 5) * width;
-        // Map amount to Y coordinate (inverted since SVG Y goes down)
-        const y = height - paddingBottom - (m.amount / maxAmount) * graphHeight;
-        return { x, y, amount: m.amount };
-      });
-
-      const pathArea = `M0 160 ${points.map(p => `L${p.x} ${p.y}`).join(' ')} L400 160 Z`;
-      const pathLine = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x} ${p.y}`).join(' ');
-
-      setChartData({
-        labels: last6Months.map(m => m.label),
-        points,
-        pathArea,
-        pathLine,
-        lastPoint: points[points.length - 1]
-      });
+      setPieData(buildCollectionPieData(installmentTx, cashForChart));
+      setSelectedPieIndex(null);
 
     } catch (error) {
       console.error('Error fetching dashboard data:', error);
+      setPieData(EMPTY_COLLECTION_PIE_DATA);
+      setSelectedPieIndex(null);
     }
   };
 
@@ -174,6 +150,7 @@ export default function AdminDashboard() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chit_groups' }, scheduleRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, scheduleRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chit_member_transactions' }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'cash_collections' }, scheduleRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'auctions' }, scheduleRefresh)
       .subscribe();
 
@@ -183,22 +160,17 @@ export default function AdminDashboard() {
     };
   }, []);
 
-  const formatCurrency = (amount: number) => {
-    return `₹${Math.round(amount).toLocaleString('en-IN')}`;
-  };
+  const formatRupees = (rupees: number) =>
+    `₹${Math.round(rupees).toLocaleString('en-IN')}`;
+
+  const todayActivityCount = useMemo(() => countTodayActivity(recentActivity), [recentActivity]);
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Top App Bar */}
       <View style={styles.appBar}>
         <View style={styles.appBarLeft}>
-          <View style={styles.avatarContainer}>
-            <Image
-              source={require('../../assets/cropped_logo.png')}
-              style={styles.avatar}
-              contentFit="contain"
-            />
-          </View>
+          <AppLogo size={36} />
           <Text style={styles.appBarTitle}>VSYK CHITS</Text>
         </View>
         <TouchableOpacity style={styles.iconButton} onPress={() => Haptics.selectionAsync()}>
@@ -247,7 +219,7 @@ export default function AdminDashboard() {
                 </Svg>
               </View>
             </View>
-            <Text style={styles.headlineLg}>{formatCurrency(metrics.totalAUM)}</Text>
+            <Text style={styles.headlineLg}>{formatRupees(metrics.totalAUM)}</Text>
             <View style={styles.trendRow}>
               <Svg width={14} height={14} viewBox="0 0 24 24" fill="#006A65">
                 <Path d="M16 6l2.29 2.29-4.88 4.88-4-4L2 16.59 3.41 18l6-6 4 4 6.3-6.29L22 12V6z" />
@@ -268,7 +240,7 @@ export default function AdminDashboard() {
           {/* Monthly Collection */}
           <View style={[styles.card, styles.cardHalf]}>
             <Text style={styles.cardLabel}>COLLECTION</Text>
-            <Text style={styles.headlineMd}>{formatCurrency(metrics.collection)}</Text>
+            <Text style={styles.headlineMd}>{formatPaise(metrics.collection)}</Text>
             <View style={styles.trendRow}>
               <Svg width={14} height={14} viewBox="0 0 24 24" fill="#005E7D">
                 <Path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
@@ -287,7 +259,7 @@ export default function AdminDashboard() {
           {/* Dividend Payouts */}
           <View style={[styles.card, styles.cardHalf]}>
             <Text style={styles.cardLabel}>DIVIDENDS</Text>
-            <Text style={styles.headlineMd}>{formatCurrency(metrics.dividends)}</Text>
+            <Text style={styles.headlineMd}>{formatPaise(metrics.dividends)}</Text>
             <View style={styles.trendRow}>
               <Svg width={14} height={14} viewBox="0 0 24 24" fill="#006A65">
                 <Path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z" />
@@ -297,70 +269,61 @@ export default function AdminDashboard() {
           </View>
         </View>
 
-        {/* Collection Trends Chart Placeholder */}
         <View style={[styles.chartCard, styles.blueTintShadow]}>
           <View style={styles.chartHeader}>
-            <View>
-              <Text style={styles.chartTitle}>Collection Trends</Text>
-              <Text style={styles.chartSubtitle}>Last 6 Months Performance</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.chartTitle}>Collection Breakdown</Text>
+              <Text style={styles.chartSubtitle}>
+                {pieData.summary.rangeLabel} · Tap any slice to drill down
+              </Text>
             </View>
-            <TouchableOpacity>
-              <Svg width={24} height={24} viewBox="0 0 24 24" fill="#94A3B8">
-                <Path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" />
-              </Svg>
-            </TouchableOpacity>
           </View>
 
-          {/* SVG Chart */}
-          <View style={styles.chartContainer}>
-            <Svg style={StyleSheet.absoluteFill} viewBox="0 0 400 160" preserveAspectRatio="none">
-              <Defs>
-                <LinearGradient id="gradient-chart" x1="0" x2="0" y1="0" y2="1">
-                  <Stop offset="0%" stopColor="#005E7D" stopOpacity="0.2" />
-                  <Stop offset="100%" stopColor="#FFFFFF" stopOpacity="0" />
-                </LinearGradient>
-              </Defs>
-              {/* Grid Lines */}
-              <Line x1="0" y1="40" x2="400" y2="40" stroke="#F1F5F9" strokeWidth="1" />
-              <Line x1="0" y1="80" x2="400" y2="80" stroke="#F1F5F9" strokeWidth="1" />
-              <Line x1="0" y1="120" x2="400" y2="120" stroke="#F1F5F9" strokeWidth="1" />
+          <View style={styles.chartStatsRow}>
+            <View style={styles.chartStatPill}>
+              <Text style={styles.chartStatLabel}>6M TOTAL</Text>
+              <Text style={styles.chartStatVal}>{formatPaise(pieData.summary.total6M)}</Text>
+            </View>
+            <View style={styles.chartStatPill}>
+              <Text style={styles.chartStatLabel}>AVG / MO</Text>
+              <Text style={styles.chartStatVal}>{formatPaise(pieData.summary.avgMonthly)}</Text>
+            </View>
+            <View style={styles.chartStatPill}>
+              <Text style={styles.chartStatLabel}>VS LAST MO</Text>
+              <Text style={[
+                styles.chartStatVal,
+                { color: (pieData.summary.momChangePct ?? 0) >= 0 ? '#006A65' : '#BA1A1A' },
+              ]}>
+                {formatMomLabel(pieData.summary.momChangePct)}
+              </Text>
+            </View>
+          </View>
 
-              {/* Dynamic Area Fill */}
-              <Path d={chartData.pathArea} fill="url(#gradient-chart)" />
+          <CollectionPieChart
+            data={pieData ?? EMPTY_COLLECTION_PIE_DATA}
+            selectedIndex={selectedPieIndex}
+            onSelectSlice={setSelectedPieIndex}
+          />
+        </View>
 
-              {/* Dynamic Trend Line */}
-              <Path d={chartData.pathLine} fill="none" stroke="#005E7D" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-
-              {/* Dynamic Data Points */}
-              {chartData.points.map((p, i) => (
-                <Circle key={i} cx={p.x} cy={p.y} r="4" fill={i === chartData.points.length - 1 ? "#10D7CD" : "#FFFFFF"} stroke="#005E7D" strokeWidth={i === chartData.points.length - 1 ? 0 : 2} />
-              ))}
-            </Svg>
-
-            {/* Floating Indicator (Last Point) */}
-            {chartData.lastPoint && (
-              <View style={[styles.floatingIndicator, { right: 0, top: Math.max(0, chartData.lastPoint.y - 30) }]}>
-                <Text style={styles.floatingIndicatorText}>{formatCurrency(chartData.lastPoint.amount)}</Text>
+        <View style={styles.activitySection}>
+          <View style={styles.activityHeaderRow}>
+            <Text style={styles.activityTitle}>Live Activity</Text>
+            {todayActivityCount > 0 && (
+              <View style={styles.activityTodayBadge}>
+                <Text style={styles.activityTodayBadgeText}>{todayActivityCount} today</Text>
               </View>
             )}
           </View>
 
-          <View style={styles.chartLabels}>
-            {chartData.labels.map(month => (
-              <Text key={month} style={styles.chartLabelText}>{month}</Text>
-            ))}
-          </View>
-        </View>
-
-        {/* Live Activity */}
-        <View style={styles.activitySection}>
-          <Text style={styles.activityTitle}>Live Activity</Text>
-
           {recentActivity.length === 0 ? (
-            <Text style={{ fontFamily: 'Inter_400Regular', color: '#64748B', fontStyle: 'italic' }}>No recent activity to display.</Text>
+            <View style={styles.activityEmptyCard}>
+              <Text style={styles.activityEmptyText}>No recent collections yet.</Text>
+              <Text style={styles.activityEmptySub}>Installments and cash collections will appear here in real time.</Text>
+            </View>
           ) : (
             <>
-              {(showAllActivity ? recentActivity : recentActivity.slice(0, 3)).map((activity, index) => (
+              {(showAllActivity ? recentActivity : recentActivity.slice(0, 5)).map((activity, index) => (
                 <View key={activity.id || index} style={styles.activityCard}>
                   <View style={[styles.activityIconBox, { backgroundColor: activity.type === 'credit' ? '#C1E8FF' : '#54FAEF' }]}>
                     {activity.type === 'credit' ? (
@@ -370,15 +333,24 @@ export default function AdminDashboard() {
                     )}
                   </View>
                   <View style={styles.activityContent}>
-                    <Text style={styles.activityName} numberOfLines={1}>{activity.description}</Text>
-                    <Text style={styles.activityDesc}>{activity.category || 'Transaction'}</Text>
+                    <View style={styles.activityTitleRow}>
+                      <Text style={styles.activityName} numberOfLines={1}>{activity.description}</Text>
+                      <View style={styles.activityTypePill}>
+                        <Text style={styles.activityTypePillText}>{activity.paymentLabel}</Text>
+                      </View>
+                    </View>
+                    <Text style={styles.activityDesc} numberOfLines={1}>
+                      {activity.category || 'Transaction'}
+                      {activity.monthNumber ? ` · Month ${activity.monthNumber}` : ''}
+                      {' · '}{formatRelativeTime(activity.created_at)}
+                    </Text>
                   </View>
                   <Text style={[styles.activityAmount, { color: activity.type === 'credit' ? '#006A65' : '#BA1A1A' }]}>
                     {activity.type === 'credit' ? '+' : '-'}{formatPaise(activity.amount)}
                   </Text>
                 </View>
               ))}
-              {recentActivity.length > 3 && (
+              {recentActivity.length > 5 && (
                 <TouchableOpacity 
                   style={{ alignSelf: 'center', marginTop: 8, paddingVertical: 8, paddingHorizontal: 16, borderRadius: 20, backgroundColor: '#F1F5F9' }}
                   onPress={() => {
@@ -639,43 +611,77 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#64748B',
   },
-  chartContainer: {
-    height: 160,
-    width: '100%',
-    position: 'relative',
-  },
-  floatingIndicator: {
-    position: 'absolute',
-    top: 8,
-    right: 48,
-    backgroundColor: '#0B1C30',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 4,
-  },
-  floatingIndicatorText: {
-    color: '#FFFFFF',
-    fontSize: 10,
-    fontFamily: 'Inter_700Bold',
-  },
-  chartLabels: {
+  chartStatsRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 16,
+    gap: 8,
+    marginBottom: 16,
   },
-  chartLabelText: {
+  chartStatPill: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderWidth: 1,
+    borderColor: '#F1F5F9',
+  },
+  chartStatLabel: {
     fontFamily: 'Inter_600SemiBold',
-    fontSize: 10,
+    fontSize: 8,
     color: '#94A3B8',
+    letterSpacing: 0.6,
+    marginBottom: 4,
+  },
+  chartStatVal: {
+    fontFamily: 'SpaceGrotesk_600SemiBold',
+    fontSize: 12,
+    color: '#005E7D',
   },
   activitySection: {
     marginBottom: 32,
+  },
+  activityHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
   },
   activityTitle: {
     fontFamily: 'SpaceGrotesk_600SemiBold',
     fontSize: 20,
     color: '#0B1C30',
-    marginBottom: 16,
+  },
+  activityTodayBadge: {
+    backgroundColor: '#E0F2FE',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 100,
+  },
+  activityTodayBadgeText: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 11,
+    color: '#005E7D',
+  },
+  activityEmptyCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: '#F1F5F9',
+    alignItems: 'center',
+  },
+  activityEmptyText: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 14,
+    color: '#64748B',
+    marginBottom: 6,
+  },
+  activityEmptySub: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 12,
+    color: '#94A3B8',
+    textAlign: 'center',
+    lineHeight: 18,
   },
   activityCard: {
     flexDirection: 'row',
@@ -703,10 +709,29 @@ const styles = StyleSheet.create({
   activityContent: {
     flex: 1,
   },
+  activityTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 2,
+  },
   activityName: {
+    flex: 1,
     fontFamily: 'Inter_600SemiBold',
     fontSize: 14,
     color: '#0B1C30',
+  },
+  activityTypePill: {
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 100,
+  },
+  activityTypePillText: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 8,
+    color: '#005E7D',
+    letterSpacing: 0.4,
   },
   activityDesc: {
     fontFamily: 'Inter_400Regular',

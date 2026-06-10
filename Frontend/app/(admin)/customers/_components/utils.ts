@@ -1,5 +1,7 @@
 // Utility functions for Admin Customer Detail Page
 
+import { buildCsvDocument, paiseToCsvAmount } from '../../../../lib/csvExport';
+
 /**
  * Convert paise (integer) to formatted rupee string
  * @param paise Amount in paise
@@ -18,6 +20,50 @@ export function formatPaise(paise: number): string {
  * @param dateStr UTC timestamp string
  * @returns Formatted date like "15 Jan 2024"
  */
+/** Display label for group selector chips (handles numeric-only names) */
+export function getGroupChipLabel(
+    name: string,
+    ticketNumber: string | null,
+    valuePaise: number,
+): string {
+    const trimmed = name.trim();
+    const looksLikeAmount = /^[₹\d,\s.]+$/.test(trimmed);
+    if (looksLikeAmount && ticketNumber) {
+        return `Ticket #${ticketNumber}`;
+    }
+    if (looksLikeAmount) {
+        return formatPaiseCompact(valuePaise);
+    }
+    if (trimmed.length > 22) {
+        return `${trimmed.slice(0, 20)}…`;
+    }
+    return trimmed;
+}
+
+/** Short due label e.g. "15 Jul" */
+export function formatDueShort(dateStr: string): string {
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('en-IN', {
+        day: 'numeric',
+        month: 'short',
+        timeZone: 'Asia/Kolkata',
+    });
+}
+
+/** Compact rupee format e.g. ₹2.8L, ₹95K */
+export function formatPaiseCompact(paise: number): string {
+    const rupees = paise / 100;
+    if (rupees >= 100000) {
+        const lakhs = rupees / 100000;
+        const formatted = lakhs >= 10 ? Math.round(lakhs).toString() : lakhs.toFixed(1).replace(/\.0$/, '');
+        return `₹${formatted}L`;
+    }
+    if (rupees >= 1000) {
+        return `₹${Math.round(rupees / 1000)}K`;
+    }
+    return formatPaise(paise);
+}
+
 export function formatDateIST(dateStr: string): string {
     const date = new Date(dateStr);
     return date.toLocaleDateString('en-IN', {
@@ -147,11 +193,7 @@ export function getStatusBadgeColor(status: string): { bg: string; text: string 
 }
 
 /**
- * Export payment history to CSV format
- * @param rows Payment rows data
- * @param customerName Customer name for filename
- * @param groupName Group name for filename
- * @returns CSV content string
+ * Build admin payment history CSV (file-ready).
  */
 export function exportToCSV(
     rows: Array<{
@@ -162,45 +204,64 @@ export function exportToCSV(
         netDue: number;
         paidOn: string | null;
         paidAmount: number;
+        remaining?: number;
         method: string;
         status: string;
         refId: string | null;
+        winner?: boolean;
     }>,
     customerName: string,
-    groupName: string
+    groupName: string,
+    options?: {
+        ticketNumber?: string | null;
+        accountingType?: string;
+        exportedAt?: string;
+    },
 ): string {
-    const headers = [
-        'Cycle',
-        'Due Date',
-        'Original Amount (₹)',
-        'Dividend Applied (₹)',
-        'Net Due (₹)',
-        'Paid On',
-        'Paid Amount (₹)',
-        'Method',
-        'Status',
-        'Reference ID',
-    ];
+    const exportedAt = options?.exportedAt ?? new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+    const totalPaid = rows.reduce((sum, row) => sum + row.paidAmount, 0);
+    const totalDue = rows.reduce((sum, row) => sum + row.netDue, 0);
+    const totalRemaining = rows.reduce((sum, row) => sum + (row.remaining ?? Math.max(0, row.netDue - row.paidAmount)), 0);
 
-    const csvRows = [headers.join(',')];
-
-    rows.forEach((row) => {
-        const values = [
+    return buildCsvDocument(
+        [
+            ['Customer', customerName],
+            ['Group', groupName],
+            ['Ticket', options?.ticketNumber ?? '—'],
+            ['Accounting Type', options?.accountingType ?? '—'],
+            ['Exported At (IST)', exportedAt],
+            ['Total Cycles', String(rows.length)],
+            ['Total Due (INR)', paiseToCsvAmount(totalDue)],
+            ['Total Paid (INR)', paiseToCsvAmount(totalPaid)],
+            ['Total Remaining (INR)', paiseToCsvAmount(totalRemaining)],
+        ],
+        [
+            'Cycle',
+            'Due Date',
+            'Payable Amount (INR)',
+            'Dividend Applied (INR)',
+            'Paid Amount (INR)',
+            'Remaining (INR)',
+            'Paid On',
+            'Method',
+            'Status',
+            'Winner Cycle',
+            'Reference ID',
+        ],
+        rows.map((row) => [
             row.cycle,
-            row.dueDate ? formatDateIST(row.dueDate) : '-',
-            (row.originalAmount / 100).toFixed(2),
-            (row.dividendApplied / 100).toFixed(2),
-            (row.netDue / 100).toFixed(2),
-            row.paidOn ? formatDateIST(row.paidOn) : '-',
-            (row.paidAmount / 100).toFixed(2),
-            row.method || '-',
+            row.dueDate ? formatDateIST(row.dueDate) : '',
+            paiseToCsvAmount(row.netDue),
+            paiseToCsvAmount(row.dividendApplied),
+            paiseToCsvAmount(row.paidAmount),
+            paiseToCsvAmount(row.remaining ?? Math.max(0, row.netDue - row.paidAmount)),
+            row.paidOn ? formatDateIST(row.paidOn) : '',
+            row.method || '',
             row.status,
-            row.refId || '-',
-        ];
-        csvRows.push(values.join(','));
-    });
-
-    return csvRows.join('\n');
+            row.winner ? 'Yes' : 'No',
+            row.refId || '',
+        ]),
+    );
 }
 
 /**
@@ -230,3 +291,13 @@ export function isSameUTCMonth(date1: Date, date2: Date): boolean {
     return date1.getUTCFullYear() === date2.getUTCFullYear() &&
         date1.getUTCMonth() === date2.getUTCMonth();
 }
+
+// Re-export shared chit payment helpers
+export {
+    type AuctionCycleInfo,
+    dedupeAuctionCycles,
+    getCycleDueAmount,
+    getMemberDueAfterAuction,
+    getUnaccountedCycleDueAmount,
+    isCycleCollectible,
+} from '../../../../lib/chitPayments';

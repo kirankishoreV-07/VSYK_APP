@@ -8,6 +8,7 @@ import { useRouter } from 'expo-router';
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { Colors, Shadows } from '../../lib/constants';
+import { UNAUTHORED_THEME } from '../../lib/memberGroupHistory';
 import { useMemberSession } from '../../lib/MemberSessionContext';
 import { useActiveChits, formatPaise, formatShortDate, type ActiveChit } from '../../lib/hooks/useDashboard';
 import { useQueryClient } from '@tanstack/react-query';
@@ -45,7 +46,7 @@ function getStatusLabel(chit: ActiveChit): string {
 }
 
 function getStatusColor(label: string, isUnaccounted: boolean): string {
-  if (label === 'Cash Only' || isUnaccounted) return '#9333EA'; // Purple for unaccounted
+  if (label === 'Cash Only' || isUnaccounted) return UNAUTHORED_THEME.accent;
   if (label === 'Due Soon') return '#F59E0B';
   if (label === 'Completed') return '#10B981';
   if (label === 'Bidding') return Colors.secondary;
@@ -347,8 +348,8 @@ const styles = StyleSheet.create({
     ...Shadows.subtle,
   },
   cardUnaccounted: {
-    backgroundColor: '#FAF5FF',
-    borderColor: '#E9D5FF',
+    backgroundColor: UNAUTHORED_THEME.bg,
+    borderColor: UNAUTHORED_THEME.border,
     borderWidth: 2,
   },
   badge: {
@@ -360,7 +361,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 48,
     right: 14,
-    backgroundColor: '#9333EA',
+    backgroundColor: UNAUTHORED_THEME.badgeBg,
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 100,

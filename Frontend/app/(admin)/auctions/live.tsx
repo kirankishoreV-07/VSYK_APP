@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Image } from 'expo-image';
+import { AppLogo } from '../../../components/AppLogo';
 import Svg, { Path, Circle } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
 import { supabase } from '../../../lib/supabase';
 import { apiPost } from '../../../lib/api';
+import { isAuctionConfiguredUpcoming } from '../../../lib/auctionUtils';
 
 export default function AdminLiveAuction() {
   const router = useRouter();
@@ -99,18 +100,20 @@ export default function AdminLiveAuction() {
         return;
       }
 
-      // Fallback: check for next upcoming if no live
-      const { data: upcomingAuction, error: upcomingError } = await supabase
+      // Fallback: next admin-configured upcoming only (never auto-generated placeholders)
+      const { data: upcomingRows, error: upcomingError } = await supabase
         .from('auctions')
         .select('*, chit_groups(name, group_code, value, capacity)')
         .eq('status', 'upcoming')
+        .gt('min_bid', 0)
+        .not('scheduled_at', 'is', null)
         .order('scheduled_at', { ascending: true })
-        .limit(1)
-        .single();
+        .limit(10);
 
-      if (upcomingError && upcomingError.code !== 'PGRST116') throw upcomingError;
+      if (upcomingError) throw upcomingError;
+      const upcomingAuction = (upcomingRows || []).find(isAuctionConfiguredUpcoming) || null;
       auctionIdRef.current = upcomingAuction?.id || null;
-      setAuction(upcomingAuction || null);
+      setAuction(upcomingAuction);
     } catch (err) {
       console.error('Error fetching live auction:', err);
     } finally {
@@ -339,13 +342,7 @@ export default function AdminLiveAuction() {
             <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
           </Svg>
         </TouchableOpacity>
-        <View style={styles.avatarContainer}>
-          <Image
-            source={require('../../../assets/cropped_logo.png')}
-            style={styles.avatar}
-            contentFit="contain"
-          />
-        </View>
+        <AppLogo size={32} />
         <View style={styles.headerInfo}>
           <Text style={styles.groupName}>{auction?.chit_groups?.name || 'Live Auction'}</Text>
           <Text style={styles.groupCode}>{auction?.chit_groups?.group_code} • Auction #{auction?.auction_number}</Text>

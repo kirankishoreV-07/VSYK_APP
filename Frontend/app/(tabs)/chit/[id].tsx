@@ -13,6 +13,8 @@ import * as Haptics from 'expo-haptics';
 import { Colors, Shadows } from '../../../lib/constants';
 import { useMemberSession } from '../../../lib/MemberSessionContext';
 import { apiPost } from '../../../lib/api';
+import { dedupeAuctionCycles, getCycleDueAmount } from '../../../lib/chitPayments';
+import { isMemberAuctionWinner, WINNER_HIGHLIGHT } from '../../../lib/auctionWinner';
 
 const RAZORPAY_KEY = 'rzp_test_SmauVIQGRqu5gR';
 
@@ -34,6 +36,8 @@ type AuctionSettlement = {
   scheduled_at: string | null;
   closes_at: string | null;
   status: string; // 'upcoming' | 'live' | 'completed'
+  winner_member_id?: string | null;
+  winner_prize_amount?: number | null;
 };
 
 type CashCollectionRow = {
@@ -121,29 +125,12 @@ function useGroupAuctions(groupId?: string) {
       if (!groupId) return [];
       const { data, error } = await supabase
         .from('auctions')
-        .select('id, auction_number, installment_due, final_due_amount, scheduled_at, closes_at, status')
+        .select('id, auction_number, installment_due, final_due_amount, scheduled_at, closes_at, status, winner_member_id, winner_prize_amount')
         .eq('chit_group_id', groupId)
         .order('auction_number', { ascending: true });
       if (error) throw error;
 
-      // Deduplicate: for each auction_number, prefer completed > live > upcoming
-      // This prevents a stale "upcoming" placeholder (final_due_amount=0) from
-      // overriding a settled auction's real final_due_amount.
-      const statusPriority: Record<string, number> = { completed: 3, live: 2, upcoming: 1 };
-      const best = new Map<number, AuctionSettlement>();
-      for (const row of (data ?? []) as AuctionSettlement[]) {
-        if (row.auction_number == null) continue;
-        const existing = best.get(row.auction_number);
-        if (
-          !existing ||
-          (statusPriority[row.status] ?? 0) > (statusPriority[existing.status] ?? 0)
-        ) {
-          best.set(row.auction_number, row);
-        }
-      }
-      return Array.from(best.values()).sort(
-        (a, b) => (a.auction_number ?? 0) - (b.auction_number ?? 0),
-      );
+      return dedupeAuctionCycles((data ?? []) as AuctionSettlement[]) as AuctionSettlement[];
     },
     enabled: !!groupId,
   });
@@ -242,40 +229,44 @@ function getMonthPeriod(payment: PaymentRow, groupStartDate?: string | null): { 
 }
 
 function MonthTimelineItem({
-  p, isCurrentDue, onPay, paying, payableAmount, groupStartDate, auctionStatus, partialPaid, isUnaccountedGroup, cashCollection,
+  p, isCurrentDue, onPay, paying, payableAmount, groupStartDate, auctionStatus, partialPaid, isUnaccountedGroup, cashCollection, isMemberWinner, winnerPrizeAmount,
 }: {
   p: PaymentRow;
   isCurrentDue: boolean;
   onPay: (p: PaymentRow, payableAmount: number) => void;
   paying: boolean;
-  payableAmount: number;
+  payableAmount: number | null;
   groupStartDate?: string | null;
   auctionStatus?: string | null;
   partialPaid?: number;
   isUnaccountedGroup?: boolean;
   cashCollection?: CashCollectionRow;
+  isMemberWinner?: boolean;
+  winnerPrizeAmount?: number | null;
 }) {
   const period = getMonthPeriod(p, groupStartDate);
+  const dueKnown = payableAmount != null;
   // For unaccounted groups, cash_collections is the source of truth (not payment_schedules.paid).
-  const cashFull = isUnaccountedGroup && !!cashCollection && cashCollection.amount >= payableAmount;
-  const cashPartial = isUnaccountedGroup && !!cashCollection && cashCollection.amount > 0 && cashCollection.amount < payableAmount;
+  const cashFull = dueKnown && isUnaccountedGroup && !!cashCollection && cashCollection.amount >= payableAmount;
+  const cashPartial = dueKnown && isUnaccountedGroup && !!cashCollection && cashCollection.amount > 0 && cashCollection.amount < payableAmount;
   const isPaid = p.paid || cashFull;
   const today = Date.now();
   const daysLeft = Math.ceil((period.endDate.getTime() - today) / 86400000);
-  const overdue = daysLeft < 0 && !isPaid;
+  const overdue = dueKnown && daysLeft < 0 && !isPaid;
 
   // Calculate if this is a partial payment scenario
   const cashPartialPaid = cashPartial ? (cashCollection?.amount ?? 0) : 0;
   const effectivePartialPaid = cashPartialPaid || (partialPaid || 0);
-  const hasPartialPayment = !isPaid && effectivePartialPaid > 0;
-  const remainingAmount = hasPartialPayment ? Math.max(0, payableAmount - effectivePartialPaid) : payableAmount;
+  const hasPartialPayment = dueKnown && !isPaid && effectivePartialPaid > 0;
+  const remainingAmount = dueKnown
+    ? (hasPartialPayment ? Math.max(0, payableAmount - effectivePartialPaid) : payableAmount)
+    : 0;
 
-  // A month is payable when:
-  // 1. Admin has started (live) or settled (completed) this month's auction, OR
-  // 2. It's the first unpaid month and is overdue (date-based safety net)
+  // Payable only after prior auction settlement defines the installment amount
   const auctionStarted = auctionStatus === 'live' || auctionStatus === 'completed';
-  const canPay = (isCurrentDue || auctionStarted || overdue) && !isPaid;
+  const canPay = dueKnown && (isCurrentDue || auctionStarted || overdue) && !isPaid;
   const isUpcoming = !isPaid && !canPay;
+  const awaitingSettlement = !dueKnown && !isPaid;
 
   // Label shown in the action row when auction is live but not yet settled
   const auctionLiveLabel = auctionStatus === 'live' && !isPaid;
@@ -284,7 +275,13 @@ function MonthTimelineItem({
     <View style={ts.item}>
       {/* Dot */}
       <View style={ts.lineCol}>
-        <View style={[ts.dot, isPaid && ts.dotPaid, canPay && ts.dotCurrent, isUpcoming && ts.dotUpcoming]}>
+        <View style={[
+          ts.dot,
+          isMemberWinner && ts.dotWinner,
+          isPaid && !isMemberWinner && ts.dotPaid,
+          canPay && !isMemberWinner && ts.dotCurrent,
+          isUpcoming && !isMemberWinner && ts.dotUpcoming,
+        ]}>
           {isPaid && <Svg width={10} height={10} viewBox="0 0 24 24" fill="#FFF"><Path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" /></Svg>}
           {canPay && <View style={ts.dotInner} />}
         </View>
@@ -293,11 +290,12 @@ function MonthTimelineItem({
       {/* Card */}
       <View style={[
         ts.card,
-        isPaid && ts.cardPaid,
-        canPay && !overdue && !auctionLiveLabel && ts.cardCurrent,
-        auctionLiveLabel && ts.cardLive,
-        overdue && ts.cardOverdue,
-        isUpcoming && ts.cardUpcoming,
+        isMemberWinner && ts.cardWinner,
+        isPaid && !isMemberWinner && ts.cardPaid,
+        canPay && !overdue && !auctionLiveLabel && !isMemberWinner && ts.cardCurrent,
+        auctionLiveLabel && !isMemberWinner && ts.cardLive,
+        overdue && !isMemberWinner && ts.cardOverdue,
+        isUpcoming && !isMemberWinner && ts.cardUpcoming,
       ]}>
         {/* Month name + amount */}
         <View style={ts.cardTop}>
@@ -316,8 +314,13 @@ function MonthTimelineItem({
               canPay && { color: overdue ? '#EF4444' : Colors.primary, fontSize: 20 },
               auctionLiveLabel && { color: '#F59E0B', fontSize: 20 },
               isUpcoming && { color: '#94A3B8' },
+              awaitingSettlement && { color: '#94A3B8', fontSize: 16 },
             ]}>
-              {hasPartialPayment ? formatPaise(remainingAmount) : formatPaise(payableAmount)}
+              {awaitingSettlement
+                ? '—'
+                : hasPartialPayment
+                  ? formatPaise(remainingAmount)
+                  : formatPaise(payableAmount!)}
             </Text>
             {hasPartialPayment && (
               <View style={ts.partialBadge}>
@@ -333,8 +336,17 @@ function MonthTimelineItem({
             {isCurrentDue && !overdue && !auctionLiveLabel && daysLeft >= 0 && (
               <View style={ts.dueBadge}><Text style={ts.dueText}>DUE IN {daysLeft}D</Text></View>
             )}
+            {isMemberWinner && (
+              <View style={ts.winnerBadge}>
+                <Text style={ts.winnerBadgeText}>WINNER</Text>
+              </View>
+            )}
           </View>
         </View>
+
+        {isMemberWinner && winnerPrizeAmount != null && winnerPrizeAmount > 0 && (
+          <Text style={ts.winnerPrizeText}>Prize received · {formatPaise(winnerPrizeAmount)}</Text>
+        )}
 
         {/* Divider */}
         <View style={ts.innerDivider} />
@@ -374,9 +386,18 @@ function MonthTimelineItem({
               </Text>
             </View>
           </View>
+        ) : awaitingSettlement ? (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Svg width={14} height={14} viewBox="0 0 24 24" fill="#94A3B8">
+              <Path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z" />
+            </Svg>
+            <Text style={ts.statusScheduled}>
+              Payable after Auction #{p.month_number} settles
+            </Text>
+          </View>
         ) : isUnaccountedGroup ? (
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <Svg width={14} height={14} viewBox="0 0 24 24" fill="#9333EA">
+            <Svg width={14} height={14} viewBox="0 0 24 24" fill={Colors.primary}>
               <Path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z" />
             </Svg>
             <Text style={ts.statusScheduled}>
@@ -702,33 +723,19 @@ export default function ChitDetailScreen() {
   });
 
   const getPayable = (p: PaymentRow) => {
-    const settlement = settlementByMonth.get(p.month_number);
-
-    // Only apply settlement figures if the auction is actually COMPLETED (settled by admin)
-    if (settlement && settlement.status === 'completed') {
-      // final_due_amount is the authoritative source — use it even if it is 0
-      // (0 means the member's installment was fully covered by the dividend)
-      if (settlement.final_due_amount !== null) return settlement.final_due_amount;
-      if (settlement.installment_due !== null) return settlement.installment_due;
-    }
-
-    // payment_schedules.amount is updated by the backend apply-settlement route.
-    // If the backend ran, this will already hold the correct reduced amount.
-    // Use it only when it differs from the default monthly_installment — meaning
-    // the backend has already updated it.
     const defaultInstallment = group?.monthly_installment || 0;
-    if (p.amount > 0 && p.amount !== defaultInstallment) return p.amount;
-
-    // Final fallback: full monthly installment
-    return defaultInstallment;
+    const auctionList = Array.from(settlementByMonth.values());
+    return getCycleDueAmount(p.month_number, defaultInstallment, auctionList);
   };
 
   // First unpaid month — for unaccounted, a month is covered when cash paid >= payable amount.
   const isCovered = (p: PaymentRow) => {
     if (p.paid) return true;
+    const payable = getPayable(p);
+    if (payable == null) return false;
     if (isUnaccounted) {
       const cc = cashByMonth[p.month_number];
-      if (cc && cc.amount >= getPayable(p)) return true;
+      if (cc && cc.amount >= payable) return true;
     }
     return false;
   };
@@ -745,6 +752,7 @@ export default function ChitDetailScreen() {
   const totalDue = payments.reduce((sum, p) => {
     if (isCovered(p)) return sum;
     const payable = getPayable(p);
+    if (payable == null) return sum;
     if (isUnaccounted) {
       const paidForMonth = cashByMonth[p.month_number]?.amount ?? 0;
       return sum + Math.max(0, payable - paidForMonth);
@@ -837,6 +845,8 @@ export default function ChitDetailScreen() {
               const auction = settlementByMonth.get(p.month_number);
               const partialPaid = partialPaymentTotals[p.month_number] || 0;
               const cashCollection = cashByMonth[p.month_number];
+              const membershipId = data?.id ?? null;
+              const memberWonThisMonth = isMemberAuctionWinner(auction, membershipId);
               return (
                 <View key={p.id}>
                   <MonthTimelineItem
@@ -850,6 +860,8 @@ export default function ChitDetailScreen() {
                     partialPaid={partialPaid}
                     isUnaccountedGroup={isUnaccounted}
                     cashCollection={cashCollection}
+                    isMemberWinner={memberWonThisMonth}
+                    winnerPrizeAmount={memberWonThisMonth ? (auction?.winner_prize_amount ?? null) : null}
                   />
                   {idx < payments.length - 1 && <View style={ts.connector} />}
                 </View>
@@ -965,6 +977,7 @@ const ts = StyleSheet.create({
   dotPaid: { backgroundColor: Colors.secondary, borderColor: Colors.secondary },
   dotCurrent: { backgroundColor: '#FFF', borderColor: Colors.primary, borderWidth: 2.5 },
   dotUpcoming: { backgroundColor: '#F8FAFC', borderColor: '#CBD5E1' },
+  dotWinner: { backgroundColor: WINNER_HIGHLIGHT.badgeBg, borderColor: WINNER_HIGHLIGHT.borderStrong, borderWidth: 2.5 },
   dotInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: Colors.primary },
 
   card: {
@@ -977,6 +990,11 @@ const ts = StyleSheet.create({
   cardOverdue: { borderColor: '#FECACA', backgroundColor: '#FFF5F5', borderWidth: 1.5 },
   cardUpcoming: { backgroundColor: 'rgba(255,255,255,0.55)', borderStyle: 'dashed' },
   cardLive: { borderColor: '#F59E0B', borderWidth: 1.5, backgroundColor: '#FFFBEB' },
+  cardWinner: {
+    borderColor: WINNER_HIGHLIGHT.borderStrong,
+    borderWidth: 2,
+    backgroundColor: WINNER_HIGHLIGHT.bg,
+  },
 
   cardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   monthName: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 16, color: '#0B1C30' },
@@ -1014,6 +1032,26 @@ const ts = StyleSheet.create({
   dividendText: { fontFamily: 'Inter_500Medium', fontSize: 11, color: '#1E40AF' },
   partialBadge: { backgroundColor: '#FEF3C7', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
   partialText: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: '#92400E' },
+  winnerBadge: {
+    backgroundColor: WINNER_HIGHLIGHT.badgeBg,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: WINNER_HIGHLIGHT.border,
+  },
+  winnerBadgeText: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 9,
+    color: WINNER_HIGHLIGHT.badgeText,
+    letterSpacing: 0.6,
+  },
+  winnerPrizeText: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 11,
+    color: WINNER_HIGHLIGHT.text,
+    marginBottom: 8,
+  },
   remainingCashBadge: { backgroundColor: '#FEF3C7', paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#FDE68A' },
   remainingCashText: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#92400E' },
 });

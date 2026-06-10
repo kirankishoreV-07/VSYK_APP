@@ -2,7 +2,7 @@ import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { Image } from 'expo-image';
+import { AppLogo } from '../../components/AppLogo';
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { supabase } from '../../lib/supabase';
@@ -34,13 +34,7 @@ export default function AdminSettings() {
     <SafeAreaView style={styles.container}>
       <View style={styles.appBar}>
         <View style={styles.appBarLeft}>
-          <View style={styles.avatarContainerHeader}>
-            <Image
-              source={require('../../assets/cropped_logo.png')}
-              style={styles.avatarHeader}
-              contentFit="contain"
-            />
-          </View>
+          <AppLogo size={36} />
           <Text style={styles.appBarTitle}>Settings</Text>
         </View>
       </View>

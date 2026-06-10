@@ -1,171 +1,151 @@
-import { useState, useEffect } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Platform, TextInput } from 'react-native';
+import { useState, useEffect, useMemo } from 'react';
+import {
+  View, Text, ScrollView, TouchableOpacity, StyleSheet,
+  ActivityIndicator, TextInput,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
-import { supabase } from '../../lib/supabase';
 import { Colors, Shadows } from '../../lib/constants';
 import { formatPaise } from '../../lib/hooks/useDashboard';
-
-type TransactionRow = {
-  id: string;
-  amount: number;
-  type: 'credit' | 'debit';
-  description: string;
-  category: string;
-  status: string;
-  created_at: string;
-};
-
-// Group transactions by date
-function groupTransactions(transactions: TransactionRow[]) {
-  const groups: { [key: string]: TransactionRow[] } = {};
-
-  transactions.forEach(t => {
-    const date = new Date(t.created_at);
-    const today = new Date();
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-
-    let dateStr = '';
-    if (date.toDateString() === today.toDateString()) {
-      dateStr = 'Today';
-    } else if (date.toDateString() === yesterday.toDateString()) {
-      dateStr = 'Yesterday';
-    } else {
-      dateStr = date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-    }
-
-    if (!groups[dateStr]) groups[dateStr] = [];
-    groups[dateStr].push(t);
-  });
-
-  return groups;
-}
-
 import { useMemberSession } from '../../lib/MemberSessionContext';
+import { supabase } from '../../lib/supabase';
+import {
+  fetchMemberGroupSummaries,
+  UNAUTHORED_THEME,
+  type MemberGroupSummary,
+} from '../../lib/memberGroupHistory';
 
-function useTransactions() {
-  const { memberId } = useMemberSession();
-
-  return useQuery<TransactionRow[]>({
-    queryKey: ['transactions', memberId],
-    queryFn: async () => {
-      if (!memberId) return [];
-
-      // 1. Get all chit memberships for this customer
-      const { data: memberships } = await supabase
-        .from('chit_members')
-        .select('id, chit_group_id, chit_groups(name)')
-        .eq('customer_id', memberId);
-
-      if (!memberships || memberships.length === 0) return [];
-      const memberIds = memberships.map(m => m.id);
-
-      // 2. Fetch transactions for all their memberships
-      const { data, error } = await supabase
-        .from('chit_member_transactions')
-        .select('*')
-        .in('chit_member_id', memberIds)
-        .order('transaction_date', { ascending: false });
-
-      if (error) throw error;
-
-      // 3. Map to TransactionRow format for UI compatibility
-      return (data || []).map((t: any) => {
-        const group: any = memberships.find((m: any) => m.id === t.chit_member_id)?.chit_groups;
-        const groupName = Array.isArray(group) ? group[0]?.name : group?.name;
-        
-        return {
-          id: t.id,
-          amount: t.amount,
-          type: t.payment_type === 'dividend' ? 'credit' : 'debit',
-          description: `${t.payment_type === 'dividend' ? 'Dividend Earned' : 'Installment Paid'} - ${groupName || 'Chit Group'}`,
-          category: 'chit',
-          status: t.status,
-          created_at: t.transaction_date,
-        };
-      }) as TransactionRow[];
-    },
-    enabled: !!memberId,
-  });
-}
-
-const CAT_ICONS: Record<string, string> = {
-  scanned: 'qr_code_scanner',
-  chit: 'account_balance',
-  auto: 'payments',
-  bank: 'account_balance_wallet',
-};
-
-function TransactionCard({ t }: { t: TransactionRow }) {
-  const isCredit = t.type === 'credit';
-  const icon = CAT_ICONS[t.category] || 'receipt';
-  const time = new Date(t.created_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+function GroupHistoryCard({ group, onPress }: { group: MemberGroupSummary; onPress: () => void }) {
+  const isUnaccounted = group.accountingType === 'unaccounted';
 
   return (
-    <TouchableOpacity style={s.card} activeOpacity={0.8} onPress={() => Haptics.selectionAsync()}>
-      <View style={s.cardLeft}>
-        <View style={[s.iconBox, { backgroundColor: isCredit ? `${Colors.primary}15` : `${Colors.secondary}15` }]}>
-          <Svg width={24} height={24} viewBox="0 0 24 24" fill={isCredit ? Colors.primary : Colors.secondary}>
-            {/* Fallback simple icon if mapping isn't implemented */}
-            <Path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z" />
-          </Svg>
+    <TouchableOpacity
+      style={[s.card, isUnaccounted && s.cardUnaccounted]}
+      activeOpacity={0.88}
+      onPress={onPress}
+    >
+      <View style={s.cardHeader}>
+        <View style={{ flex: 1 }}>
+          <Text style={s.cardCategory} numberOfLines={1}>{group.groupName.toUpperCase()}</Text>
+          <Text style={s.cardName} numberOfLines={1}>{group.groupName}</Text>
+          <Text style={s.cardMeta}>
+            {isUnaccounted ? 'Cash Only' : 'Accounted'}
+            {' · '}{group.monthsPaid}/{group.durationMonths} months paid
+          </Text>
         </View>
-        <View style={s.cardDetails}>
-          <Text style={s.cardTitle} numberOfLines={1}>{t.description}</Text>
-          <Text style={s.cardSub}>{time} • {t.category}</Text>
+        <View style={[
+          s.badge,
+          { backgroundColor: group.isCompleted ? '#D1FAE5' : `${Colors.primary}15` },
+        ]}>
+          <Text style={[
+            s.badgeText,
+            { color: group.isCompleted ? '#10B981' : Colors.primary },
+          ]}>
+            {group.isCompleted ? 'COMPLETED' : 'ONGOING'}
+          </Text>
         </View>
       </View>
-      <View style={s.cardRight}>
-        <Text style={[s.cardAmt, { color: isCredit ? Colors.primary : '#0B1C30' }]}>
-          {isCredit ? '+' : '-'} {formatPaise(t.amount)}
-        </Text>
-        <View style={[s.statusBadge, { backgroundColor: isCredit ? `${Colors.primary}10` : `${Colors.secondary}10` }]}>
-          <Text style={[s.statusTxt, { color: isCredit ? Colors.primary : Colors.secondary }]}>{t.status}</Text>
+
+      <View style={s.statsRow}>
+        <View style={s.statItem}>
+          <Text style={s.statLabel}>PAID</Text>
+          <Text style={s.statVal}>{formatPaise(group.totalPaid)}</Text>
         </View>
+        <View style={s.statItem}>
+          <Text style={s.statLabel}>OUTSTANDING</Text>
+          <Text style={[s.statVal, group.totalOutstanding > 0 && { color: '#EF4444' }]}>
+            {formatPaise(group.totalOutstanding)}
+          </Text>
+        </View>
+        <View style={s.statItem}>
+          <Text style={s.statLabel}>PROGRESS</Text>
+          <Text style={s.statVal}>{group.progressPct}%</Text>
+        </View>
+      </View>
+
+      <View style={s.progressTrack}>
+        <View style={[
+          s.progressFill,
+          {
+            width: `${group.progressPct}%` as any,
+            backgroundColor: isUnaccounted ? UNAUTHORED_THEME.accent : Colors.primary,
+          },
+        ]} />
+      </View>
+
+      <View style={s.cardFooter}>
+        <Text style={s.footerHint}>Tap to view month-wise details & export</Text>
+        <Svg width={18} height={18} viewBox="0 0 24 24" fill={Colors.primary}>
+          <Path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z" />
+        </Svg>
       </View>
     </TouchableOpacity>
   );
 }
 
+function useMemberGroups(memberId: string | null) {
+  return useQuery({
+    queryKey: ['member-group-history', memberId],
+    queryFn: () => fetchMemberGroupSummaries(memberId!),
+    enabled: !!memberId,
+  });
+}
+
 export default function WalletScreen() {
-  const { data: transactions, isLoading } = useTransactions();
+  const router = useRouter();
+  const { memberId } = useMemberSession();
+  const queryClient = useQueryClient();
+  const { data: groups, isLoading } = useMemberGroups(memberId);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchActive, setIsSearchActive] = useState(false);
-  const queryClient = useQueryClient();
+  const [filter, setFilter] = useState<'all' | 'active' | 'completed'>('all');
 
   useEffect(() => {
+    if (!memberId) return;
     const invalidate = () => {
-      queryClient.invalidateQueries({ queryKey: ['transactions'] });
+      queryClient.invalidateQueries({ queryKey: ['member-group-history', memberId] });
     };
 
     const channel = supabase
-      .channel('member-wallet-updates')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'wallet_transactions' }, invalidate)
+      .channel('member-history-updates')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chit_member_transactions' }, invalidate)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'cash_collections' }, invalidate)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'payment_schedules' }, invalidate)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chit_members', filter: `customer_id=eq.${memberId}` }, invalidate)
       .subscribe();
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [queryClient]);
+    return () => { supabase.removeChannel(channel); };
+  }, [memberId, queryClient]);
 
-  const filteredTransactions = transactions?.filter(t =>
-    t.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    t.category.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filtered = useMemo(() => {
+    let list = groups || [];
+    if (filter === 'active') list = list.filter((g) => !g.isCompleted);
+    if (filter === 'completed') list = list.filter((g) => g.isCompleted);
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter((g) => g.groupName.toLowerCase().includes(q));
+    }
+    return list;
+  }, [groups, filter, searchQuery]);
 
-  const grouped = filteredTransactions ? groupTransactions(filteredTransactions) : {};
+  const activeGroups = filtered.filter((g) => !g.isCompleted);
+  const completedGroups = filtered.filter((g) => g.isCompleted);
+
+  const openGroup = (membershipId: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push(`/(tabs)/history/${membershipId}`);
+  };
 
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
-      {/* App Bar */}
       <View style={s.appBar}>
         {isSearchActive ? (
           <TextInput
             style={s.searchInput}
-            placeholder="Search transactions..."
+            placeholder="Search your groups..."
             value={searchQuery}
             onChangeText={setSearchQuery}
             autoFocus
@@ -173,40 +153,68 @@ export default function WalletScreen() {
         ) : (
           <Text style={s.appBarTitle}>History</Text>
         )}
-        <View style={s.appBarActions}>
-          <TouchableOpacity
-            style={[s.iconBtn, isSearchActive && { backgroundColor: Colors.primary }]}
-            onPress={() => {
-              Haptics.selectionAsync();
-              setIsSearchActive(!isSearchActive);
-              if (isSearchActive) setSearchQuery('');
-            }}
-          >
-            <Svg width={20} height={20} viewBox="0 0 24 24" fill={isSearchActive ? '#FFF' : Colors.primary}>
-              <Path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
-            </Svg>
-          </TouchableOpacity>
-        </View>
+        <TouchableOpacity
+          style={[s.iconBtn, isSearchActive && { backgroundColor: Colors.primary }]}
+          onPress={() => {
+            Haptics.selectionAsync();
+            setIsSearchActive(!isSearchActive);
+            if (isSearchActive) setSearchQuery('');
+          }}
+        >
+          <Svg width={20} height={20} viewBox="0 0 24 24" fill={isSearchActive ? '#FFF' : Colors.primary}>
+            <Path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
+          </Svg>
+        </TouchableOpacity>
       </View>
 
       <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
-        <View style={s.header}>
-          <Text style={s.headerSub}>Manage and track your fund activity</Text>
+        <Text style={s.headerSub}>Your participating chit groups and payment history</Text>
+
+        <View style={s.filterRow}>
+          {(['all', 'active', 'completed'] as const).map((key) => (
+            <TouchableOpacity
+              key={key}
+              style={[s.chip, filter === key && s.chipActive]}
+              onPress={() => { setFilter(key); Haptics.selectionAsync(); }}
+            >
+              <Text style={[s.chipText, filter === key && s.chipTextActive]}>
+                {key === 'all' ? 'All' : key === 'active' ? 'Ongoing' : 'Completed'}
+              </Text>
+            </TouchableOpacity>
+          ))}
         </View>
 
         {isLoading ? (
-          <View style={{ alignItems: 'center', paddingVertical: 40 }}>
-            <ActivityIndicator color={Colors.primary} size="large" />
+          <ActivityIndicator color={Colors.primary} size="large" style={{ marginTop: 40 }} />
+        ) : filtered.length === 0 ? (
+          <View style={s.emptyCard}>
+            <Text style={s.emptyTitle}>No groups found</Text>
+            <Text style={s.emptySub}>
+              {searchQuery
+                ? 'Try a different search term.'
+                : 'Join a chit group to see your payment history here.'}
+            </Text>
           </View>
         ) : (
-          Object.entries(grouped).map(([dateStr, items]) => (
-            <View key={dateStr} style={s.group}>
-              <Text style={s.dateHeader}>{dateStr}</Text>
-              <View style={s.groupItems}>
-                {items.map(t => <TransactionCard key={t.id} t={t} />)}
+          <>
+            {activeGroups.length > 0 && (
+              <View style={s.section}>
+                <Text style={s.sectionTitle}>Participating Groups</Text>
+                {activeGroups.map((g) => (
+                  <GroupHistoryCard key={g.membershipId} group={g} onPress={() => openGroup(g.membershipId)} />
+                ))}
               </View>
-            </View>
-          ))
+            )}
+
+            {completedGroups.length > 0 && (
+              <View style={s.section}>
+                <Text style={s.sectionTitle}>Completed Groups</Text>
+                {completedGroups.map((g) => (
+                  <GroupHistoryCard key={g.membershipId} group={g} onPress={() => openGroup(g.membershipId)} />
+                ))}
+              </View>
+            )}
+          </>
         )}
 
         <View style={{ height: 100 }} />
@@ -217,29 +225,70 @@ export default function WalletScreen() {
 
 const s = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#F8FAFC' },
-  appBar: { height: 64, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, backgroundColor: 'rgba(255,255,255,0.92)', borderBottomWidth: 1, borderBottomColor: 'rgba(226,232,240,0.5)', ...Shadows.subtle },
+  appBar: {
+    height: 64, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 20, backgroundColor: 'rgba(255,255,255,0.92)',
+    borderBottomWidth: 1, borderBottomColor: 'rgba(226,232,240,0.5)', ...Shadows.subtle,
+  },
   appBarTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20, color: Colors.primary },
-  appBarActions: { flexDirection: 'row', gap: 8 },
   iconBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center' },
+  searchInput: {
+    flex: 1, height: 40, backgroundColor: '#F1F5F9', borderRadius: 20,
+    paddingHorizontal: 16, fontFamily: 'Inter_400Regular', fontSize: 15, color: '#0B1C30', marginRight: 12,
+  },
 
-  scroll: { paddingHorizontal: 20, paddingTop: 16, gap: 24 },
-  header: { gap: 4, marginBottom: -8 },
+  scroll: { paddingHorizontal: 20, paddingTop: 16, gap: 16 },
   headerSub: { fontFamily: 'Inter_400Regular', fontSize: 14, color: '#64748B' },
 
-  group: { gap: 12 },
-  dateHeader: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: Colors.primary, letterSpacing: 1.5, textTransform: 'uppercase' },
-  groupItems: { gap: 12 },
+  filterRow: { flexDirection: 'row', gap: 8 },
+  chip: {
+    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 100,
+    backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E2E8F0',
+  },
+  chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  chipText: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#64748B' },
+  chipTextActive: { color: '#FFFFFF' },
 
-  card: { backgroundColor: '#FFFFFF', borderRadius: 18, padding: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderWidth: 1, borderColor: '#F1F5F9', ...Shadows.subtle },
-  cardLeft: { flexDirection: 'row', alignItems: 'center', gap: 14, flex: 1 },
-  iconBox: { width: 48, height: 48, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  cardDetails: { flex: 1 },
-  cardTitle: { fontFamily: 'Inter_700Bold', fontSize: 15, color: '#0B1C30' },
-  cardSub: { fontFamily: 'Inter_400Regular', fontSize: 12, color: '#64748B', marginTop: 2 },
+  section: { gap: 12 },
+  sectionTitle: {
+    fontFamily: 'Inter_600SemiBold', fontSize: 12, color: Colors.primary,
+    letterSpacing: 1.2, textTransform: 'uppercase',
+  },
 
-  cardRight: { alignItems: 'flex-end', gap: 4 },
-  cardAmt: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 16 },
-  statusBadge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 100 },
-  statusTxt: { fontFamily: 'Inter_700Bold', fontSize: 9, letterSpacing: 0.5, textTransform: 'uppercase' },
-  searchInput: { flex: 1, height: 40, backgroundColor: '#F1F5F9', borderRadius: 20, paddingHorizontal: 16, fontFamily: 'Inter_400Regular', fontSize: 15, color: '#0B1C30', marginRight: 12 },
+  card: {
+    backgroundColor: '#FFFFFF', borderRadius: 18, padding: 16, gap: 12,
+    borderWidth: 1, borderColor: '#F1F5F9', ...Shadows.subtle,
+  },
+  cardUnaccounted: {
+    backgroundColor: UNAUTHORED_THEME.bg,
+    borderColor: UNAUTHORED_THEME.border,
+    borderWidth: 2,
+  },
+  cardHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
+  cardCategory: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: Colors.primary, letterSpacing: 1.2 },
+  cardName: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 17, color: '#0B1C30', marginTop: 2 },
+  cardMeta: { fontFamily: 'Inter_400Regular', fontSize: 12, color: '#64748B', marginTop: 4 },
+  badge: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 100 },
+  badgeText: { fontFamily: 'Inter_700Bold', fontSize: 9, letterSpacing: 0.5 },
+
+  statsRow: { flexDirection: 'row', gap: 8 },
+  statItem: {
+    flex: 1, backgroundColor: '#F8FAFC', borderRadius: 10,
+    padding: 10, borderWidth: 1, borderColor: '#F1F5F9',
+  },
+  statLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 8, color: '#94A3B8', letterSpacing: 0.5, marginBottom: 3 },
+  statVal: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 13, color: '#0B1C30' },
+
+  progressTrack: { height: 6, backgroundColor: '#F1F5F9', borderRadius: 100, overflow: 'hidden' },
+  progressFill: { height: '100%', borderRadius: 100 },
+
+  cardFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 4 },
+  footerHint: { fontFamily: 'Inter_400Regular', fontSize: 11, color: '#94A3B8', fontStyle: 'italic' },
+
+  emptyCard: {
+    backgroundColor: '#FFFFFF', borderRadius: 16, padding: 28, alignItems: 'center',
+    borderWidth: 1, borderColor: '#F1F5F9',
+  },
+  emptyTitle: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 16, color: '#64748B', marginBottom: 6 },
+  emptySub: { fontFamily: 'Inter_400Regular', fontSize: 13, color: '#94A3B8', textAlign: 'center', lineHeight: 20 },
 });

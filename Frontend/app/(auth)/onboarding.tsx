@@ -7,16 +7,22 @@ import {
   Dimensions,
   FlatList,
   Animated,
-  Image,
+  ScrollView,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
-import Svg, { Path, Circle, Rect, G } from 'react-native-svg';
+import Svg, { Path } from 'react-native-svg';
 import { Colors, Spacing, Radii, Shadows } from '../../lib/constants';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const HORIZONTAL_PAD = 40;
+const CARD_WIDTH = SCREEN_WIDTH - HORIZONTAL_PAD;
+const MD_PHOTO_ASPECT = 1080 / 607;
+const SLIDE1_PHOTO_HEIGHT = Math.min(CARD_WIDTH * MD_PHOTO_ASPECT, SCREEN_HEIGHT * 0.46);
+const SLIDE1_PHOTO_WIDTH = SLIDE1_PHOTO_HEIGHT / MD_PHOTO_ASPECT;
 
 // ─── Slide Data ──────────────────────────────────────────────
 const SLIDES = [
@@ -30,15 +36,15 @@ const SLIDES = [
   {
     key: 'slide2',
     step: '2 of 3',
-    title: 'Automated Financial\nDiscipline',
-    subtitle: 'Harness the power of community savings to build your wealth systematically with zero market risk.',
+    title: 'Savings for Life\'s\nPriorities',
+    subtitle: 'A chit fund turns disciplined monthly savings into a flexible corpus for education, healthcare, emergencies, and major life goals — without market volatility.',
     cta: 'Next',
   },
   {
     key: 'slide3',
     step: '3 of 3',
-    title: 'Maximize Your\nReturns',
-    subtitle: 'Earn monthly dividends that often outperform fixed deposits and traditional savings accounts.',
+    title: 'How Chit Fund\nWorks',
+    subtitle: 'Members contribute monthly, bid in auctions, and one member receives the pooled amount early while others continue earning dividends until everyone benefits.',
     cta: 'Get Started',
   },
 ];
@@ -47,137 +53,214 @@ const SLIDES = [
 
 function Slide1Visual() {
   return (
-    <View style={{ flex: 1, marginBottom: 24 }}>
-      <LinearGradient 
-        colors={['rgba(1, 120, 158, 0.3)', 'rgba(229, 238, 255, 0.2)', 'rgba(84, 250, 239, 0.2)']}
-        start={{ x: 1, y: 0 }}
-        end={{ x: 0, y: 1 }}
-        style={[styles.visualCard, { flex: 1, padding: 0, justifyContent: 'flex-end', alignItems: 'center', marginBottom: 0 }]}
+    <View style={styles.slide1Outer}>
+      <LinearGradient
+        colors={['rgba(176, 212, 241, 0.95)', 'rgba(1, 120, 158, 0.5)', 'rgba(84, 250, 239, 0.3)']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.slide1GradientBorder}
       >
-         <Image 
-           source={require('../../assets/images/md_photo.png')}
-           style={{ width: '100%', height: '100%', resizeMode: 'contain', marginBottom: -20 }}
-         />
+        <View style={styles.slide1Inner}>
+          <View style={[styles.slide1PhotoFrame, { height: SLIDE1_PHOTO_HEIGHT }]}>
+            <Image
+              source={require('../../assets/images/md_photo.png')}
+              style={[styles.slide1Photo, { width: SLIDE1_PHOTO_WIDTH, height: SLIDE1_PHOTO_HEIGHT }]}
+              contentFit="contain"
+              contentPosition="center"
+            />
+          </View>
+          <View style={styles.slide1TextBlock}>
+            <Text style={styles.slide1Title}>Leadership with Vision</Text>
+            <Text style={styles.slide1Body}>
+              Guided by{' '}
+              <Text style={styles.subtitleHighlight}>Managing Director Mr. R. Venkatesan</Text>, who brings{' '}
+              <Text style={styles.subtitleHighlight}>over 30 years of profound experience</Text> in the financial
+              services and chit fund industry.
+            </Text>
+          </View>
+        </View>
       </LinearGradient>
+    </View>
+  );
+}
+
+type SavingsGoalItem = {
+  label: string;
+  sub: string;
+  color: string;
+  wide?: boolean;
+};
+
+const SAVINGS_GOALS: SavingsGoalItem[] = [
+  { label: 'Education', sub: 'School & college', color: '#005E7D' },
+  { label: 'Healthcare', sub: 'Hospitals & care', color: '#01789E' },
+  { label: 'Business', sub: 'Invest & grow', color: '#0E7490' },
+  { label: 'Emergencies', sub: 'Urgent needs', color: '#0891B2' },
+  { label: 'Home & Marriage', sub: 'Life milestones', color: '#006A65', wide: true },
+];
+
+function GoalTile({
+  label,
+  sub,
+  color,
+  wide,
+}: {
+  label: string;
+  sub: string;
+  color: string;
+  wide?: boolean;
+}) {
+  return (
+    <View style={[styles.goalTile, wide && styles.goalTileWide]}>
+      <View style={[styles.goalTileAccent, { backgroundColor: color }]} />
+      <View style={styles.goalTileBody}>
+        <View style={styles.goalTileHeader}>
+          <View style={[styles.goalTileDot, { backgroundColor: color }]} />
+          <Text style={styles.goalTileLabel}>{label}</Text>
+        </View>
+        <Text style={styles.goalTileSub}>{sub}</Text>
+      </View>
     </View>
   );
 }
 
 function Slide2Visual() {
   return (
-    <View style={styles.visualCard}>
-      {/* Bar Chart */}
-      <View style={styles.barChartContainer}>
-        {[
-          { h: '16%', color: '#E2E8F0' },
-          { h: '33%', color: '#CBD5E1' },
-          { h: '50%', color: 'rgba(1,120,158,0.2)' },
-          { h: '66%', color: 'rgba(1,120,158,0.4)' },
-          { h: '83%', color: Colors.primary },
-          { h: '100%', color: '#54FAEF' },
-        ].map((bar, i) => (
-          <View key={i} style={[styles.bar, { height: bar.h as any, backgroundColor: bar.color }]}>
-            {i === 4 && (
-              <View style={styles.barTooltip}>
-                <Text style={styles.barTooltipLabel}>SAVINGS</Text>
-                <Text style={styles.barTooltipValue}>₹12k</Text>
+    <View style={styles.slide2Outer}>
+      <LinearGradient
+        colors={['rgba(176, 212, 241, 0.95)', 'rgba(1, 120, 158, 0.5)', 'rgba(84, 250, 239, 0.3)']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.slide2GradientBorder}
+      >
+        <View style={styles.slide2Card}>
+          <Text style={styles.mapTitle}>YOUR SAVINGS ROADMAP</Text>
+          <Text style={styles.mapSub}>Why chit funds are necessary for Indian families</Text>
+
+          <View style={styles.corpusCard}>
+            <LinearGradient
+              colors={['#01789E', '#005E7D']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.corpusGradient}
+            >
+              <View style={styles.corpusIconWrap}>
+                <Text style={styles.corpusIconText}>₹</Text>
               </View>
-            )}
+              <View style={styles.corpusCopy}>
+                <Text style={styles.corpusEyebrow}>CHIT SAVINGS</Text>
+                <Text style={styles.corpusHeadline}>Flexible Corpus</Text>
+                <Text style={styles.corpusMeta}>Built through disciplined monthly installments</Text>
+              </View>
+            </LinearGradient>
           </View>
-        ))}
-      </View>
 
-      {/* Auto-Debit Floating Card */}
-      <View style={[styles.floatingCard, { top: 16, left: 12 }]}>
-        <View style={styles.floatingCardIcon}>
-          <Svg width={20} height={20} viewBox="0 0 24 24" fill={Colors.secondary}>
-            <Path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
-          </Svg>
-        </View>
-        <View>
-          <Text style={styles.floatingCardLabel}>AUTO-DEBIT</Text>
-          <Text style={styles.floatingCardValue}>Active</Text>
-        </View>
-      </View>
+          <View style={styles.flowBridge}>
+            <View style={styles.flowBridgeLine} />
+            <Text style={styles.flowBridgeLabel}>FUNDS YOUR GOALS</Text>
+            <View style={styles.flowBridgeLine} />
+          </View>
 
-      {/* Zero Risk Floating Card */}
-      <View style={[styles.floatingCard, { bottom: 24, right: 12 }]}>
-        <View style={[styles.floatingCardIcon, { backgroundColor: Colors.primary }]}>
-          <Svg width={20} height={20} viewBox="0 0 24 24" fill="#FFFFFF">
-            <Path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z" />
-          </Svg>
+          <View style={styles.goalsGrid}>
+            {SAVINGS_GOALS.map((goal) => (
+              <GoalTile
+                key={goal.label}
+                label={goal.label}
+                sub={goal.sub}
+                color={goal.color}
+                wide={goal.wide}
+              />
+            ))}
+          </View>
+
+          <View style={styles.projectionBar}>
+            <View style={styles.projectionItem}>
+              <Text style={styles.projectionLabel}>DISCIPLINE</Text>
+              <Text style={styles.projectionVal}>Monthly</Text>
+            </View>
+            <View style={styles.projectionDivider} />
+            <View style={styles.projectionItem}>
+              <Text style={styles.projectionLabel}>LIQUIDITY</Text>
+              <Text style={styles.projectionVal}>On demand</Text>
+            </View>
+            <View style={styles.projectionDivider} />
+            <View style={styles.projectionItem}>
+              <Text style={styles.projectionLabel}>COMMUNITY</Text>
+              <Text style={styles.projectionVal}>Trusted pool</Text>
+            </View>
+          </View>
+
+          <View style={styles.slide2TextBlock}>
+            <Text style={styles.slide2Title}>{"Savings for Life's Priorities"}</Text>
+            <Text style={styles.slide2Body}>
+              A chit fund turns disciplined monthly savings into a flexible corpus for education,
+              healthcare, emergencies, and major life goals — without market volatility.
+            </Text>
+          </View>
         </View>
-        <View>
-          <Text style={styles.floatingCardLabel}>ZERO RISK</Text>
-          <Text style={styles.floatingCardValue}>Guaranteed</Text>
-        </View>
-      </View>
+      </LinearGradient>
     </View>
   );
 }
 
+const CHIT_STEPS = [
+  {
+    num: 1,
+    title: 'Join a Chit Group',
+    desc: 'Become a member in a trusted community savings pool with a fixed tenure.',
+  },
+  {
+    num: 2,
+    title: 'Pay Monthly Installments',
+    desc: 'Contribute a fixed amount every month — building financial discipline.',
+  },
+  {
+    num: 3,
+    title: 'Bid in Monthly Auction',
+    desc: 'Members bid for the pooled amount; highest bidder wins that cycle.',
+  },
+  {
+    num: 4,
+    title: 'Winner Gets Lump Sum',
+    desc: 'The prize helps fund education, medical bills, or business needs early.',
+  },
+  {
+    num: 5,
+    title: 'Others Earn Dividends',
+    desc: 'Non-winners receive a share of the discount — everyone benefits over time.',
+  },
+];
+
 function Slide3Visual() {
   return (
     <View style={styles.visualCard}>
-      {/* Comparison Chart */}
-      <View style={styles.comparisonChart}>
-        {/* Savings Bar */}
-        <View style={styles.comparisonColumn}>
-          <Text style={styles.comparisonLabel}>SAVINGS</Text>
-          <View style={[styles.comparisonBar, { backgroundColor: '#E2E8F0', flex: 1, maxHeight: 96 }]}>
-            <View style={StyleSheet.absoluteFillObject}>
-              <View style={{ flex: 1, backgroundColor: '#CBD5E1', opacity: 0.5 }} />
+      <Text style={styles.flowTitle}>THE CHIT CYCLE</Text>
+      <Text style={styles.flowSub}>Simple 5-step process every month</Text>
+
+      <View style={styles.flowTimeline}>
+        <View style={styles.flowLine} />
+        {CHIT_STEPS.map((step, i) => (
+          <View key={step.num} style={styles.flowStep}>
+            <View style={[styles.flowNum, i === CHIT_STEPS.length - 1 && styles.flowNumFinal]}>
+              <Text style={[styles.flowNumText, i === CHIT_STEPS.length - 1 && styles.flowNumTextFinal]}>{step.num}</Text>
+            </View>
+            <View style={styles.flowBody}>
+              <Text style={styles.flowStepTitle}>{step.title}</Text>
+              <Text style={styles.flowStepDesc}>{step.desc}</Text>
             </View>
           </View>
-          <Text style={[styles.comparisonPct, { color: '#94A3B8' }]}>4.2%</Text>
-        </View>
-
-        {/* Chit Bar */}
-        <View style={styles.comparisonColumn}>
-          <Text style={[styles.comparisonLabel, { color: Colors.primary }]}>CHIT YIELD</Text>
-          <View style={[styles.comparisonBar, {
-            flex: 1,
-            maxHeight: 224,
-            backgroundColor: Colors.primary,
-          }]}>
-            <View style={[StyleSheet.absoluteFillObject, { backgroundColor: 'rgba(16,215,205,0.3)', borderRadius: 12 }]} />
-          </View>
-          <Text style={[styles.comparisonPct, { color: Colors.primary }]}>8.5%</Text>
-        </View>
+        ))}
       </View>
 
-      {/* Divider */}
-      <View style={styles.divider} />
-
-      {/* Insight Card */}
-      <View style={styles.insightCard}>
-        <View style={styles.insightIcon}>
-          <Svg width={20} height={20} viewBox="0 0 24 24" fill="#FFFFFF">
-            <Path d="M16 6l2.29 2.29-4.88 4.88-4-4L2 16.59 3.41 18l6-6 4 4 6.3-6.29L22 12V6z" />
+      <View style={styles.flowFooter}>
+        <View style={styles.flowFooterIcon}>
+          <Svg width={18} height={18} viewBox="0 0 24 24" fill="#FFFFFF">
+            <Path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
           </Svg>
         </View>
-        <View>
-          <Text style={styles.insightTitle}>2x Average Performance</Text>
-          <Text style={styles.insightSub}>Historical dividend average vs FD</Text>
-        </View>
-      </View>
-
-      {/* Benefits Grid */}
-      <View style={styles.benefitsGrid}>
-        <View style={styles.benefitCard}>
-          <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.secondary}>
-            <Path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z" />
-          </Svg>
-          <Text style={styles.benefitLabel}>MONTHLY</Text>
-          <Text style={styles.benefitTitle}>Regular Payouts</Text>
-        </View>
-        <View style={styles.benefitCard}>
-          <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.secondary}>
-            <Path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z" />
-          </Svg>
-          <Text style={styles.benefitLabel}>SECURE</Text>
-          <Text style={styles.benefitTitle}>Regulated Growth</Text>
-        </View>
+        <Text style={styles.flowFooterText}>
+          Every member receives the full chit value once during the group tenure
+        </Text>
       </View>
     </View>
   );
@@ -239,6 +322,7 @@ export default function OnboardingScreen() {
       {/* Slides Carousel */}
       <Animated.FlatList
         ref={flatListRef}
+        style={styles.carousel}
         data={SLIDES}
         keyExtractor={(item) => item.key}
         horizontal
@@ -253,20 +337,20 @@ export default function OnboardingScreen() {
           const Visual = VISUALS[index];
           return (
             <View style={styles.slide}>
-              {/* Visualization */}
-              <Visual />
-
-              {/* Text Content */}
-              <View style={styles.textSection}>
-                <Text style={styles.title}>{item.title}</Text>
-                {item.key === 'slide1' ? (
-                  <Text style={styles.subtitle}>
-                    Guided by <Text style={{ fontFamily: 'Inter_700Bold', color: '#005E7D' }}>Managing Director Mr. R. Venkatesan</Text>, who brings <Text style={{ fontFamily: 'Inter_700Bold', color: '#005E7D' }}>over 25 years of profound experience</Text> in the financial services and chit fund industry.
-                  </Text>
-                ) : (
-                  <Text style={styles.subtitle}>{item.subtitle}</Text>
+              <ScrollView
+                style={styles.slideScroll}
+                contentContainerStyle={styles.slideScrollContent}
+                showsVerticalScrollIndicator={false}
+                bounces={false}
+              >
+                <Visual />
+                {item.key === 'slide3' && (
+                  <View style={styles.textSection}>
+                    <Text style={styles.title}>{item.title}</Text>
+                    <Text style={styles.subtitle}>{item.subtitle}</Text>
+                  </View>
                 )}
-              </View>
+              </ScrollView>
             </View>
           );
         }}
@@ -338,11 +422,21 @@ const styles = StyleSheet.create({
     color: Colors.primary,
     letterSpacing: 0.5,
   },
+  carousel: {
+    flex: 1,
+  },
   slide: {
     width: SCREEN_WIDTH,
     flex: 1,
+  },
+  slideScroll: {
+    flex: 1,
+  },
+  slideScrollContent: {
     paddingHorizontal: 20,
     paddingTop: 8,
+    paddingBottom: 12,
+    alignItems: 'center',
   },
 
   // ── Visualization Card ──
@@ -354,10 +448,381 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(190,200,206,0.3)',
     overflow: 'hidden',
+    width: CARD_WIDTH,
     ...Shadows.blueTint,
   },
+  slide2Outer: {
+    width: CARD_WIDTH,
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  slide2GradientBorder: {
+    width: CARD_WIDTH,
+    borderRadius: 28,
+    padding: 3,
+    overflow: 'hidden',
+    ...Shadows.blueTint,
+  },
+  slide2Card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 25,
+    paddingTop: 22,
+    paddingBottom: 24,
+    paddingHorizontal: 20,
+    width: '100%',
+    alignItems: 'center',
+  },
+  slide2TextBlock: {
+    width: '100%',
+    paddingHorizontal: 8,
+    paddingTop: 22,
+    gap: 12,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(190,200,206,0.25)',
+    marginTop: 18,
+  },
+  slide2Title: {
+    fontFamily: 'SpaceGrotesk_700Bold',
+    fontSize: 28,
+    lineHeight: 36,
+    color: '#0B1C30',
+    textAlign: 'center',
+    letterSpacing: -0.5,
+  },
+  slide2Body: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 16,
+    lineHeight: 26,
+    color: '#3F484E',
+    textAlign: 'center',
+  },
 
-  // ── Slide 1 ──
+  // ── Slide 1: Leadership photo ──
+  slide1Outer: {
+    width: CARD_WIDTH,
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  slide1GradientBorder: {
+    width: CARD_WIDTH,
+    borderRadius: 28,
+    padding: 3,
+    overflow: 'hidden',
+    ...Shadows.blueTint,
+  },
+  slide1Inner: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 25,
+    overflow: 'hidden',
+  },
+  slide1PhotoFrame: {
+    width: '100%',
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(190,200,206,0.25)',
+  },
+  slide1Photo: {
+    alignSelf: 'center',
+  },
+  slide1TextBlock: {
+    paddingHorizontal: 22,
+    paddingTop: 20,
+    paddingBottom: 24,
+    gap: 12,
+  },
+  slide1Title: {
+    fontFamily: 'SpaceGrotesk_700Bold',
+    fontSize: 28,
+    lineHeight: 36,
+    color: '#0B1C30',
+    textAlign: 'center',
+    letterSpacing: -0.5,
+  },
+  slide1Body: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 16,
+    lineHeight: 26,
+    color: '#3F484E',
+    textAlign: 'center',
+  },
+
+  // ── Slide 2: Savings roadmap ──
+  mapTitle: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 12,
+    color: Colors.primary,
+    letterSpacing: 1.4,
+    textAlign: 'center',
+    marginBottom: 6,
+  },
+  mapSub: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 12,
+    color: '#64748B',
+    textAlign: 'center',
+    marginBottom: 20,
+    lineHeight: 17,
+    paddingHorizontal: 8,
+  },
+  corpusCard: {
+    width: '100%',
+    borderRadius: 18,
+    overflow: 'hidden',
+    marginBottom: 16,
+    ...Shadows.blueTint,
+  },
+  corpusGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 18,
+    paddingHorizontal: 18,
+    gap: 16,
+  },
+  corpusIconWrap: {
+    width: 56,
+    height: 56,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.25)',
+  },
+  corpusIconText: {
+    fontFamily: 'SpaceGrotesk_700Bold',
+    fontSize: 26,
+    color: '#FFFFFF',
+  },
+  corpusCopy: {
+    flex: 1,
+    gap: 3,
+  },
+  corpusEyebrow: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.8)',
+    letterSpacing: 1.2,
+  },
+  corpusHeadline: {
+    fontFamily: 'SpaceGrotesk_700Bold',
+    fontSize: 22,
+    color: '#FFFFFF',
+    letterSpacing: -0.3,
+  },
+  corpusMeta: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.78)',
+    lineHeight: 17,
+    marginTop: 2,
+  },
+  flowBridge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    width: '100%',
+    marginBottom: 14,
+    paddingHorizontal: 4,
+  },
+  flowBridgeLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: 'rgba(1,120,158,0.18)',
+  },
+  flowBridgeLabel: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 9,
+    color: '#94A3B8',
+    letterSpacing: 1.1,
+  },
+  goalsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    rowGap: 10,
+    width: '100%',
+    marginBottom: 18,
+  },
+  goalTile: {
+    width: '48.5%',
+    flexDirection: 'row',
+    backgroundColor: '#F8FAFC',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(190,200,206,0.35)',
+    overflow: 'hidden',
+    ...Shadows.subtle,
+  },
+  goalTileWide: {
+    width: '100%',
+  },
+  goalTileAccent: {
+    width: 4,
+  },
+  goalTileBody: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingRight: 12,
+    paddingLeft: 10,
+    gap: 3,
+  },
+  goalTileHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  goalTileDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+  },
+  goalTileLabel: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 12,
+    color: '#0B1C30',
+    flex: 1,
+  },
+  goalTileSub: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 11,
+    color: '#64748B',
+    lineHeight: 15,
+    paddingLeft: 14,
+  },
+  projectionBar: {
+    flexDirection: 'row',
+    backgroundColor: '#EFF4FF',
+    borderRadius: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(1,120,158,0.12)',
+    width: '100%',
+  },
+  projectionItem: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  projectionLabel: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 9,
+    color: '#64748B',
+    letterSpacing: 0.8,
+    marginBottom: 4,
+  },
+  projectionVal: {
+    fontFamily: 'SpaceGrotesk_600SemiBold',
+    fontSize: 13,
+    color: Colors.primary,
+  },
+  projectionDivider: {
+    width: 1,
+    backgroundColor: 'rgba(1,120,158,0.15)',
+    marginHorizontal: 4,
+  },
+
+  // ── Slide 3: How chit works ──
+  flowTitle: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 11,
+    color: Colors.primary,
+    letterSpacing: 1.2,
+    textAlign: 'center',
+    marginBottom: 4,
+  },
+  flowSub: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 11,
+    color: '#64748B',
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  flowTimeline: {
+    position: 'relative',
+    gap: 10,
+    marginBottom: 12,
+  },
+  flowLine: {
+    position: 'absolute',
+    left: 15,
+    top: 12,
+    bottom: 12,
+    width: 2,
+    backgroundColor: 'rgba(1,120,158,0.15)',
+    borderRadius: 1,
+  },
+  flowStep: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  flowNum: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1,
+  },
+  flowNumFinal: {
+    backgroundColor: '#54FAEF',
+  },
+  flowNumText: {
+    fontFamily: 'SpaceGrotesk_700Bold',
+    fontSize: 13,
+    color: '#FFFFFF',
+  },
+  flowNumTextFinal: {
+    color: Colors.primary,
+  },
+  flowBody: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 12,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(190,200,206,0.3)',
+  },
+  flowStepTitle: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 12,
+    color: '#0B1C30',
+    marginBottom: 2,
+  },
+  flowStepDesc: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 10,
+    color: '#64748B',
+    lineHeight: 14,
+  },
+  flowFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: Colors.primary,
+    borderRadius: 12,
+    padding: 12,
+  },
+  flowFooterIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  flowFooterText: {
+    flex: 1,
+    fontFamily: 'Inter_500Medium',
+    fontSize: 11,
+    color: '#FFFFFF',
+    lineHeight: 16,
+  },
+
+  // ── Legacy chart styles (unused, kept for reference) ──
   barChartContainer: {
     flexDirection: 'row',
     alignItems: 'flex-end',
@@ -636,9 +1101,10 @@ const styles = StyleSheet.create({
   // ── Text Content ──
   textSection: {
     alignItems: 'center',
-    paddingHorizontal: 8,
-    gap: 12,
-    marginBottom: 16, // Reduced from 32 to fit CTA in bottom section
+    paddingHorizontal: 4,
+    gap: 14,
+    marginBottom: 8,
+    width: CARD_WIDTH,
   },
   title: {
     fontFamily: 'SpaceGrotesk_700Bold',
@@ -650,11 +1116,15 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontFamily: 'Inter_400Regular',
-    fontSize: 15,
-    lineHeight: 24,
+    fontSize: 16,
+    lineHeight: 26,
     color: '#3F484E',
     textAlign: 'center',
-    maxWidth: 320,
+    maxWidth: CARD_WIDTH - 8,
+  },
+  subtitleHighlight: {
+    fontFamily: 'Inter_700Bold',
+    color: '#005E7D',
   },
 
   // ── Bottom Section ──
