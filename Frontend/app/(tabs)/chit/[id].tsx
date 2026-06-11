@@ -15,6 +15,8 @@ import { useMemberSession } from '../../../lib/MemberSessionContext';
 import { apiPost } from '../../../lib/api';
 import { dedupeAuctionCycles, getCycleDueAmount } from '../../../lib/chitPayments';
 import { isMemberAuctionWinner, WINNER_HIGHLIGHT } from '../../../lib/auctionWinner';
+import type { AuctionPrizeSettlement } from '../../(admin)/customers/_components/types';
+import { MemberPrizePayoutDetailsModal } from './MemberPrizePayoutDetailsModal';
 
 const RAZORPAY_KEY = 'rzp_test_SmauVIQGRqu5gR';
 
@@ -229,7 +231,7 @@ function getMonthPeriod(payment: PaymentRow, groupStartDate?: string | null): { 
 }
 
 function MonthTimelineItem({
-  p, isCurrentDue, onPay, paying, payableAmount, groupStartDate, auctionStatus, partialPaid, isUnaccountedGroup, cashCollection, isMemberWinner, winnerPrizeAmount,
+  p, isCurrentDue, onPay, paying, payableAmount, groupStartDate, auctionStatus, partialPaid, isUnaccountedGroup, cashCollection, isMemberWinner, winnerPrizeAmount, prizeSettlements = [], wonAuction, onShowPrizeDetails,
 }: {
   p: PaymentRow;
   isCurrentDue: boolean;
@@ -243,6 +245,9 @@ function MonthTimelineItem({
   cashCollection?: CashCollectionRow;
   isMemberWinner?: boolean;
   winnerPrizeAmount?: number | null;
+  prizeSettlements?: any[];
+  wonAuction?: any;
+  onShowPrizeDetails?: (auction: any) => void;
 }) {
   const period = getMonthPeriod(p, groupStartDate);
   const dueKnown = payableAmount != null;
@@ -345,7 +350,27 @@ function MonthTimelineItem({
         </View>
 
         {isMemberWinner && winnerPrizeAmount != null && winnerPrizeAmount > 0 && (
-          <Text style={ts.winnerPrizeText}>Prize received · {formatPaise(winnerPrizeAmount)}</Text>
+          <View style={ts.prizeInfoContainer}>
+            <Text style={ts.winnerPrizeText}>
+              Prize: {formatPaise(winnerPrizeAmount)}
+              {(prizeSettlements || []).length > 0 && (() => {
+                const received = (prizeSettlements || []).reduce((s, p) => s + (p.amount || 0), 0);
+                const pending = Math.max(0, winnerPrizeAmount - received);
+                return pending > 0 
+                  ? `  · Received ${formatPaise(received)} · Pending ${formatPaise(pending)}`
+                  : `  · Fully settled`;
+              })()}
+            </Text>
+            {(prizeSettlements || []).length > 0 && wonAuction && onShowPrizeDetails && (
+              <TouchableOpacity
+                onPress={() => onShowPrizeDetails(wonAuction)}
+                style={ts.detailsButton}
+                activeOpacity={0.7}
+              >
+                <Text style={ts.detailsButtonText}>Details →</Text>
+              </TouchableOpacity>
+            )}
+          </View>
         )}
 
         {/* Divider */}
@@ -455,6 +480,48 @@ export default function ChitDetailScreen() {
   const { data: partialPaymentTotals = {} } = usePartialPayments(id, auctions);
   const isUnaccounted = data?.chit_group?.accounting_type === 'unaccounted';
   const { data: cashByMonth = {} } = useCashCollections(id, isUnaccounted);
+
+  // Load prize settlements (the actual money paid out to this member as auction winner, supporting partials)
+  // This powers the "Received X · Pending Y" / "Fully settled" text for the winning month.
+  const [prizeSettlements, setPrizeSettlements] = useState<any[]>([]);
+
+  // For member-side prize payout details modal (equivalent to admin "DETAILS" button)
+  const [showPrizeDetailsModal, setShowPrizeDetailsModal] = useState(false);
+  const [selectedPrizeAuctionForDetails, setSelectedPrizeAuctionForDetails] = useState<any>(null);
+
+  const onShowPrizeDetails = (auction: any) => {
+    setSelectedPrizeAuctionForDetails(auction);
+    setShowPrizeDetailsModal(true);
+  };
+  useEffect(() => {
+    const mid = data?.id;
+    if (!mid) {
+      setPrizeSettlements([]);
+      return;
+    }
+    const load = async () => {
+      const { data: ps, error } = await supabase
+        .from('auction_prize_settlements')
+        .select('*')
+        .eq('chit_member_id', mid)
+        .order('recorded_at', { ascending: false });
+      if (!error) setPrizeSettlements(ps || []);
+    };
+    load();
+
+    const ch = supabase
+      .channel(`prize-settlements-${mid}`)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'auction_prize_settlements',
+        filter: `chit_member_id=eq.${mid}`,
+      }, load)
+      .subscribe();
+
+    return () => { supabase.removeChannel(ch); };
+  }, [data?.id]);
+
   const [payingId, setPayingId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -862,6 +929,9 @@ export default function ChitDetailScreen() {
                     cashCollection={cashCollection}
                     isMemberWinner={memberWonThisMonth}
                     winnerPrizeAmount={memberWonThisMonth ? (auction?.winner_prize_amount ?? null) : null}
+                    prizeSettlements={prizeSettlements}
+                    wonAuction={memberWonThisMonth ? auction : undefined}
+                    onShowPrizeDetails={memberWonThisMonth ? onShowPrizeDetails : undefined}
                   />
                   {idx < payments.length - 1 && <View style={ts.connector} />}
                 </View>
@@ -959,6 +1029,18 @@ export default function ChitDetailScreen() {
           </ScrollView>
         </KeyboardAvoidingView>
       </Modal>
+
+      {/* Member-side Prize Payout Details (opened via small "Details" button on winning month) */}
+      <MemberPrizePayoutDetailsModal
+        visible={showPrizeDetailsModal}
+        onClose={() => {
+          setShowPrizeDetailsModal(false);
+          setSelectedPrizeAuctionForDetails(null);
+        }}
+        auction={selectedPrizeAuctionForDetails}
+        prizeSettlements={prizeSettlements}
+        group={group}
+      />
     </SafeAreaView>
   );
 }
@@ -1050,7 +1132,26 @@ const ts = StyleSheet.create({
     fontFamily: 'Inter_600SemiBold',
     fontSize: 11,
     color: WINNER_HIGHLIGHT.text,
-    marginBottom: 8,
+    flex: 1,
+  },
+  prizeInfoContainer: {
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  detailsButton: {
+    alignSelf: 'flex-start',
+    marginTop: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    backgroundColor: '#E0F2FE',
+    borderWidth: 1,
+    borderColor: '#0EA5E9',
+  },
+  detailsButtonText: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 10,
+    color: '#0369A1',
   },
   remainingCashBadge: { backgroundColor: '#FEF3C7', paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#FDE68A' },
   remainingCashText: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#92400E' },

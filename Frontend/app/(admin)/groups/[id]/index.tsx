@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Modal, TextInput, Alert, ActivityIndicator, RefreshControl, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AppLogo } from '../../../../components/AppLogo';
@@ -9,10 +9,14 @@ import { supabase } from '../../../../lib/supabase';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { apiPost } from '../../../../lib/api';
 import { AuctionSettlementModal } from '../../customers/_components/AuctionSettlementModal';
+import { RecordPrizeSettlementModal } from '../../customers/_components/RecordPrizeSettlementModal';
+import { PrizeSettlementDetailsModal } from '../../customers/_components/PrizeSettlementDetailsModal';
 import { getAuctionWinnerDisplayName } from '../../../../lib/auctionWinner';
 import {
   dedupeAuctionCycles,
   getMemberDueAfterAuction,
+  applyAuctionSettlementToSchedules,
+  ensureBaseSchedulesForMember,
 } from '../../../../lib/chitPayments';
 import {
   isAuctionScheduledDisplay,
@@ -134,9 +138,18 @@ export default function AdminGroupDetail() {
 
   const [auctions, setAuctions] = useState<any[]>([]);
 
-  // Auction Settlement Modal State
+  // Auction Settlement Modal State (installment / bid result)
   const [showSettlementModal, setShowSettlementModal] = useState(false);
   const [settlementAuction, setSettlementAuction] = useState<any>(null);
+
+  // Prize / Winner Payout Settlement (new - supports partial for accounted + unaccounted)
+  const [showPrizeModal, setShowPrizeModal] = useState(false);
+  const [prizeAuction, setPrizeAuction] = useState<any>(null);
+  const [prizeSettlements, setPrizeSettlements] = useState<any[]>([]);
+
+  // Detailed prize payout report modal (denominations etc.)
+  const [showPrizeDetailsModal, setShowPrizeDetailsModal] = useState(false);
+  const [prizeDetailsAuction, setPrizeDetailsAuction] = useState<any>(null);
 
   // Create Auction Modal State
   const [auctionDrafts, setAuctionDrafts] = useState<Record<number, {
@@ -177,7 +190,7 @@ export default function AdminGroupDetail() {
   const baseEmi = (Number(group?.emi_amount) || Number(group?.monthly_installment) || calculatedEmi) / 100;
   const displayEmi = participation === 'full' ? baseEmi : baseEmi / 2;
 
-  const fetchGroup = async () => {
+  const fetchGroup = useCallback(async () => {
     try {
       const isUuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(String(id));
       let query = supabase.from('chit_groups').select('*');
@@ -196,9 +209,9 @@ export default function AdminGroupDetail() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [id]);
 
-  const fetchMembers = async () => {
+  const fetchMembers = useCallback(async () => {
     if (!group?.id) return;
     try {
       const { data } = await supabase
@@ -210,7 +223,7 @@ export default function AdminGroupDetail() {
     } catch (err) {
       console.error('Error fetching members:', err);
     }
-  };
+  }, [group?.id]);
 
   const fetchCustomers = async () => {
     try {
@@ -221,7 +234,24 @@ export default function AdminGroupDetail() {
     }
   };
 
-  const fetchAuctions = async () => {
+  const fetchPrizeSettlements = useCallback(async (auctionRows: any[]) => {
+    if (!auctionRows || auctionRows.length === 0) {
+      setPrizeSettlements([]);
+      return;
+    }
+    try {
+      const ids = auctionRows.map((a: any) => a.id);
+      const { data: ps } = await supabase
+        .from('auction_prize_settlements')
+        .select('*')
+        .in('auction_id', ids);
+      setPrizeSettlements(ps || []);
+    } catch (e) {
+      console.warn('Failed to load prize settlements', e);
+    }
+  }, []);
+
+  const fetchAuctions = useCallback(async () => {
     if (!group?.id) return;
     try {
       const { data } = await supabase
@@ -231,63 +261,43 @@ export default function AdminGroupDetail() {
         .order('auction_number', { ascending: false });
       const rows = data || [];
       const sanitized = await sanitizePlaceholderAuctionSchedules(supabase, rows);
+      let finalRows = rows;
       if (sanitized) {
         const { data: refreshed } = await supabase
           .from('auctions')
           .select('*')
           .eq('chit_group_id', group.id)
           .order('auction_number', { ascending: false });
-        setAuctions(refreshed || []);
+        finalRows = refreshed || rows;
+        setAuctions(finalRows);
       } else {
         setAuctions(rows);
+        finalRows = rows;
       }
 
-      // Auto-sync: for any completed auction, make sure payment_schedules reflects
-      // the correct final_due_amount. This repairs stale rows created before the
-      // direct-write logic was in place (i.e., when backend was offline).
+      // Always load prize settlements after auctions (for partial winner payouts)
+      await fetchPrizeSettlements(finalRows);
+
+      // Auto-sync: for any completed auction, ensure payment_schedules reflects settlement.
+      // Uses the robust applier (creates rows for members added after the auction or missing schedules).
       const completed = (data || []).filter(
         (a: any) => a.status === 'completed' && a.auction_number != null
       );
-      if (completed.length > 0) {
-        const { data: groupMembers } = await supabase
-          .from('chit_members')
-          .select('id, participation_share')
-          .eq('chit_group_id', group.id);
-
-        if (groupMembers && groupMembers.length > 0) {
-          for (const auction of completed) {
-            const finalDuePaise = auction.final_due_amount ?? 0;
-            const dividendPaise = auction.dividend_amount ?? 0;
-            for (const member of groupMembers) {
-              const share = Number((member as any).participation_share || 1);
-              // Only update if the current amount doesn't match — avoids unnecessary writes
-              const { data: existingRow } = await supabase
-                .from('payment_schedules')
-                .select('id, amount')
-                .eq('chit_member_id', (member as any).id)
-                .eq('month_number', auction.auction_number)
-                .maybeSingle();
-
-              if (
-                existingRow &&
-                existingRow.amount !== Math.round(finalDuePaise * share)
-              ) {
-                await supabase
-                  .from('payment_schedules')
-                  .update({
-                    amount: Math.round(finalDuePaise * share),
-                    dividend_amount: Math.round(dividendPaise * share),
-                  })
-                  .eq('id', existingRow.id);
-              }
-            }
+      for (const ca of completed) {
+        const fd = Number(ca.final_due_amount ?? ca.installment_due ?? 0);
+        const dv = Number(ca.dividend_amount ?? 0);
+        if (fd > 0 || dv > 0) {
+          try {
+            await applyAuctionSettlementToSchedules(supabase, group.id, ca.auction_number, fd, dv);
+          } catch (syncErr) {
+            console.warn('Auto-sync settlement apply warning:', syncErr);
           }
         }
       }
     } catch (err) {
       console.error('Error fetching auctions:', err);
     }
-  };
+  }, [group?.id, fetchPrizeSettlements]);
 
   const ensureAuctionsExist = async (g: any, currentAuctions: any[]) => {
     if (!g?.id) return;
@@ -378,17 +388,27 @@ export default function AdminGroupDetail() {
   useEffect(() => {
     if (!group?.id) return;
 
+    // IMPORTANT: Channel name MUST be unique per group id.
+    // Reusing a static name like 'admin-group-detail-updates' causes
+    // "cannot add postgres_changes callbacks after subscribe()" when the effect
+    // re-runs (navigation, StrictMode, group change, fast refresh, etc.).
+    const channelName = `admin-group-detail-${group.id}`;
+
     const channel = supabase
-      .channel('admin-group-detail-updates')
+      .channel(channelName)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chit_groups', filter: `id=eq.${group.id}` }, fetchGroup)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chit_members', filter: `chit_group_id=eq.${group.id}` }, fetchMembers)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'auctions', filter: `chit_group_id=eq.${group.id}` }, fetchAuctions)
-      .subscribe();
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          // console.log(`[admin] group realtime subscribed: ${channelName}`);
+        }
+      });
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [group?.id]);
+  }, [group?.id, fetchGroup, fetchMembers, fetchAuctions]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -558,6 +578,40 @@ export default function AdminGroupDetail() {
         fetchMembers();
         setShowAddModal(false);
         setSelectedCustomer(null);
+
+        // FIX: For the newly added member, proactively create base payment_schedules (all months)
+        // and back-apply any already-completed auction settlements so their "payment due" amounts
+        // are immediately correct on admin customer views and collections.
+        try {
+          // Re-fetch the just-created membership id
+          const { data: newMember } = await supabase
+            .from('chit_members')
+            .select('id')
+            .eq('chit_group_id', group.id)
+            .eq('customer_id', selectedCustomer.id)
+            .maybeSingle();
+
+          if (newMember?.id) {
+            // 1. Ensure base rows exist using current group values
+            await ensureBaseSchedulesForMember(supabase, newMember.id, {
+              start_date: group.start_date,
+              monthly_installment: group.monthly_installment,
+              duration_months: group.no_of_installments || group.duration_months,
+            });
+
+            // 2. For any already completed auctions, apply the settled due/dividend to this new member's schedule row
+            const completedAuctions = (auctions || []).filter((a: any) => a.status === 'completed' && a.auction_number != null);
+            for (const ca of completedAuctions) {
+              const fd = Number(ca.final_due_amount || ca.installment_due || 0);
+              const dv = Number(ca.dividend_amount || 0);
+              if (fd > 0 || dv > 0) {
+                await applyAuctionSettlementToSchedules(supabase, group.id, ca.auction_number, fd, dv);
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('Post-add member schedule backfill non-fatal:', e);
+        }
       }
     } catch (err: any) {
       Alert.alert('Error', err.message);
@@ -699,6 +753,27 @@ export default function AdminGroupDetail() {
     }
 
     open();
+  };
+
+  // Prize payout settlement (separate from installment/bid-result settlement)
+  const handleOpenPrizeSettlement = (auction: any) => {
+    if (!auction || auction.status !== 'completed' || !auction.winner_member_id) {
+      Alert.alert('Not ready', 'Prize settlement is only available for completed auctions with a declared winner.');
+      return;
+    }
+    setPrizeAuction(auction);
+    setShowPrizeModal(true);
+  };
+
+  const handlePrizeSaved = () => {
+    setShowPrizeModal(false);
+    setPrizeAuction(null);
+    fetchAuctions(); // refresh auctions + prize settlements
+  };
+
+  const handleOpenPrizeDetails = (auction: any) => {
+    setPrizeDetailsAuction(auction);
+    setShowPrizeDetailsModal(true);
   };
 
   const filteredCustomers = customers.filter(c => {
@@ -894,8 +969,13 @@ export default function AdminGroupDetail() {
                         <View style={styles.timelineResultRow}>
                           <View style={styles.summaryItem}>
                             <Text style={styles.summaryLabel}>WINNER</Text>
-                            <Text style={styles.summaryVal} numberOfLines={1}>
-                              {getAuctionWinnerDisplayName(auction, members)}
+                            <Text style={[
+                              styles.summaryVal,
+                              !auction.winner_member_id && { color: '#DC2626', fontStyle: 'italic' }
+                            ]} numberOfLines={1}>
+                              {auction.winner_member_id
+                                ? getAuctionWinnerDisplayName(auction, members)
+                                : 'Not assigned'}
                             </Text>
                           </View>
                           <View style={styles.summaryItem}>
@@ -910,6 +990,94 @@ export default function AdminGroupDetail() {
                             <View style={styles.timelinePayableBar}>
                               <Text style={styles.timelinePayableLabel}>Payable Installment</Text>
                               <Text style={styles.timelinePayableValue}>{formatRupees(payable)}</Text>
+                            </View>
+                          );
+                        })()}
+
+                        {/* Prize / Payout Settlement section — always shown for completed auctions that have a prize amount.
+                            This fixes the "mixed" display: Auction #2 shows full partial tracking because winner is linked.
+                            #3/#4 (and any other group) will now consistently show the prize + clear guidance if winner linkage is missing.
+                            The root data issue (winner_member_id not set even though prize was pre-filled via STOP or old save) is surfaced as actionable UI. */}
+                        {auction.winner_prize_amount > 0 && (() => {
+                          const hasWinner = !!auction.winner_member_id;
+                          const winnerSettlements = hasWinner
+                            ? prizeSettlements.filter(
+                                (ps: any) => ps.auction_id === auction.id && ps.chit_member_id === auction.winner_member_id
+                              )
+                            : [];
+                          const settledPaise = winnerSettlements.reduce((s: number, ps: any) => s + (ps.amount || 0), 0);
+                          const prizePaise = auction.winner_prize_amount || 0;
+                          const rem = Math.max(0, prizePaise - settledPaise);
+                          const pct = prizePaise > 0 ? Math.min(100, (settledPaise / prizePaise) * 100) : 0;
+                          const isFull = hasWinner && rem <= 0;
+                          const isPartial = hasWinner && settledPaise > 0 && !isFull;
+
+                          return (
+                            <View style={styles.prizeSettlementBar}>
+                              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
+                                <Text style={styles.prizeSettlementLabel}>PRIZE SETTLEMENT</Text>
+                                {hasWinner ? (
+                                  <Text style={[
+                                    styles.prizeSettlementStatus,
+                                    isFull ? { color: '#16A34A' } : isPartial ? { color: '#B45309' } : { color: '#DC2626' }
+                                  ]}>
+                                    {isFull ? 'FULLY PAID' : isPartial ? 'PARTIAL' : 'PENDING'}
+                                  </Text>
+                                ) : (
+                                  <Text style={[styles.prizeSettlementStatus, { color: '#DC2626' }]}>WINNER NOT ASSIGNED</Text>
+                                )}
+                              </View>
+
+                              {hasWinner ? (
+                                <>
+                                  <View style={styles.progressTrack}>
+                                    <View style={[styles.progressFillGreen, { width: `${pct}%` }]} />
+                                  </View>
+
+                                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 2 }}>
+                                    <Text style={styles.prizeSettlementText}>
+                                      Settled: {formatRupees(settledPaise)}
+                                    </Text>
+                                    <Text style={[styles.prizeSettlementText, { color: rem > 0 ? '#DC2626' : '#16A34A' }]}>
+                                      Remaining: {formatRupees(rem)}
+                                    </Text>
+                                  </View>
+
+                                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                                    <TouchableOpacity
+                                      style={[styles.recordPrizeBtn, { flex: 1 }]}
+                                      onPress={() => handleOpenPrizeSettlement(auction)}
+                                    >
+                                      <Text style={styles.recordPrizeBtnText}>
+                                        {settledPaise > 0 ? 'RECORD ADDITIONAL PAYOUT' : 'RECORD PRIZE PAYOUT'}
+                                      </Text>
+                                    </TouchableOpacity>
+
+                                    {/* Small "Details" button for full payout report (denominations, history) */}
+                                    <TouchableOpacity
+                                      style={[styles.recordPrizeBtn, { flex: 0.55, backgroundColor: '#F1F5F9', borderColor: '#E2E8F0' }]}
+                                      onPress={() => handleOpenPrizeDetails(auction)}
+                                    >
+                                      <Text style={[styles.recordPrizeBtnText, { color: '#475569', fontSize: 10 }]}>DETAILS</Text>
+                                    </TouchableOpacity>
+                                  </View>
+                                </>
+                              ) : (
+                                <View style={{ marginTop: 6 }}>
+                                  <Text style={[styles.prizeSettlementText, { color: '#DC2626', marginBottom: 6 }]}>
+                                    Prize amount recorded (₹{(prizePaise/100).toLocaleString('en-IN')}) but no winner linked yet.
+                                    Prize payouts cannot be recorded until the winner is assigned.
+                                  </Text>
+                                  <TouchableOpacity
+                                    style={[styles.recordPrizeBtn, { backgroundColor: '#FEF3C7', borderColor: '#F59E0B' }]}
+                                    onPress={() => handleOpenSettlement(auction)}
+                                  >
+                                    <Text style={[styles.recordPrizeBtnText, { color: '#92400E' }]}>
+                                      ASSIGN WINNER (Edit Settlement)
+                                    </Text>
+                                  </TouchableOpacity>
+                                </View>
+                              )}
                             </View>
                           );
                         })()}
@@ -1077,6 +1245,27 @@ export default function AdminGroupDetail() {
           setSettlementAuction(null);
           fetchAuctions();
         }}
+      />
+
+      {/* Prize Payout Settlement Modal (partial supported for accounted + unaccounted) */}
+      <RecordPrizeSettlementModal
+        visible={showPrizeModal}
+        onClose={() => { setShowPrizeModal(false); setPrizeAuction(null); }}
+        onSaved={handlePrizeSaved}
+        auction={prizeAuction}
+        group={group}
+        winner={prizeAuction && members.find((m: any) => m.id === prizeAuction.winner_member_id)}
+        existingSettlements={prizeSettlements}
+      />
+
+      {/* Detailed Prize Payout Report (denominations, history per auction) */}
+      <PrizeSettlementDetailsModal
+        visible={showPrizeDetailsModal}
+        onClose={() => { setShowPrizeDetailsModal(false); setPrizeDetailsAuction(null); }}
+        auction={prizeDetailsAuction}
+        group={group}
+        winner={prizeDetailsAuction && members.find((m: any) => m.id === prizeDetailsAuction.winner_member_id)}
+        settlements={prizeSettlements}
       />
 
       {/* --- AUCTION PREP CENTER (STEPPED MODAL) --- */}
@@ -1733,6 +1922,38 @@ const styles = StyleSheet.create({
     marginTop: 6,
     lineHeight: 14,
   },
+
+  // Prize settlement (payout to winner) styles - partial support
+  prizeSettlementBar: {
+    marginTop: 12,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+  },
+  prizeSettlementLabel: { fontFamily: 'Inter_700Bold', fontSize: 9, color: '#166534', letterSpacing: 0.6 },
+  prizeSettlementStatus: { fontFamily: 'Inter_700Bold', fontSize: 10, letterSpacing: 0.5 },
+  progressTrack: {
+    height: 6,
+    backgroundColor: '#E5E7EB',
+    borderRadius: 3,
+    overflow: 'hidden',
+    marginVertical: 4,
+  },
+  progressFillGreen: {
+    height: '100%',
+    backgroundColor: '#10B981',
+  },
+  prizeSettlementText: { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: '#166534' },
+  recordPrizeBtn: {
+    marginTop: 8,
+    backgroundColor: '#F0FDF4',
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+    borderRadius: 10,
+    paddingVertical: 9,
+    alignItems: 'center',
+  },
+  recordPrizeBtnText: { fontFamily: 'Inter_700Bold', fontSize: 11, color: '#166534', letterSpacing: 0.3 },
 
   stepperContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 16, backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
   stepCircle: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#E2E8F0' },

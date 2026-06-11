@@ -9,7 +9,7 @@ import {
     useWindowDimensions,
 } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
-import type { ChitMember, PaymentSchedule, Transaction, Auction, CashCollection } from './types';
+import type { ChitMember, PaymentSchedule, Transaction, Auction, CashCollection, AuctionPrizeSettlement } from './types';
 import {
     formatPaise,
     formatDateIST,
@@ -50,6 +50,7 @@ interface PaymentHistoryTabProps {
     transactions: Transaction[];
     cashCollections: CashCollection[];
     groupAuctions: Auction[];
+    prizeSettlements?: AuctionPrizeSettlement[];
     customerName: string;
     onEditCash: (collection: CashCollection) => void;
     onDeleteCash: (collection: CashCollection) => void;
@@ -134,6 +135,7 @@ export function PaymentHistoryTab({
     transactions,
     cashCollections,
     groupAuctions,
+    prizeSettlements = [],
     customerName,
     onEditCash,
     onDeleteCash,

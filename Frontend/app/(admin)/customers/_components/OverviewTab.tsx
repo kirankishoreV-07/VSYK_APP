@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
-import type { ChitMember, Transaction, PaymentSchedule, Auction, CashCollection } from './types';
+import type { ChitMember, Transaction, PaymentSchedule, Auction, CashCollection, AuctionPrizeSettlement } from './types';
 import { formatPaise, formatPaiseCompact, formatDateIST, formatDueShort } from './utils';
 import { AdminColors, softElevation } from './adminStyles';
 import { computeCustomerUpcomingDues } from '../../../../lib/memberGroupHistory';

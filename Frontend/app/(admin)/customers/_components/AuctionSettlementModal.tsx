@@ -9,6 +9,7 @@ import * as Haptics from 'expo-haptics';
 import { supabase } from '../../../../lib/supabase';
 import { apiPost } from '../../../../lib/api';
 import type { Auction } from './types';
+import { applyAuctionSettlementToSchedules } from '../../../../lib/chitPayments';
 
 type SettlementMember = {
     id: string;
@@ -180,35 +181,18 @@ export function AuctionSettlementModal({
 
             if (auctionError) throw auctionError;
 
-            if (auctionNumber != null) {
-                const { data: groupMembers, error: membersError } = await supabase
-                    .from('chit_members')
-                    .select('id, participation_share')
-                    .eq('chit_group_id', group.id);
-
-                if (membersError) throw membersError;
-
-                if (groupMembers?.length) {
-                    const updatePromises = groupMembers.map((member: { id: string; participation_share?: number }) => {
-                        const share = Number(member.participation_share || 1);
-                        const memberFinalDue = Math.round(finalDuePaise * share);
-                        const memberDividend = Math.round(dividendPaise * share);
-
-                        return supabase
-                            .from('payment_schedules')
-                            .update({
-                                amount: memberFinalDue,
-                                dividend_amount: memberDividend,
-                            })
-                            .eq('chit_member_id', member.id)
-                            .eq('month_number', auctionNumber);
-                    });
-
-                    const results = await Promise.all(updatePromises);
-                    const updateError = results.find(r => r.error);
-                    if (updateError?.error) {
-                        console.warn('payment_schedules update partial failure:', updateError.error.message);
-                    }
+            if (auctionNumber != null && group?.id) {
+                // Use the robust applier (updates existing + inserts missing schedules for the cycle).
+                // This guarantees admin-side customer payment dues / outstanding reflect the settlement.
+                const applyRes = await applyAuctionSettlementToSchedules(
+                    supabase,
+                    group.id,
+                    auctionNumber,
+                    finalDuePaise,
+                    dividendPaise,
+                );
+                if (applyRes.errors.length > 0) {
+                    console.warn('Settlement modal schedule apply issues:', applyRes.errors);
                 }
             }
 

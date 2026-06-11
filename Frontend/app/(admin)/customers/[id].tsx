@@ -115,6 +115,7 @@ export default function CustomerDetailsScreen() {
                     schedules={schedules}
                     auctions={auctions}
                     cashCollections={cashCollections}
+                    prizeSettlements={data?.prizeSettlements || []}
                     onViewAllTransactions={() => router.push(`/(admin)/customers/${customerId}/payments`)}
                     onViewGroupPayments={() => router.push(`/(admin)/customers/${customerId}/groups`)}
                 />

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AppLogo } from '../../../components/AppLogo';
@@ -8,6 +8,7 @@ import { useRouter } from 'expo-router';
 import { supabase } from '../../../lib/supabase';
 import { apiPost } from '../../../lib/api';
 import { isAuctionConfiguredUpcoming } from '../../../lib/auctionUtils';
+import { applyAuctionSettlementToSchedules } from '../../../lib/chitPayments';
 
 export default function AdminLiveAuction() {
   const router = useRouter();
@@ -19,7 +20,7 @@ export default function AdminLiveAuction() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const auctionIdRef = useRef<string | null>(null);
 
-  const fetchBids = async (auctionId: string) => {
+  const fetchBids = useCallback(async (auctionId: string) => {
     try {
       // Highest discount bid wins — sort descending, exclude retracted bids
       const { data } = await supabase
@@ -51,7 +52,7 @@ export default function AdminLiveAuction() {
     } catch (err) {
       console.error('Error fetching bids:', err);
     }
-  };
+  }, []);
 
   const startTimer = (closesAt: string | null, scheduledAt: string) => {
     if (timerRef.current) clearInterval(timerRef.current);
@@ -80,7 +81,7 @@ export default function AdminLiveAuction() {
     timerRef.current = setInterval(tick, 1000);
   };
 
-  const fetchLiveAuction = async () => {
+  const fetchLiveAuction = useCallback(async () => {
     try {
       const { data: liveAuction, error: liveError } = await supabase
         .from('auctions')
@@ -119,32 +120,96 @@ export default function AdminLiveAuction() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [fetchBids]);
 
-  // Setup: fetch once + subscribe to real-time channels
+  // Derived values used by handlers (hoisted for fresh closures in event handlers)
+  const topBid = bids[0];
+  const isLive = auction?.status === 'live';
+
+  // Robust realtime setup for the *current* auction.
+  // Previous implementation used a single hardcoded global channel ('live_bids') set up once
+  // with no filter. This caused missed INSERT events from the member side until a full
+  // logout/login (fresh client + fresh subscription after the auction was active).
+  // Fix: 
+  // - Dynamic channel name per auction
+  // - postgres_changes *filter* on the specific auction_id (server-side efficient + reliable delivery)
+  // - Effect depends on the current auction id so we (re)subscribe when the live/upcoming auction changes
+  // - Proper subscribe status logging
+  // - Listen to INSERT + UPDATE (retracts can affect leaderboard)
+  // - Initial fetchBids when we have an id
   useEffect(() => {
-    fetchLiveAuction();
+    const auctionId = auction?.id || auctionIdRef.current;
+    if (!auctionId) return;
 
+    // Update ref for any legacy paths
+    auctionIdRef.current = auctionId;
+
+    // Unique channel per auction prevents conflicts across devices/sessions/other auctions
     const bidsChannel = supabase
-      .channel('live_bids')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'auction_bids' }, () => {
-        // Use ref to avoid stale closure
-        if (auctionIdRef.current) fetchBids(auctionIdRef.current);
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      })
-      .subscribe();
+      .channel(`admin-live-bids-${auctionId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*', // INSERT for new bids, UPDATE for retracts etc.
+          schema: 'public',
+          table: 'auction_bids',
+          filter: `auction_id=eq.${auctionId}`,
+        },
+        (payload) => {
+          // Always refetch the authoritative leaderboard for this auction
+          fetchBids(auctionId);
 
+          // Haptic only for new bids on *this* auction
+          if (payload.eventType === 'INSERT') {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          }
+        }
+      )
+      .subscribe((status, err) => {
+        if (status === 'SUBSCRIBED') {
+          // Good — events for this auction will now flow reliably
+          console.log(`[admin live] bids realtime SUBSCRIBED for auction ${auctionId}`);
+        }
+        if (err) {
+          console.error('[admin live] bids realtime subscription error:', err);
+        }
+      });
+
+    // Also listen specifically to *this* auction's status updates (more efficient than global)
     const auctionChannel = supabase
-      .channel('auction_status')
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'auctions' }, fetchLiveAuction)
-      .subscribe();
+      .channel(`admin-live-auction-${auctionId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'auctions',
+          filter: `id=eq.${auctionId}`,
+        },
+        () => {
+          fetchLiveAuction();
+        }
+      )
+      .subscribe((status, err) => {
+        if (status === 'SUBSCRIBED') {
+          console.log(`[admin live] auction status SUBSCRIBED for ${auctionId}`);
+        }
+        if (err) console.error('[admin live] auction status realtime error:', err);
+      });
+
+    // Ensure we have the latest bids right when this subscription activates
+    fetchBids(auctionId);
 
     return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
       supabase.removeChannel(bidsChannel);
       supabase.removeChannel(auctionChannel);
     };
-  }, []); // Run once — no dependency on auction.id
+  }, [auction?.id, fetchBids, fetchLiveAuction]); // Re-run (cleanup old + subscribe new) when the auction we are watching changes. Stable callbacks won't cause spurious re-subs.
+
+  // Initial fetch on mount. The id-dependent effect (below) handles (re)subscriptions + live bid updates.
+  useEffect(() => {
+    fetchLiveAuction();
+  }, [fetchLiveAuction]);
 
   const handleDeclareWinner = async () => {
     if (!auction || bids.length === 0) {
@@ -187,7 +252,7 @@ export default function AdminLiveAuction() {
               }
 
               // Single update with ALL settlement fields
-              const { error } = await supabase
+              const { error: auctionErr } = await supabase
                 .from('auctions')
                 .update({
                   status: 'completed',
@@ -204,35 +269,31 @@ export default function AdminLiveAuction() {
                 })
                 .eq('id', auction.id);
 
-              if (error) throw error;
+              if (auctionErr) throw auctionErr;
 
-              // Directly update payment_schedules for every group member — no backend needed.
-              // This is what the member app reads to show the correct installment amount.
-              try {
-                const { data: groupMembers } = await supabase
-                  .from('chit_members')
-                  .select('id, participation_share')
-                  .eq('chit_group_id', auction.chit_group_id);
-
-                if (groupMembers && groupMembers.length > 0 && auction.auction_number != null) {
-                  const updatePromises = groupMembers.map((member: any) => {
-                    const share = Number(member.participation_share || 1);
-                    return supabase
-                      .from('payment_schedules')
-                      .update({
-                        amount: Math.round(finalDuePaise * share),
-                        dividend_amount: Math.round(dividendPerMemberPaise * share),
-                      })
-                      .eq('chit_member_id', member.id)
-                      .eq('month_number', auction.auction_number);
-                  });
-                  await Promise.all(updatePromises);
+              // Apply settlement to payment_schedules for ALL members (create rows if missing for this cycle).
+              // This ensures customer "payment due" amounts and admin collection views are correct immediately.
+              let scheduleSummary = '';
+              if (auction.auction_number != null) {
+                const applyRes = await applyAuctionSettlementToSchedules(
+                  supabase,
+                  auction.chit_group_id,
+                  auction.auction_number,
+                  finalDuePaise,
+                  dividendPerMemberPaise,
+                );
+                const parts: string[] = [];
+                if (applyRes.updated > 0) parts.push(`${applyRes.updated} updated`);
+                if (applyRes.inserted > 0) parts.push(`${applyRes.inserted} created`);
+                if (applyRes.skipped > 0) parts.push(`${applyRes.skipped} already correct`);
+                scheduleSummary = parts.length ? ` Dues: ${parts.join(', ')}.` : '';
+                if (applyRes.errors.length > 0) {
+                  console.warn('Some schedule apply issues (non-fatal):', applyRes.errors);
+                  scheduleSummary += ' (Some dues may need a refresh on group view.)';
                 }
-              } catch (scheduleErr) {
-                console.warn('payment_schedules update (non-critical):', scheduleErr);
               }
 
-              // Push notifications — non-critical, ignore if backend is offline
+              // Push notifications — non-critical
               try {
                 await apiPost('/api/auctions/notify-installments', {
                   auctionId: auction.id,
@@ -243,7 +304,10 @@ export default function AdminLiveAuction() {
               }
 
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              Alert.alert('Success', `${bidderName} declared as winner. Settlement saved and EMI updated to ₹${Math.round(finalDuePaise / 100).toLocaleString('en-IN')} for all members.`);
+              Alert.alert(
+                'Success',
+                `${bidderName} declared as winner.${scheduleSummary} EMI set to ₹${Math.round(finalDuePaise / 100).toLocaleString('en-IN')} for the cycle.`,
+              );
               router.push(`/(admin)/groups/${auction.chit_group_id}`);
             } catch (err: any) {
               console.error(err);
@@ -257,14 +321,30 @@ export default function AdminLiveAuction() {
     );
   };
 
+  const handleSafeBack = () => {
+    if (isLive && bids.length > 0) {
+      Alert.alert(
+        'Auction Still Live',
+        'There are active bids. Use DECLARE WINNER or STOP BIDDING to properly close the auction and update member payment dues.',
+        [
+          { text: 'Stay Here', style: 'cancel' },
+          { text: 'Stop Bidding Now', style: 'destructive', onPress: handleCloseAuction },
+        ],
+      );
+      return;
+    }
+    if (timerRef.current) clearInterval(timerRef.current);
+    router.back();
+  };
+
   const handleCloseAuction = async () => {
     if (!auction) return;
 
     Alert.alert(
       'Stop Bidding',
       bids.length > 0
-        ? `End the auction? Current highest bid is ₹${(bids[0].bid_amount / 100).toLocaleString('en-IN')} by ${bids[0].customers?.full_name || 'a member'}. You can finalise the settlement from the group page.`
-        : 'No bids have been placed. Close this auction without a winner?',
+        ? `End the auction? Current highest bid is ₹${(bids[0].bid_amount / 100).toLocaleString('en-IN')} by ${bids[0].customers?.full_name || 'a member'}. Dues will be updated for all members immediately.`
+        : 'No bids have been placed. Close this auction without a winner? Base installment will apply for the cycle.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -303,7 +383,33 @@ export default function AdminLiveAuction() {
               .eq('id', auction.id);
 
             if (error) { Alert.alert('Error', error.message); return; }
+
+            // IMPORTANT FIX: Apply dues to payment_schedules right here on STOP (create if missing).
+            // Prevents dues not being reflected in admin customer "payment due"/outstanding when admin
+            // stops bidding and clicks away without immediately using the settlement modal.
+            if (auction.auction_number != null) {
+              try {
+                const applyRes = await applyAuctionSettlementToSchedules(
+                  supabase,
+                  auction.chit_group_id,
+                  auction.auction_number,
+                  finalDuePaise,
+                  dividendPerMemberPaise,
+                );
+                if (applyRes.errors.length > 0) console.warn('STOP apply warnings:', applyRes.errors);
+              } catch (applyErr) {
+                console.warn('STOP schedule apply non-fatal error:', applyErr);
+              }
+            }
+
             if (timerRef.current) clearInterval(timerRef.current);
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            Alert.alert(
+              'Auction Closed',
+              topBid
+                ? `Bidding stopped. Dues for cycle #${auction.auction_number} applied to members (₹${Math.round(finalDuePaise / 100).toLocaleString('en-IN')} payable). Set winner name via group if needed.`
+                : 'Auction closed (no bids).',
+            );
             router.push(`/(admin)/groups/${auction.chit_group_id}`);
           }
         }
@@ -319,8 +425,7 @@ export default function AdminLiveAuction() {
     );
   }
 
-  const topBid = bids[0]; // highest discount = winner
-  const isLive = auction?.status === 'live';
+  // topBid / isLive hoisted earlier for handler closures. Recompute fresh derived values here for render.
   const groupValue = (auction?.chit_groups?.value || 0) / 100;
   const memberCount = auction?.chit_groups?.capacity || 1;
   const currentDiscount = topBid ? topBid.bid_amount / 100 : (auction?.current_bid || 0) / 100;
@@ -337,7 +442,7 @@ export default function AdminLiveAuction() {
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Dynamic Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+        <TouchableOpacity onPress={handleSafeBack} style={styles.backBtn}>
           <Svg width={24} height={24} viewBox="0 0 24 24" fill="#FFFFFF">
             <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
           </Svg>

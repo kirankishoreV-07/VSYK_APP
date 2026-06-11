@@ -153,3 +153,204 @@ export function getFullyCollectedMonths(
 
 /** @deprecated Use getCycleDueAmount */
 export const getUnaccountedCycleDueAmount = getCycleDueAmount;
+
+/**
+ * Robustly applies (or creates) the post-auction settlement amounts on payment_schedules
+ * for every member in the group for the given auction cycle (month_number = auction_number).
+ * - Updates existing schedule rows.
+ * - Inserts missing schedule rows (for members added before settlement or late-created schedules).
+ * This ensures "payment dues" on admin customer views, collection modals, and customer chit screens
+ * reflect the correct post-dividend installment for the cycle.
+ */
+export async function applyAuctionSettlementToSchedules(
+  supabaseClient: { from: (table: string) => any },
+  chitGroupId: string,
+  auctionNumber: number,
+  finalDuePaise: number,
+  dividendPaise: number,
+): Promise<{ updated: number; inserted: number; skipped: number; errors: string[] }> {
+  const result = { updated: 0, inserted: 0, skipped: 0, errors: [] as string[] };
+
+  if (!chitGroupId || auctionNumber == null || auctionNumber < 1) {
+    result.errors.push('Invalid group or auction number');
+    return result;
+  }
+
+  try {
+    // Fetch group for date derivation on inserts + fallback values
+    const { data: group } = await supabaseClient
+      .from('chit_groups')
+      .select('id, start_date, monthly_installment, duration_months')
+      .eq('id', chitGroupId)
+      .maybeSingle();
+
+    const groupStart = group?.start_date || null;
+    const baseInstallment = Number(group?.monthly_installment || 0);
+
+    // Fetch current members (with shares)
+    const { data: members, error: membersErr } = await supabaseClient
+      .from('chit_members')
+      .select('id, participation_share')
+      .eq('chit_group_id', chitGroupId);
+
+    if (membersErr) {
+      result.errors.push(`Failed to load members: ${membersErr.message}`);
+      return result;
+    }
+
+    if (!members || members.length === 0) {
+      result.skipped = 0;
+      return result;
+    }
+
+    // Helper to compute a due_date for this cycle (last day of the logical month)
+    const computeDueDate = (monthNum: number): string => {
+      const base = groupStart ? new Date(groupStart) : new Date();
+      base.setDate(1);
+      const d = new Date(base);
+      d.setMonth(d.getMonth() + monthNum);
+      d.setDate(0); // last day of that month
+      return d.toISOString().split('T')[0];
+    };
+
+    const dueDateForCycle = computeDueDate(auctionNumber);
+
+    for (const m of members as Array<{ id: string; participation_share?: number | null }>) {
+      const share = Number(m.participation_share || 1);
+      const targetAmount = Math.max(0, Math.round(finalDuePaise * share));
+      const targetDividend = Math.max(0, Math.round(dividendPaise * share));
+
+      try {
+        // Check if a schedule row already exists for this member + month
+        const { data: existing } = await supabaseClient
+          .from('payment_schedules')
+          .select('id, amount, dividend_amount')
+          .eq('chit_member_id', m.id)
+          .eq('month_number', auctionNumber)
+          .maybeSingle();
+
+        if (existing?.id) {
+          // Update only if different (avoid unnecessary writes)
+          const needsUpdate =
+            Number(existing.amount || 0) !== targetAmount ||
+            Number(existing.dividend_amount || 0) !== targetDividend;
+
+          if (needsUpdate) {
+            const { error: upErr } = await supabaseClient
+              .from('payment_schedules')
+              .update({
+                amount: targetAmount,
+                dividend_amount: targetDividend,
+              })
+              .eq('id', existing.id);
+
+            if (upErr) {
+              result.errors.push(`Update failed for member ${m.id}: ${upErr.message}`);
+            } else {
+              result.updated += 1;
+            }
+          } else {
+            result.skipped += 1;
+          }
+        } else {
+          // Insert a full schedule row for this cycle (use settled amounts)
+          const insertRow: any = {
+            chit_member_id: m.id,
+            month_number: auctionNumber,
+            due_date: dueDateForCycle,
+            amount: targetAmount,
+            paid: false,
+            paid_at: null,
+            dividend_amount: targetDividend,
+          };
+
+          const { error: insErr } = await supabaseClient
+            .from('payment_schedules')
+            .insert([insertRow]);
+
+          if (insErr) {
+            // If unique violation (race or constraint added later), try update path once
+            if (insErr.code === '23505') {
+              const { data: recheck } = await supabaseClient
+                .from('payment_schedules')
+                .select('id')
+                .eq('chit_member_id', m.id)
+                .eq('month_number', auctionNumber)
+                .maybeSingle();
+              if (recheck?.id) {
+                await supabaseClient
+                  .from('payment_schedules')
+                  .update({ amount: targetAmount, dividend_amount: targetDividend })
+                  .eq('id', recheck.id);
+                result.updated += 1;
+              } else {
+                result.errors.push(`Insert conflict (no row) for member ${m.id}`);
+              }
+            } else {
+              result.errors.push(`Insert failed for member ${m.id}: ${insErr.message}`);
+            }
+          } else {
+            result.inserted += 1;
+          }
+        }
+      } catch (perMemberErr: any) {
+        result.errors.push(`Member ${m.id} error: ${perMemberErr?.message || perMemberErr}`);
+      }
+    }
+  } catch (outerErr: any) {
+    result.errors.push(`Settlement apply failed: ${outerErr?.message || outerErr}`);
+  }
+
+  return result;
+}
+
+/**
+ * Ensure base payment_schedules rows exist for a newly added member (all cycles).
+ * Uses base monthly_installment (pre-settlement). Settlements for past cycles
+ * should be applied separately via applyAuctionSettlementToSchedules.
+ */
+export async function ensureBaseSchedulesForMember(
+  supabaseClient: { from: (table: string) => any },
+  membershipId: string,
+  group: { start_date?: string | null; monthly_installment?: number | null; duration_months?: number | null },
+): Promise<number> {
+  if (!membershipId || !group) return 0;
+
+  const { data: existing } = await supabaseClient
+    .from('payment_schedules')
+    .select('id')
+    .eq('chit_member_id', membershipId);
+
+  if (existing && existing.length > 0) return existing.length;
+
+  const duration = Number(group.duration_months || 0);
+  if (duration <= 0) return 0;
+
+  const baseAmount = Number(group.monthly_installment || 0);
+  const start = group.start_date ? new Date(group.start_date) : new Date();
+  start.setDate(1);
+
+  const rows: any[] = [];
+  for (let i = 0; i < duration; i++) {
+    const monthNum = i + 1;
+    const due = new Date(start);
+    due.setMonth(due.getMonth() + monthNum);
+    due.setDate(0);
+    rows.push({
+      chit_member_id: membershipId,
+      month_number: monthNum,
+      due_date: due.toISOString().split('T')[0],
+      amount: baseAmount,
+      paid: false,
+      paid_at: null,
+      dividend_amount: 0,
+    });
+  }
+
+  const { error } = await supabaseClient.from('payment_schedules').insert(rows);
+  if (error) {
+    console.warn('ensureBaseSchedulesForMember insert error (non-fatal):', error.message);
+    return 0;
+  }
+  return rows.length;
+}

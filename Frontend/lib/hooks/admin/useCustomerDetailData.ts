@@ -10,6 +10,7 @@ import type {
     AuctionParticipant,
     CashCollection,
     KPIMetrics,
+    AuctionPrizeSettlement,
 } from '../../../app/(admin)/customers/_components/types';
 import { buildMemberPaymentMonths } from '../../memberGroupHistory';
 import { dedupeAuctionCycles } from '../../chitPayments';
@@ -22,6 +23,7 @@ interface CustomerDetailData {
     auctions: Auction[];
     participants: AuctionParticipant[];
     cashCollections: CashCollection[];
+    prizeSettlements: AuctionPrizeSettlement[];  // Actual prize payouts to this customer for won auctions (supports partials)
     kpiMetrics: KPIMetrics;
 }
 
@@ -67,6 +69,7 @@ export function useCustomerDetailData(customerId: string) {
                     auctions: [],
                     participants: [],
                     cashCollections: [],
+                    prizeSettlements: [],
                     kpiMetrics: {
                         activeChits: 0,
                         lifetimePaid: 0,
@@ -77,8 +80,8 @@ export function useCustomerDetailData(customerId: string) {
                 };
             }
 
-            // Parallel fetch for schedules, transactions, auctions, participants
-            const [schedulesRes, transactionsRes, auctionsRes, participantsRes, cashRes] = await Promise.all([
+            // Parallel fetch for schedules, transactions, auctions, participants, cash, and prize settlements (winner payouts)
+            const [schedulesRes, transactionsRes, auctionsRes, participantsRes, cashRes, prizeRes] = await Promise.all([
                 supabase
                     .from('payment_schedules')
                     .select('*')
@@ -96,6 +99,11 @@ export function useCustomerDetailData(customerId: string) {
                     .select('*')
                     .in('chit_member_id', memberIds)
                     .order('month_number', { ascending: true }),
+                supabase
+                    .from('auction_prize_settlements')
+                    .select('*')
+                    .in('chit_member_id', memberIds)
+                    .order('recorded_at', { ascending: false }),
             ]);
 
             if (schedulesRes.error) throw schedulesRes.error;
@@ -103,12 +111,14 @@ export function useCustomerDetailData(customerId: string) {
             if (auctionsRes.error) throw auctionsRes.error;
             if (participantsRes.error) throw participantsRes.error;
             if (cashRes.error) throw cashRes.error;
+            if (prizeRes.error) throw prizeRes.error;
 
             const schedules = (schedulesRes.data || []) as PaymentSchedule[];
             const transactions = (transactionsRes.data || []) as Transaction[];
             const auctions = (auctionsRes.data || []) as Auction[];
             const participants = (participantsRes.data || []) as AuctionParticipant[];
             const cashCollections = (cashRes.data || []) as CashCollection[];
+            const prizeSettlements = (prizeRes.data || []) as AuctionPrizeSettlement[];
 
             // Calculate KPI metrics
             const activeChits = (memberships || []).filter(
@@ -175,6 +185,7 @@ export function useCustomerDetailData(customerId: string) {
                 auctions,
                 participants,
                 cashCollections,
+                prizeSettlements,
                 kpiMetrics: {
                     activeChits,
                     lifetimePaid,
@@ -211,6 +222,7 @@ export function useCustomerDetailData(customerId: string) {
             .on('postgres_changes', { event: '*', schema: 'public', table: 'chit_member_transactions' }, invalidate)
             .on('postgres_changes', { event: '*', schema: 'public', table: 'cash_collections' }, invalidate)
             .on('postgres_changes', { event: '*', schema: 'public', table: 'payment_schedules' }, invalidate)
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'auction_prize_settlements' }, invalidate)
             .subscribe();
 
         return () => {

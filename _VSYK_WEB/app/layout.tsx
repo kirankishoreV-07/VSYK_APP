@@ -1,0 +1,67 @@
+import type { Metadata } from "next";
+import { Inter, Space_Grotesk } from "next/font/google";
+import "./globals.css";
+import { Navbar } from "@/components/layout/Navbar";
+import { Footer } from "@/components/layout/Footer";
+import { ScrollProgress } from "@/components/layout/ScrollProgress";
+
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+  display: "swap",
+});
+
+const spaceGrotesk = Space_Grotesk({
+  subsets: ["latin"],
+  variable: "--font-space-grotesk",
+  display: "swap",
+});
+
+export const metadata: Metadata = {
+  metadataBase: new URL("https://vsykchits.com"),
+  title: {
+    default: "VSYK CHITS — Your Trusted Financial Partner",
+    template: "%s · VSYK CHITS",
+  },
+  description:
+    "VSYK CHITS turns disciplined monthly savings into a flexible corpus — funding education, healthcare, business and life's milestones. Banking-grade security, transparent auctions, decades of trust.",
+  keywords: [
+    "VSYK Chits",
+    "chit fund",
+    "chit fund India",
+    "savings",
+    "monthly chit",
+    "auction",
+    "R. Venkatesan",
+    "trusted chit fund",
+  ],
+  authors: [{ name: "VSYK CHITS" }],
+  openGraph: {
+    title: "VSYK CHITS — Your Trusted Financial Partner",
+    description:
+      "Disciplined savings. Transparent auctions. A flexible corpus for life's biggest moments.",
+    type: "website",
+    locale: "en_IN",
+    siteName: "VSYK CHITS",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "VSYK CHITS — Your Trusted Financial Partner",
+    description:
+      "Disciplined savings. Transparent auctions. A flexible corpus for life's biggest moments.",
+  },
+  robots: { index: true, follow: true },
+};
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en" className={`${inter.variable} ${spaceGrotesk.variable}`}>
+      <body className="min-h-screen bg-surface-alt antialiased">
+        <ScrollProgress />
+        <Navbar />
+        <main className="relative">{children}</main>
+        <Footer />
+      </body>
+    </html>
+  );
+}

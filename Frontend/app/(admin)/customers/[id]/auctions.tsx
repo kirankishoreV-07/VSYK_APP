@@ -49,7 +49,7 @@ export default function AuctionsScreen() {
         );
     }
 
-    const { customer, memberships, auctions, participants } = data;
+    const { customer, memberships, auctions, participants, prizeSettlements } = data;
 
     return (
         <SafeAreaView style={styles.container}>
@@ -70,6 +70,7 @@ export default function AuctionsScreen() {
                 memberships={memberships}
                 auctions={auctions}
                 participants={participants}
+                prizeSettlements={prizeSettlements || []}
             />
         </SafeAreaView>
     );

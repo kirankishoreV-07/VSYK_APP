@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
-import type { ChitMember, InnerTab, PaymentSchedule, Transaction, Auction, AuctionParticipant, CashCollection } from './types';
+import type { ChitMember, InnerTab, PaymentSchedule, Transaction, Auction, AuctionParticipant, CashCollection, AuctionPrizeSettlement } from './types';
 import {
     formatPaise,
     formatDateIST,
@@ -26,6 +26,7 @@ interface GroupsTabProps {
     auctions: Auction[];
     participants: AuctionParticipant[];
     customerName?: string;
+    prizeSettlements?: AuctionPrizeSettlement[];
 }
 
 const INNER_TABS: Array<{ key: InnerTab; label: string }> = [
@@ -43,6 +44,7 @@ export function GroupsTab({
     auctions,
     participants,
     customerName = 'Customer',
+    prizeSettlements = [],
 }: GroupsTabProps) {
     const [selectedGroupId, setSelectedGroupId] = useState<string | null>(
         memberships.length > 0 ? memberships[0].id : null
@@ -201,6 +203,7 @@ export function GroupsTab({
                         transactions={groupTransactions}
                         cashCollections={groupCashCollections}
                         groupAuctions={groupAuctions}
+                        prizeSettlements={prizeSettlements}
                         customerName={customerName}
                         onEditCash={handleEditCashCollection}
                         onDeleteCash={handleDeleteCashCollection}
@@ -231,6 +234,7 @@ export function GroupsTab({
                         schedules={groupSchedules}
                         transactions={groupTransactions}
                         auctions={groupAuctions}
+                        prizeSettlements={prizeSettlements}
                     />
                 );
             default:
@@ -643,9 +647,10 @@ interface LedgerInnerTabProps {
     schedules: PaymentSchedule[];
     transactions: Transaction[];
     auctions: Auction[];
+    prizeSettlements?: AuctionPrizeSettlement[];
 }
 
-function LedgerInnerTab({ membership, schedules, transactions, auctions }: LedgerInnerTabProps) {
+function LedgerInnerTab({ membership, schedules, transactions, auctions, prizeSettlements = [] }: LedgerInnerTabProps) {
     interface LedgerEntry {
         date: string;
         description: string;
@@ -687,14 +692,18 @@ function LedgerInnerTab({ membership, schedules, transactions, auctions }: Ledge
             });
         });
 
-    auctions
-        .filter(a => isMemberAuctionWinner(a, membership.id) && a.winner_prize_amount)
-        .forEach(wonAuction => {
+    // Use actual disbursed prize payouts (from auction_prize_settlements) instead of the full entitled amount.
+    // This ensures the ledger only shows credit for money the admin has actually paid out (partials supported).
+    (prizeSettlements || [])
+        .filter((ps: AuctionPrizeSettlement) => ps.chit_member_id === membership.id)
+        .forEach((ps: AuctionPrizeSettlement) => {
+            const relatedAuction = auctions.find((a: any) => a.id === ps.auction_id);
+            const cycle = relatedAuction?.auction_number ?? '?';
             movements.push({
-                date: wonAuction.ended_at || wonAuction.scheduled_at,
-                desc: `Auction Prize (Cycle ${wonAuction.auction_number})`,
+                date: ps.recorded_at,
+                desc: `Auction Prize Payout (Cycle ${cycle})`,
                 debit: 0,
-                credit: wonAuction.winner_prize_amount!,
+                credit: ps.amount,
                 type: 'prize',
             });
         });

@@ -192,3 +192,20 @@ export interface CashCollection {
     recorded_at: string;
     updated_at: string;
 }
+
+export interface AuctionPrizeSettlement {
+    id: string;
+    auction_id: string;
+    chit_member_id: string;
+    amount: number; // paise (this partial payout)
+    denomination_500: number;
+    denomination_200: number;
+    denomination_100: number;
+    denomination_50: number;
+    denomination_20: number;
+    denomination_10: number;
+    notes: string | null;
+    recorded_by: string | null;
+    recorded_at: string;
+    updated_at: string;
+}

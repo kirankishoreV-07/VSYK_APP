@@ -154,6 +154,39 @@ async function runAuctionScheduler() {
       notes: 'Auction closed automatically',
     }]);
 
+    // Best-effort: apply settlement to payment_schedules so dues are correct even for auto-closed auctions.
+    // (Client-side applier on next group/admin view will ensure/create rows if the simple update misses any.)
+    try {
+      const { data: autoAuction } = await supabaseAdmin
+        .from('auctions')
+        .select('auction_number, final_due_amount, dividend_amount, chit_group_id')
+        .eq('id', auction.id)
+        .maybeSingle();
+      if (autoAuction && autoAuction.auction_number != null) {
+        const fd = Number(autoAuction.final_due_amount || 0);
+        const dv = Number(autoAuction.dividend_amount || 0);
+        if (fd > 0 || dv > 0) {
+          const { data: gMembers } = await supabaseAdmin
+            .from('chit_members')
+            .select('id, participation_share')
+            .eq('chit_group_id', autoAuction.chit_group_id);
+          for (const gm of (gMembers || [])) {
+            const sh = Number((gm as any).participation_share || 1);
+            await supabaseAdmin
+              .from('payment_schedules')
+              .update({
+                amount: Math.round(fd * sh),
+                dividend_amount: Math.round(dv * sh),
+              })
+              .eq('chit_member_id', (gm as any).id)
+              .eq('month_number', autoAuction.auction_number);
+          }
+        }
+      }
+    } catch (autoSettleErr) {
+      console.warn('Auto scheduler schedule apply non-fatal:', autoSettleErr);
+    }
+
     const memberIds = await getGroupMemberCustomerIds(auction.chit_group_id);
     await sendPushToCustomers(memberIds, {
       title: 'Auction Closed',

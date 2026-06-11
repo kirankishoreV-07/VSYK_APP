@@ -46,7 +46,7 @@ export default function GroupsScreen() {
         );
     }
 
-    const { customer, memberships, schedules, transactions, auctions, participants } = data;
+    const { customer, memberships, schedules, transactions, auctions, participants, prizeSettlements } = data;
     const initials = (customer?.full_name || 'C')
         .split(' ')
         .map((n) => n[0])
@@ -77,6 +77,7 @@ export default function GroupsScreen() {
                     transactions={transactions}
                     auctions={auctions}
                     participants={participants}
+                    prizeSettlements={prizeSettlements || []}
                     customerName={customer?.full_name || 'Customer'}
                 />
             </View>

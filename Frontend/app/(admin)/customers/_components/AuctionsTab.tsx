@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import Svg, { Path, Circle } from 'react-native-svg';
-import type { ChitMember, Auction, AuctionParticipant } from './types';
+import type { ChitMember, Auction, AuctionParticipant, AuctionPrizeSettlement } from './types';
 import { formatPaise, formatDateIST } from './utils';
 import { isMemberAuctionWinner, WINNER_HIGHLIGHT } from '../../../../lib/auctionWinner';
 
@@ -9,11 +9,12 @@ interface AuctionsTabProps {
     memberships: ChitMember[];
     auctions: Auction[];
     participants: AuctionParticipant[];
+    prizeSettlements?: AuctionPrizeSettlement[];  // Actual disbursed prize payouts (partials supported)
 }
 
 type FilterType = 'all' | 'won' | 'participated' | 'not_participated';
 
-export function AuctionsTab({ memberships, auctions, participants }: AuctionsTabProps) {
+export function AuctionsTab({ memberships, auctions, participants, prizeSettlements = [] }: AuctionsTabProps) {
     const [filter, setFilter] = useState<FilterType>('all');
 
     // Build auction timeline for this customer - ONLY COMPLETED AUCTIONS
@@ -45,6 +46,21 @@ export function AuctionsTab({ memberships, auctions, participants }: AuctionsTab
                 const memberCount = membership?.chit_groups?.duration_months || 1;
                 const discountPerMember = auction.discount_amount ? auction.discount_amount / memberCount : 0;
 
+                // NEW: Prize settlement / payout info for won auctions (partials)
+                let prizeSettled = 0;
+                let prizeRemaining = 0;
+                let prizeStatus: 'FULLY PAID' | 'PARTIAL' | 'PENDING' | null = null;
+                if (won && membership && auction.winner_prize_amount) {
+                    const relevant = prizeSettlements.filter(
+                        (ps) => ps.auction_id === auction.id && ps.chit_member_id === membership.id
+                    );
+                    prizeSettled = relevant.reduce((sum, ps) => sum + (ps.amount || 0), 0);
+                    prizeRemaining = Math.max(0, (auction.winner_prize_amount || 0) - prizeSettled);
+                    if (prizeRemaining <= 0 && prizeSettled > 0) prizeStatus = 'FULLY PAID';
+                    else if (prizeSettled > 0) prizeStatus = 'PARTIAL';
+                    else prizeStatus = 'PENDING';
+                }
+
                 return {
                     auctionId: auction.id,
                     groupName: membership?.chit_groups?.name || 'Unknown',
@@ -55,6 +71,10 @@ export function AuctionsTab({ memberships, auctions, participants }: AuctionsTab
                     discountApplied: won ? auction.winner_prize_amount || 0 : discountPerMember,
                     winnerName: auction.winner_name,
                     totalDiscount: auction.discount_amount,
+                    // Prize payout fields
+                    prizeSettled,
+                    prizeRemaining,
+                    prizeStatus,
                 };
             })
             .filter(item => {
@@ -65,7 +85,7 @@ export function AuctionsTab({ memberships, auctions, participants }: AuctionsTab
                 return true;
             })
             .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-    }, [memberships, auctions, participants, filter]);
+    }, [memberships, auctions, participants, prizeSettlements, filter]);
 
     return (
         <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -186,6 +206,27 @@ export function AuctionsTab({ memberships, auctions, participants }: AuctionsTab
                                                 <Text style={styles.detailLabel}>Prize Received:</Text>
                                                 <Text style={[styles.detailValue, { color: '#10B981', fontFamily: 'SpaceGrotesk_600SemiBold' }]}>
                                                     {formatPaise(item.winningBid)}
+                                                </Text>
+                                            </View>
+                                        )}
+
+                                        {/* NEW: Actual prize settlement / payout tracking (partials) for won auctions */}
+                                        {item.outcome === 'won' && item.prizeStatus && (
+                                            <View style={[styles.detailRow, { marginTop: 4, paddingTop: 4, borderTopWidth: 1, borderTopColor: '#F1F5F9' }]}>
+                                                <Svg width={16} height={16} viewBox="0 0 24 24" fill="#01789E" style={styles.detailIcon}>
+                                                    <Path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
+                                                </Svg>
+                                                <Text style={styles.detailLabel}>Prize Payout:</Text>
+                                                <Text style={[styles.detailValue, { color: item.prizeStatus === 'FULLY PAID' ? '#16A34A' : item.prizeStatus === 'PARTIAL' ? '#B45309' : '#DC2626', fontFamily: 'SpaceGrotesk_600SemiBold' }]}>
+                                                    {item.prizeStatus} {item.prizeSettled > 0 ? `(${formatPaise(item.prizeSettled)})` : ''}
+                                                </Text>
+                                            </View>
+                                        )}
+                                        {item.outcome === 'won' && item.prizeStatus && item.prizeRemaining > 0 && (
+                                            <View style={styles.detailRow}>
+                                                <Text style={[styles.detailLabel, { marginLeft: 20 }]}>Remaining to receive:</Text>
+                                                <Text style={[styles.detailValue, { color: '#DC2626' }]}>
+                                                    {formatPaise(item.prizeRemaining)}
                                                 </Text>
                                             </View>
                                         )}
