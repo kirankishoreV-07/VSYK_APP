@@ -5,8 +5,8 @@ import { motion } from "framer-motion";
 const LOGOS = [
   "Trusted Since 1995",
   "RBI Compliant",
-  "₹250 Cr+ Managed",
-  "50,000+ Members",
+  "Crores Managed",
+  "1,000+ Members",
   "ISO 27001 Aligned",
   "Banking-Grade Security",
   "Audited Quarterly",

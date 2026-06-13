@@ -2,8 +2,6 @@ import { Hero } from "@/components/home/Hero";
 import { TrustStats } from "@/components/home/TrustStats";
 import { TrustMarquee } from "@/components/home/TrustMarquee";
 import { Features } from "@/components/home/Features";
-import { HowItWorks } from "@/components/home/HowItWorks";
-import { GoalsGrid } from "@/components/home/GoalsGrid";
 import { Leadership } from "@/components/home/Leadership";
 import { ChitCalculator } from "@/components/home/ChitCalculator";
 import { Testimonials } from "@/components/home/Testimonials";
@@ -17,8 +15,6 @@ export default function HomePage() {
       <TrustStats />
       <TrustMarquee />
       <Features />
-      <HowItWorks />
-      <GoalsGrid />
       <Leadership />
       <ChitCalculator />
       <Testimonials />

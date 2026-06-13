@@ -21,7 +21,7 @@ const LINK_GROUPS = [
     items: [
       { label: "Home", href: "/" },
       { label: "About VSYK", href: "/about" },
-      { label: "Chit Schemes", href: "/schemes" },
+      { label: "Why Chit Funds?", href: "/why-chit-funds" },
       { label: "How It Works", href: "/how-it-works" },
       { label: "Auctions", href: "/auctions" },
       { label: "Contact", href: "/contact" },
@@ -30,7 +30,7 @@ const LINK_GROUPS = [
   {
     title: "For Members",
     items: [
-      { label: "Join a Chit", href: "/schemes" },
+      { label: "Join a Chit", href: "/contact" },
       { label: "Member Login", href: "/contact" },
       { label: "Payment Options", href: "/how-it-works#payments" },
       { label: "Auction Calendar", href: "/auctions" },
@@ -90,10 +90,10 @@ export function Footer() {
             </div>
             <div className="flex flex-col gap-3 lg:items-end">
               <Link
-                href="/schemes"
+                href="/contact"
                 className="group inline-flex items-center justify-center gap-2 rounded-full bg-white px-7 py-4 text-sm font-semibold text-brand-700 shadow-brand-xl transition-all duration-300 hover:-translate-y-0.5"
               >
-                Browse Chit Schemes
+                Get Started
                 <ArrowUpRight className="h-4 w-4 transition-transform duration-300 group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
               </Link>
               <Link
@@ -114,7 +114,7 @@ export function Footer() {
             <Logo size={44} variant="white" />
             <p className="max-w-sm text-sm leading-relaxed text-white/70">
               VSYK CHITS — Your trusted financial partner. Disciplined savings, transparent
-              auctions, decades of community trust under the leadership of MD R. Venkatesan.
+              auctions, decades of community trust under the leadership of MD <span className="font-bold">MR.R.VENKATESAN</span>.
             </p>
             <ul className="space-y-3 text-sm text-white/80">
               <li className="flex items-start gap-3">

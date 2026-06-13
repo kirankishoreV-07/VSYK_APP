@@ -72,6 +72,12 @@ const config: Config = {
           fixed: "#C1E8FF",
           dim: "#7CD1FB",
         },
+        // Premium warm gold — extracted to match the signature "CHITS" treatment in the website logo screen
+        gold: {
+          DEFAULT: "#d4af37",
+          light: "#f0c64b",
+          dark: "#a9790a",
+        },
       },
       fontFamily: {
         display: ["var(--font-space-grotesk)", "system-ui", "sans-serif"],

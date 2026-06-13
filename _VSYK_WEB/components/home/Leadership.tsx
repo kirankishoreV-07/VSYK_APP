@@ -24,7 +24,7 @@ export function Leadership() {
             <div className="relative aspect-[4/5] overflow-hidden rounded-[2rem] border border-white/15 bg-white shadow-2xl">
               <Image
                 src="/images/owner.png"
-                alt="Mr. R. Venkatesan, Managing Director of VSYK CHITS"
+                alt="MR.R.VENKATESAN, Managing Director of VSYK CHITS"
                 fill
                 className="object-cover object-[50%_18%]"
                 sizes="(max-width: 768px) 90vw, 420px"
@@ -53,7 +53,7 @@ export function Leadership() {
               transition={{ duration: 0.6, delay: 0.3 }}
               className="absolute -bottom-6 left-1/2 -translate-x-1/2 rounded-2xl border border-white/15 bg-brand-700/90 px-6 py-3 text-center shadow-brand-xl backdrop-blur-md"
             >
-              <p className="font-display text-base font-bold text-white">Mr. R. Venkatesan</p>
+              <p className="font-display text-base font-bold text-white">MR.R.VENKATESAN</p>
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-teal-300">
                 Managing Director
               </p>
@@ -79,7 +79,7 @@ export function Leadership() {
             </h2>
 
             <p className="mt-6 max-w-xl text-base leading-relaxed text-white/80 sm:text-lg">
-              Guided by Managing Director Mr. R. Venkatesan, VSYK CHITS is built on three
+              Guided by Managing Director <span className="font-bold">MR.R.VENKATESAN</span>, VSYK CHITS is built on three
               decades of profound experience in the financial services and chit fund industry.
               Every scheme we run, every auction we host, and every rupee we manage carries
               that legacy of trust.
@@ -94,7 +94,7 @@ export function Leadership() {
               </blockquote>
               <figcaption className="mt-5 flex items-center gap-3 text-sm text-white/70">
                 <Building2 className="h-4 w-4 text-teal-300" />
-                R. Venkatesan · Managing Director, VSYK CHITS
+                MR.R.VENKATESAN · Managing Director, VSYK CHITS
               </figcaption>
             </figure>
           </motion.div>

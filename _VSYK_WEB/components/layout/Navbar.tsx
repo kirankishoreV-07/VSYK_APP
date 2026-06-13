@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 const NAV_ITEMS = [
   { label: "Home", href: "/" },
   { label: "About", href: "/about" },
-  { label: "Chit Schemes", href: "/schemes" },
+  { label: "Why Chit Funds?", href: "/why-chit-funds" },
   { label: "How It Works", href: "/how-it-works" },
   { label: "Auctions", href: "/auctions" },
   { label: "Contact", href: "/contact" },

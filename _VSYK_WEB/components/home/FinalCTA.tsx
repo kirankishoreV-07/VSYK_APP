@@ -29,22 +29,22 @@ export function FinalCTA() {
               <br /> <span className="text-gradient">savings habit of your life.</span>
             </h2>
             <p className="mx-auto mt-6 max-w-xl text-base leading-relaxed text-ink-mute sm:text-lg">
-              Browse active chit schemes, talk to an advisor, or download the VSYK app — and join
-              50,000+ families who already trust us with their milestones.
+              Talk to an advisor or download the VSYK app — and join 1,000+ families who already
+              trust us with their milestones.
             </p>
             <div className="mt-9 flex flex-wrap items-center justify-center gap-3">
               <Link
-                href="/schemes"
+                href="/contact"
                 className="group inline-flex items-center justify-center gap-2 rounded-full bg-brand-500 px-7 py-4 text-sm font-semibold text-white shadow-premium transition-all duration-300 hover:bg-brand-600 hover:-translate-y-0.5 hover:shadow-brand-xl"
               >
-                Browse Chit Schemes
+                Get Started
                 <ArrowRight className="h-4 w-4 transition-transform duration-300 group-hover:translate-x-1" />
               </Link>
               <Link
-                href="/contact"
+                href="/why-chit-funds"
                 className="inline-flex items-center justify-center gap-2 rounded-full border border-brand-500/20 bg-white px-7 py-4 text-sm font-semibold text-brand-700 shadow-brand-sm transition-all duration-300 hover:border-brand-500/40 hover:bg-brand-50 hover:-translate-y-0.5"
               >
-                Talk to an Advisor
+                Why Chit Funds?
               </Link>
             </div>
           </div>

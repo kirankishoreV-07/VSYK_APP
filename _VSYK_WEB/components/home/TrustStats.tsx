@@ -3,10 +3,20 @@
 import { motion } from "framer-motion";
 import { AnimatedCounter } from "@/components/shared/AnimatedCounter";
 
-const STATS = [
+type Stat = {
+  value?: number;
+  text?: string;
+  prefix?: string;
+  suffix?: string;
+  decimals?: number;
+  label: string;
+  desc: string;
+};
+
+const STATS: Stat[] = [
   { value: 30, suffix: "+", label: "Years of trust", desc: "Decades of community-led savings" },
-  { value: 50000, suffix: "+", label: "Happy members", desc: "Families across South India" },
-  { value: 250, suffix: " Cr+", prefix: "₹", label: "Corpus managed", desc: "Across all active schemes" },
+  { value: 1000, suffix: "+", label: "Happy members", desc: "Families across South India" },
+  { text: "Crores", label: "Corpus managed", desc: "Across all active schemes" },
   { value: 99.8, suffix: "%", decimals: 1, label: "On-time payouts", desc: "Auction settlements without delay" },
 ];
 
@@ -32,12 +42,16 @@ export function TrustStats() {
               >
                 <p className="font-display text-4xl font-bold tracking-tight text-ink sm:text-5xl">
                   <span className="text-gradient">
-                    <AnimatedCounter
-                      to={s.value}
-                      prefix={s.prefix}
-                      suffix={s.suffix}
-                      decimals={s.decimals}
-                    />
+                    {s.text ? (
+                      s.text
+                    ) : (
+                      <AnimatedCounter
+                        to={s.value ?? 0}
+                        prefix={s.prefix}
+                        suffix={s.suffix}
+                        decimals={s.decimals}
+                      />
+                    )}
                   </span>
                 </p>
                 <p className="mt-2 font-display text-sm font-bold text-ink">{s.label}</p>

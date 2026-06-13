@@ -12,7 +12,9 @@ import {
   ShieldCheck,
   Activity,
   ArrowRight,
-  Calendar,
+  Trophy,
+  Coins,
+  Receipt,
 } from "lucide-react";
 import { PageHero } from "@/components/shared/PageHero";
 import { SectionHeader } from "@/components/ui/SectionHeader";
@@ -42,12 +44,27 @@ const PRINCIPLES = [
   },
 ];
 
-const UPCOMING = [
-  { scheme: "Sunrise · 1L", date: "Tomorrow", time: "11:00 AM", members: 20, pool: 100000 },
-  { scheme: "Horizon · 2L", date: "Mar 18", time: "11:30 AM", members: 20, pool: 200000 },
-  { scheme: "Summit · 5L", date: "Mar 22", time: "12:00 PM", members: 25, pool: 500000 },
-  { scheme: "Venture · 10L", date: "Mar 28", time: "12:30 PM", members: 30, pool: 1000000 },
-];
+// Worked example using the VSYK settlement formula (commission 5% of chit value).
+const EX = (() => {
+  const value = 200000;
+  const members = 20;
+  const bid = 24000; // winning auction discount
+  const commission = value * 0.05; // ₹10,000
+  const dividendPool = Math.max(bid - commission, 0); // ₹14,000
+  const dividendPerMember = dividendPool / members; // ₹700
+  const monthly = value / members; // ₹10,000
+  return {
+    value,
+    members,
+    bid,
+    commission,
+    dividendPool,
+    dividendPerMember,
+    monthly,
+    prize: value - bid,
+    net: monthly - dividendPerMember,
+  };
+})();
 
 export default function AuctionsPage() {
   return (
@@ -102,55 +119,121 @@ export default function AuctionsPage() {
         </div>
       </section>
 
-      {/* Upcoming auctions */}
+      {/* Where the bid goes — worked example */}
       <section className="relative py-20 sm:py-24">
         <div className="container-x">
           <SectionHeader
-            eyebrow="Upcoming"
+            eyebrow="The math, made simple"
             title={
               <>
-                Auctions <span className="text-gradient">this month.</span>
+                Where every rupee of the bid <span className="text-gradient">goes.</span>
               </>
             }
-            description="A peek at the next few cycles. Members get real-time reminders 24 hours before bidding opens."
+            description="When a member wins by accepting a discount, that discount is split three ways — and most of it comes back to the members. Here's a real example on a ₹2,00,000 chit with 20 members."
           />
-          <div className="mt-14 overflow-hidden rounded-3xl border border-outline-soft bg-white shadow-brand-md">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-brand-50/60 text-[11px] font-bold uppercase tracking-[0.16em] text-ink-fade">
-                <tr>
-                  <th className="py-4 pl-6 pr-4">Scheme</th>
-                  <th className="py-4 px-4">Date · Time</th>
-                  <th className="py-4 px-4">Members</th>
-                  <th className="py-4 px-4">Pool</th>
-                  <th className="py-4 pr-6"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {UPCOMING.map((a, i) => (
-                  <tr
-                    key={a.scheme}
-                    className="border-t border-outline-soft transition-colors hover:bg-surface-mute/50"
-                  >
-                    <td className="py-5 pl-6 pr-4 font-display font-bold text-ink">{a.scheme}</td>
-                    <td className="py-5 px-4 text-ink-mute">
-                      <span className="font-semibold text-ink">{a.date}</span> · {a.time}
-                    </td>
-                    <td className="py-5 px-4 text-ink-mute">{a.members}</td>
-                    <td className="py-5 px-4 font-display font-bold text-brand-700">
-                      {formatINRCompact(a.pool)}
-                    </td>
-                    <td className="py-5 pr-6 text-right">
-                      <Link
-                        href="/contact"
-                        className="inline-flex items-center gap-1.5 rounded-full bg-brand-50 px-3.5 py-1.5 text-[12px] font-bold text-brand-700 transition-colors hover:bg-brand-100"
-                      >
-                        <Calendar className="h-3 w-3" /> Remind me
-                      </Link>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+
+          <div className="mt-14 grid items-stretch gap-6 lg:grid-cols-[1.1fr,1fr]">
+            {/* Breakdown */}
+            <motion.div
+              initial={{ opacity: 0, y: 24 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, margin: "-80px" }}
+              transition={{ duration: 0.7 }}
+              className="relative overflow-hidden rounded-[2rem] border border-outline-soft bg-white p-7 shadow-brand-md sm:p-9"
+            >
+              <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-ink-fade">
+                Winning bid this cycle
+              </p>
+              <p className="mt-1 font-display text-4xl font-bold text-ink">
+                ₹{EX.bid.toLocaleString("en-IN")}
+              </p>
+
+              <div className="mt-7 space-y-4">
+                <BreakdownRow
+                  icon={Receipt}
+                  label="Foreman commission (5%)"
+                  sub="VSYK's transparent, fixed fee on the chit value"
+                  value={`₹${EX.commission.toLocaleString("en-IN")}`}
+                  tone="ink"
+                />
+                <BreakdownRow
+                  icon={Coins}
+                  label="Shared as dividend"
+                  sub={`Split equally across all ${EX.members} members`}
+                  value={`₹${EX.dividendPool.toLocaleString("en-IN")}`}
+                  tone="teal"
+                />
+              </div>
+
+              <div className="mt-7 rounded-2xl border border-brand-500/10 bg-brand-50/50 p-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-semibold text-brand-800">
+                    Dividend per member
+                  </span>
+                  <span className="font-display text-xl font-bold text-brand-700">
+                    ₹{EX.dividendPerMember.toLocaleString("en-IN")}
+                  </span>
+                </div>
+                <div className="mt-3 flex items-center justify-between border-t border-brand-500/10 pt-3">
+                  <span className="text-sm font-semibold text-ink">
+                    Your installment this month
+                  </span>
+                  <span className="font-display text-lg font-bold text-ink">
+                    <span className="text-ink-fade line-through decoration-ink-fade/40">
+                      ₹{EX.monthly.toLocaleString("en-IN")}
+                    </span>{" "}
+                    → ₹{EX.net.toLocaleString("en-IN")}
+                  </span>
+                </div>
+              </div>
+            </motion.div>
+
+            {/* Two outcomes */}
+            <div className="grid gap-6">
+              <motion.div
+                initial={{ opacity: 0, y: 24 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true, margin: "-80px" }}
+                transition={{ duration: 0.6, delay: 0.1 }}
+                className="relative overflow-hidden rounded-[2rem] bg-brand-gradient-deep p-7 text-white shadow-brand-lg"
+              >
+                <div className="pointer-events-none absolute -right-16 -top-16 h-48 w-48 rounded-full bg-teal-300/20 blur-3xl" />
+                <span className="grid h-11 w-11 place-items-center rounded-2xl bg-white/15 text-teal-300 ring-1 ring-white/20">
+                  <Trophy className="h-5 w-5" />
+                </span>
+                <h3 className="mt-4 font-display text-lg font-bold">If you win early</h3>
+                <p className="mt-1.5 text-sm leading-relaxed text-white/75">
+                  You take home the lump sum now — the chit value minus your bid — exactly when you
+                  need it for a big goal or emergency.
+                </p>
+                <p className="mt-4 font-display text-3xl font-bold text-teal-300">
+                  ₹{EX.prize.toLocaleString("en-IN")}
+                </p>
+                <p className="text-[12px] text-white/55">paid out to the winner</p>
+              </motion.div>
+
+              <motion.div
+                initial={{ opacity: 0, y: 24 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true, margin: "-80px" }}
+                transition={{ duration: 0.6, delay: 0.2 }}
+                className="relative overflow-hidden rounded-[2rem] border border-outline-soft bg-white p-7 shadow-brand-md"
+              >
+                <span className="grid h-11 w-11 place-items-center rounded-2xl bg-brand-50 text-brand-700">
+                  <Coins className="h-5 w-5" />
+                </span>
+                <h3 className="mt-4 font-display text-lg font-bold text-ink">If you wait</h3>
+                <p className="mt-1.5 text-sm leading-relaxed text-ink-mute">
+                  Every cycle you don&apos;t win, you earn a dividend that quietly lowers your cost —
+                  rewarding your patience month after month.
+                </p>
+                <p className="mt-4 font-display text-3xl font-bold text-brand-700">
+                  ₹{EX.dividendPerMember.toLocaleString("en-IN")}
+                  <span className="text-base font-semibold text-ink-fade"> /month</span>
+                </p>
+                <p className="text-[12px] text-ink-fade">back in your pocket, this example cycle</p>
+              </motion.div>
+            </div>
           </div>
         </div>
       </section>
@@ -315,10 +398,10 @@ function LiveAuctionDemo() {
           </div>
 
           <Link
-            href="/schemes"
+            href="/contact"
             className="group mt-5 inline-flex w-full items-center justify-center gap-2 rounded-full bg-brand-500 px-7 py-4 text-sm font-semibold text-white shadow-premium transition-all hover:-translate-y-0.5 hover:bg-brand-600 hover:shadow-brand-xl"
           >
-            Find your scheme
+            Talk to an Advisor
             <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
           </Link>
         </div>
@@ -340,6 +423,37 @@ function Mini({
     <div className="rounded-xl bg-white px-3 py-2.5">
       <p className="text-[10px] font-bold uppercase tracking-wider text-ink-fade">{label}</p>
       <p className="font-display text-sm font-bold text-ink">{value ?? children}</p>
+    </div>
+  );
+}
+
+function BreakdownRow({
+  icon: Icon,
+  label,
+  sub,
+  value,
+  tone,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  sub: string;
+  value: string;
+  tone: "ink" | "teal";
+}) {
+  return (
+    <div className="flex items-center gap-4">
+      <span
+        className={`grid h-11 w-11 shrink-0 place-items-center rounded-2xl ${
+          tone === "teal" ? "bg-teal-500/12 text-teal-600" : "bg-brand-50 text-brand-700"
+        }`}
+      >
+        <Icon className="h-5 w-5" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="font-display text-sm font-bold text-ink">{label}</p>
+        <p className="text-[12px] leading-snug text-ink-fade">{sub}</p>
+      </div>
+      <span className="font-display text-lg font-bold text-ink">{value}</span>
     </div>
   );
 }
