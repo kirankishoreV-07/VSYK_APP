@@ -22,9 +22,9 @@ import {
  * scale+lift+gold-glow on active, springy detail reveal. Added micro orbiting coins
  * and refined rings for incredible depth and polish. Fonts: font-display.
  *
- * Card content focused on authentic chit fund benefits (no misleading "zero-interest"
- * framing). Strong emphasis on dividends, community mechanics, discipline, transparency,
- * regulation and real member outcomes.
+ * Card content focused on authentic chit fund benefits. Strong emphasis on dividends,
+ * community mechanics, discipline, transparency, regulation and real member outcomes.
+ * (No "zero-interest funding" framing used.)
  */
 
 const GOLD = "#d4af37";

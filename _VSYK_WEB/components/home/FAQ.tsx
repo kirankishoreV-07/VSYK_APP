@@ -29,7 +29,7 @@ const FAQ_ITEMS = [
   },
   {
     q: "Who is behind VSYK CHITS?",
-    a: "VSYK is led by Managing Director MR.R.VENKATESAN, with over 30 years of profound experience in the chit fund and financial services industry. The leadership philosophy is simple: trust is non-negotiable.",
+    a: "VSYK is led by Managing Director MR VENKATESAN.R, with over 30 years of profound experience in the chit fund and financial services industry. The leadership philosophy is simple: trust is non-negotiable.",
   },
 ];
 

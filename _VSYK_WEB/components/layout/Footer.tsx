@@ -114,7 +114,7 @@ export function Footer() {
             <Logo size={44} variant="white" />
             <p className="max-w-sm text-sm leading-relaxed text-white/70">
               VSYK CHITS — Your trusted financial partner. Disciplined savings, transparent
-              auctions, decades of community trust under the leadership of MD <span className="font-bold">MR.R.VENKATESAN</span>.
+              auctions, decades of community trust under the leadership of MD <span className="font-bold">MR VENKATESAN.R</span>.
             </p>
             <ul className="space-y-3 text-sm text-white/80">
               <li className="flex items-start gap-3">

@@ -171,14 +171,14 @@ export default function ContactPage() {
                 <div className="relative h-64 overflow-hidden sm:h-72">
                   <Image
                     src="/images/advisor.png"
-                    alt="MR.R.VENKATESAN, Managing Director of VSYK CHITS"
+                    alt="MR VENKATESAN.R, Managing Director of VSYK CHITS"
                     fill
                     className="object-cover object-[50%_22%]"
                     sizes="(max-width: 1024px) 100vw, 420px"
                   />
                   <div className="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-brand-950/85 via-brand-950/30 to-transparent" />
                   <div className="absolute bottom-4 left-5 right-5">
-                    <p className="font-display text-lg font-bold text-white">MR.R.VENKATESAN</p>
+                    <p className="font-display text-lg font-bold tracking-[0.08em] text-white">MR VENKATESAN.R</p>
                     <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-teal-300">
                       Managing Director · Your Advisor
                     </p>

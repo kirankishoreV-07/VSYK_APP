@@ -183,7 +183,7 @@ export default function AboutPage() {
                 treat every member like family, and keep every rupee accountable.
               </p>
               <p className="mt-4 text-base leading-relaxed text-ink-mute">
-                Under the leadership of Managing Director <span className="font-bold">MR.R.VENKATESAN</span>, we pair the warmth of a
+                Under the leadership of Managing Director <span className="font-bold">MR VENKATESAN.R</span>, we pair the warmth of a
                 community savings circle with the rigour of banking-grade systems and statutory
                 compliance.
               </p>

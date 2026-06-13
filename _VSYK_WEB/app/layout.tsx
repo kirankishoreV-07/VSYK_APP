@@ -30,7 +30,7 @@ export const metadata: Metadata = {
     "savings",
     "monthly chit",
     "auction",
-    "MR.R.VENKATESAN",
+    "MR VENKATESAN.R",
     "trusted chit fund",
   ],
   authors: [{ name: "VSYK CHITS" }],
