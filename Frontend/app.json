@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "Frontend",
-    "slug": "Frontend",
+    "name": "VSYK",
+    "slug": "vsyk",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "frontend",
+    "scheme": "vsyk",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
@@ -45,7 +45,7 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "b66c724b-3c36-4936-9d1e-c009f17e019c"
+        "projectId": "da9ad672-7081-4f80-90cb-dcc1dca8e77c"
       }
     }
   }
