@@ -73,7 +73,7 @@ function Slide1Visual() {
             <Text style={styles.slide1Title}>Leadership with Vision</Text>
             <Text style={styles.slide1Body}>
               Guided by{' '}
-              <Text style={styles.subtitleHighlight}>Managing Director MR.R.VENKATESAN</Text>, who brings{' '}
+              <Text style={styles.subtitleHighlight}>Managing Director MR VENKATESAN.R</Text>, who brings{' '}
               <Text style={styles.subtitleHighlight}>over 30 years of profound experience</Text> in the financial
               services and chit fund industry.
             </Text>

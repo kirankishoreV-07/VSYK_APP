@@ -145,21 +145,9 @@ function useRetractBid() {
         throw new Error('Retract failed — bid not found or permission denied. Make sure migration 027 has been run in Supabase.');
       }
 
-      // 2. Recalculate and update auctions.current_bid to the new highest active bid
-      const { data: remaining } = await supabase
-        .from('auction_bids')
-        .select('bid_amount')
-        .eq('auction_id', auctionId)
-        .eq('is_retracted', false)
-        .order('bid_amount', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      const newHighest = remaining?.bid_amount ?? 0;
-      await supabase
-        .from('auctions')
-        .update({ current_bid: newHighest })
-        .eq('id', auctionId);
+      // auctions.current_bid is recalculated atomically by the DB trigger
+      // trg_recalc_current_bid_after_retract (032). Doing it here in two
+      // round-trips raced concurrent bids/retracts and could leave a stale value.
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['auctions-list'] }),
     onError: (e: Error) => Alert.alert('Retract Failed', e.message),

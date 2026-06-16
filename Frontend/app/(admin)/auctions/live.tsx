@@ -14,11 +14,21 @@ export default function AdminLiveAuction() {
   const router = useRouter();
   const [auction, setAuction] = useState<any | null>(null);
   const [bids, setBids] = useState<any[]>([]);
+  const [feed, setFeed] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [declaring, setDeclaring] = useState(false);
   const [timeLeft, setTimeLeft] = useState('--:--');
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const auctionIdRef = useRef<string | null>(null);
+
+  // A realtime channel can drop with a transient close (code 1001 "Stream end
+  // encountered" when the app is backgrounded or the network flaps). Supabase
+  // auto-reconnects and our 10s poll bridges any gap, so these are NOT real
+  // errors — log them quietly instead of as console.error noise.
+  const isTransientRealtimeError = (err: any) => {
+    const msg = String(err?.message || err || '');
+    return /socket closed|stream end|1001|1006|timed out|CHANNEL_ERROR/i.test(msg);
+  };
 
   const fetchBids = useCallback(async (auctionId: string) => {
     try {
@@ -30,14 +40,18 @@ export default function AdminLiveAuction() {
         .eq('is_retracted', false)
         .order('bid_amount', { ascending: false });
 
-      if (!data) { setBids([]); return; }
+      if (!data) { setBids([]); setFeed([]); return; }
+
+      // Full chronological history of EVERY bid placed in this auction (newest first).
+      // This is what the admin sees in the "Bidding History" feed so they can review
+      // the entire timeline of the group's bidding — not just one row per member.
+      const byTime = [...data].sort((a, b) => new Date(b.placed_at).getTime() - new Date(a.placed_at).getTime());
+      setFeed(byTime);
 
       // Per member: keep only their most recent active bid (latest placed_at).
       // A member's latest bid IS their current standing — earlier bids are superseded.
+      // This drives the leaderboard + current-winner card.
       const latestPerMember = new Map<string, any>();
-      // Data is sorted by bid_amount desc but we need latest per member.
-      // Re-sort by placed_at desc first to find the most recent.
-      const byTime = [...data].sort((a, b) => new Date(b.placed_at).getTime() - new Date(a.placed_at).getTime());
       for (const bid of byTime) {
         const key = bid.customer_id || bid.id;
         if (!latestPerMember.has(key)) {
@@ -170,7 +184,12 @@ export default function AdminLiveAuction() {
           // Good — events for this auction will now flow reliably
           console.log(`[admin live] bids realtime SUBSCRIBED for auction ${auctionId}`);
         }
-        if (err) {
+        // On a transient drop, refetch once so we don't miss bids during the gap.
+        // The client auto-reconnects; the poll is the longer-term safety net.
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          fetchBids(auctionId);
+        }
+        if (err && !isTransientRealtimeError(err)) {
           console.error('[admin live] bids realtime subscription error:', err);
         }
       });
@@ -194,13 +213,29 @@ export default function AdminLiveAuction() {
         if (status === 'SUBSCRIBED') {
           console.log(`[admin live] auction status SUBSCRIBED for ${auctionId}`);
         }
-        if (err) console.error('[admin live] auction status realtime error:', err);
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          fetchLiveAuction();
+        }
+        if (err && !isTransientRealtimeError(err)) {
+          console.error('[admin live] auction status realtime error:', err);
+        }
       });
 
     // Ensure we have the latest bids right when this subscription activates
     fetchBids(auctionId);
 
+    // Safety-net poll for the live control center. Realtime is the primary path
+    // (instant), but on mobile a subscription can silently drop when the app is
+    // backgrounded or the network flaps. A 10s poll guarantees the leaderboard
+    // and bid count still converge without a logout/refresh. Cheap: one filtered
+    // query against a small per-auction bid set.
+    const poll = setInterval(() => {
+      fetchBids(auctionId);
+      fetchLiveAuction();
+    }, 10000);
+
     return () => {
+      clearInterval(poll);
       supabase.removeChannel(bidsChannel);
       supabase.removeChannel(auctionChannel);
     };
@@ -420,7 +455,7 @@ export default function AdminLiveAuction() {
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
-        <ActivityIndicator color="#10D7CD" size="large" style={{ flex: 1 }} />
+        <ActivityIndicator color="#005E7D" size="large" style={{ flex: 1 }} />
       </SafeAreaView>
     );
   }
@@ -443,7 +478,7 @@ export default function AdminLiveAuction() {
       {/* Dynamic Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={handleSafeBack} style={styles.backBtn}>
-          <Svg width={24} height={24} viewBox="0 0 24 24" fill="#FFFFFF">
+          <Svg width={24} height={24} viewBox="0 0 24 24" fill="#0B1C30">
             <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
           </Svg>
         </TouchableOpacity>
@@ -478,7 +513,7 @@ export default function AdminLiveAuction() {
           <View style={styles.statsGrid}>
             <View style={styles.statItem}>
               <Text style={styles.statLabel}>Winner Gets</Text>
-              <Text style={[styles.statVal, { color: '#54FAEF' }]}>₹{winnerPrize.toLocaleString('en-IN')}</Text>
+              <Text style={[styles.statVal, { color: '#005E7D' }]}>₹{winnerPrize.toLocaleString('en-IN')}</Text>
             </View>
             <View style={styles.statItem}>
               <Text style={styles.statLabel}>Dividend/Member</Text>
@@ -536,39 +571,48 @@ export default function AdminLiveAuction() {
           </View>
         )}
 
-        {/* Live Bidding Feed */}
+        {/* Full Bidding History */}
         <View style={styles.feedHeader}>
-          <Text style={styles.sectionTitle}>Real-time Feed</Text>
+          <View>
+            <Text style={styles.sectionTitle}>Bidding History</Text>
+            <Text style={styles.sectionSub}>Every bid placed in this auction.</Text>
+          </View>
           <View style={styles.feedBadge}>
             <View style={styles.liveDot} />
-            <Text style={styles.feedBadgeText}>UPDATED JUST NOW</Text>
+            <Text style={styles.feedBadgeText}>{feed.length} {feed.length === 1 ? 'BID' : 'BIDS'}</Text>
           </View>
         </View>
 
-        {bids.length === 0 ? (
+        {feed.length === 0 ? (
           <View style={styles.emptyFeed}>
             <Text style={styles.emptyFeedText}>Awaiting first bid from members...</Text>
           </View>
         ) : (
           <View style={styles.feedList}>
-            {bids.map((bid, i) => (
-              <View key={bid.id} style={[styles.feedItem, i === 0 && styles.feedItemTop]}>
-                <View style={styles.feedTime}>
-                  <Text style={styles.timeText}>{new Date(bid.placed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+            {feed.map((bid, i) => {
+              // Highlight the row that is the current standing winner (highest active bid).
+              const isWinning = topBid && bid.id === topBid.id;
+              return (
+                <View key={bid.id} style={[styles.feedItem, i === feed.length - 1 && styles.feedItemLast]}>
+                  <View style={styles.feedTime}>
+                    <Text style={styles.timeText}>{new Date(bid.placed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                  </View>
+                  <View style={styles.feedLineCol}>
+                    <View style={[styles.feedDot, isWinning && styles.feedDotActive]} />
+                    {i < feed.length - 1 && <View style={styles.feedLine} />}
+                  </View>
+                  <View style={styles.feedContent}>
+                    <View style={styles.feedRowTop}>
+                      <Text style={styles.feedUser}>{bid.customers?.full_name || 'Member'}</Text>
+                      {isWinning && <View style={styles.winnerTag}><Text style={styles.winnerTagText}>LEADING</Text></View>}
+                    </View>
+                    <Text style={[styles.feedAmount, isWinning && { color: '#10B981' }]}>
+                      Discount Bid: ₹{(bid.bid_amount / 100).toLocaleString('en-IN')}
+                    </Text>
+                  </View>
                 </View>
-                <View style={styles.feedLineCol}>
-                  <View style={[styles.feedDot, i === 0 && styles.feedDotActive]} />
-                  {i < bids.length - 1 && <View style={styles.feedLine} />}
-                </View>
-                <View style={styles.feedContent}>
-                  <Text style={styles.feedUser}>{bid.customers?.full_name}</Text>
-                  <Text style={[styles.feedAmount, i === 0 && { color: '#10B981' }]}>
-                    Discount Bid: ₹{(bid.bid_amount / 100).toLocaleString('en-IN')}
-                  </Text>
-                </View>
-                {i === 0 && <View style={styles.winnerTag}><Text style={styles.winnerTagText}>WINNER</Text></View>}
-              </View>
-            ))}
+              );
+            })}
           </View>
         )}
       </ScrollView>
@@ -577,10 +621,10 @@ export default function AdminLiveAuction() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0F172A' },
+  container: { flex: 1, backgroundColor: '#F8F9FF' },
   header: {
-    flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, height: 70,
-    backgroundColor: '#1E293B', borderBottomWidth: 1, borderBottomColor: '#334155'
+    flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 20, height: 70,
+    backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: '#F1F5F9'
   },
   avatarContainer: {
     width: 32,
@@ -592,54 +636,54 @@ const styles = StyleSheet.create({
   avatar: { width: '100%', height: '100%' },
   backBtn: { padding: 8, marginLeft: -8, marginRight: 4 },
   headerInfo: { flex: 1 },
-  groupName: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 18, color: '#FFFFFF' },
-  groupCode: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#94A3B8', marginTop: 2 },
+  groupName: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 18, color: '#0B1C30' },
+  groupCode: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#64748B', marginTop: 2 },
   statusBox: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: 'rgba(239, 68, 68, 0.1)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 100
+    backgroundColor: '#FEE2E2', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 100
   },
   pulseIndicator: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#EF4444' },
   statusText: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#EF4444', letterSpacing: 1 },
 
   scrollContent: { padding: 20, paddingBottom: 100 },
   biddingCard: {
-    backgroundColor: '#1E293B', borderRadius: 28, padding: 24, marginBottom: 32,
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.2, shadowRadius: 20, elevation: 10
+    backgroundColor: '#FFFFFF', borderRadius: 28, padding: 24, marginBottom: 32,
+    borderWidth: 1, borderColor: '#F1F5F9',
+    shadowColor: '#0B1C30', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.06, shadowRadius: 16, elevation: 4
   },
   timerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 },
   timerBadge: { gap: 4 },
   timerLabel: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#94A3B8', letterSpacing: 0.5 },
   timerVal: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 24, color: '#EF4444' },
-  bidCountBadge: { alignItems: 'center', backgroundColor: '#334155', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 16 },
-  bidCountVal: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20, color: '#FFFFFF' },
+  bidCountBadge: { alignItems: 'center', backgroundColor: '#F1F5F9', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 16 },
+  bidCountVal: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20, color: '#0B1C30' },
   bidCountLabel: { fontFamily: 'Inter_700Bold', fontSize: 8, color: '#94A3B8' },
 
-  lowestBidLabel: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#64748B', letterSpacing: 0.8, textAlign: 'center' },
+  lowestBidLabel: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#94A3B8', letterSpacing: 0.8, textAlign: 'center' },
   lowestBidVal: {
-    fontFamily: 'SpaceGrotesk_700Bold', fontSize: 44, color: '#FFFFFF',
+    fontFamily: 'SpaceGrotesk_700Bold', fontSize: 44, color: '#005E7D',
     textAlign: 'center', marginVertical: 12, letterSpacing: -1
   },
 
   statsGrid: { flexDirection: 'row', gap: 12, marginTop: 12, marginBottom: 24 },
-  statItem: { flex: 1, backgroundColor: 'rgba(255,255,255,0.03)', padding: 16, borderRadius: 20, alignItems: 'center' },
-  statLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: '#94A3B8', marginBottom: 4 },
-  statVal: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 16, color: '#FFFFFF' },
+  statItem: { flex: 1, backgroundColor: '#F8FAFC', padding: 16, borderRadius: 20, alignItems: 'center', borderWidth: 1, borderColor: '#F1F5F9' },
+  statLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: '#64748B', marginBottom: 4 },
+  statVal: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 16, color: '#0B1C30' },
 
   leaderBox: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
-    backgroundColor: 'rgba(16, 185, 129, 0.1)', padding: 16, borderRadius: 20,
-    borderWidth: 1, borderColor: 'rgba(16, 185, 129, 0.2)'
+    backgroundColor: '#F0FDF4', padding: 16, borderRadius: 20,
+    borderWidth: 1, borderColor: '#BBF7D0'
   },
   leaderAvatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#10B981', alignItems: 'center', justifyContent: 'center' },
   leaderAvatarText: { fontFamily: 'Inter_700Bold', fontSize: 18, color: '#FFFFFF' },
   leaderLabel: { fontFamily: 'Inter_700Bold', fontSize: 9, color: '#10B981', letterSpacing: 0.5 },
-  leaderName: { fontFamily: 'Inter_600SemiBold', fontSize: 15, color: '#FFFFFF' },
+  leaderName: { fontFamily: 'Inter_600SemiBold', fontSize: 15, color: '#0B1C30' },
   rankBadge: { backgroundColor: '#10B981', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
   rankText: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#FFFFFF' },
 
   sectionHeader: { marginBottom: 16 },
-  sectionTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20, color: '#FFFFFF' },
+  sectionTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20, color: '#0B1C30' },
   sectionSub: { fontFamily: 'Inter_500Medium', fontSize: 13, color: '#64748B', marginTop: 4 },
 
   controlsRow: { flexDirection: 'row', gap: 12, marginBottom: 40 },
@@ -650,25 +694,26 @@ const styles = StyleSheet.create({
   btnText: { fontFamily: 'Inter_700Bold', fontSize: 12, color: '#FFFFFF', letterSpacing: 1 },
 
   feedHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
-  feedBadge: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  feedBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#F0FDF4', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 100 },
   liveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#10B981' },
   feedBadgeText: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#10B981' },
 
-  emptyFeed: { alignItems: 'center', padding: 40, backgroundColor: '#1E293B', borderRadius: 20 },
-  emptyFeedText: { fontFamily: 'Inter_500Medium', fontSize: 14, color: '#64748B' },
+  emptyFeed: { alignItems: 'center', padding: 40, backgroundColor: '#FFFFFF', borderRadius: 20, borderWidth: 1, borderColor: '#F1F5F9' },
+  emptyFeedText: { fontFamily: 'Inter_500Medium', fontSize: 14, color: '#94A3B8' },
 
-  feedList: { paddingLeft: 12 },
-  feedItem: { flexDirection: 'row', minHeight: 70 },
-  feedItemTop: { minHeight: 90 },
-  feedTime: { width: 60, paddingTop: 4 },
-  timeText: { fontFamily: 'Inter_500Medium', fontSize: 11, color: '#475569' },
-  feedLineCol: { width: 30, alignItems: 'center' },
-  feedDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#334155', zIndex: 2, borderWidth: 2, borderColor: '#0F172A' },
+  feedList: { paddingLeft: 4 },
+  feedItem: { flexDirection: 'row', minHeight: 64 },
+  feedItemLast: { minHeight: 48 },
+  feedTime: { width: 56, paddingTop: 2 },
+  timeText: { fontFamily: 'Inter_500Medium', fontSize: 11, color: '#94A3B8' },
+  feedLineCol: { width: 24, alignItems: 'center' },
+  feedDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#CBD5E1', zIndex: 2, borderWidth: 2, borderColor: '#F8F9FF' },
   feedDotActive: { backgroundColor: '#10B981', transform: [{ scale: 1.4 }] },
-  feedLine: { width: 2, flex: 1, backgroundColor: '#1E293B', marginTop: -4, marginBottom: -4, zIndex: 1 },
-  feedContent: { flex: 1, paddingLeft: 12, paddingBottom: 24 },
-  feedUser: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: '#FFFFFF' },
+  feedLine: { width: 2, flex: 1, backgroundColor: '#E2E8F0', marginTop: -2, marginBottom: -2, zIndex: 1 },
+  feedContent: { flex: 1, paddingLeft: 12, paddingBottom: 20 },
+  feedRowTop: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  feedUser: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: '#0B1C30' },
   feedAmount: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 16, color: '#64748B', marginTop: 2 },
-  winnerTag: { backgroundColor: '#10B981', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, height: 24 },
-  winnerTagText: { fontFamily: 'Inter_700Bold', fontSize: 9, color: '#FFFFFF' },
+  winnerTag: { backgroundColor: '#10B981', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
+  winnerTagText: { fontFamily: 'Inter_700Bold', fontSize: 9, color: '#FFFFFF', letterSpacing: 0.5 },
 });

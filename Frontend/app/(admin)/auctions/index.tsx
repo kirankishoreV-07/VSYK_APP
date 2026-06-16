@@ -134,13 +134,29 @@ export default function AdminAuctionsIndex() {
   useEffect(() => { fetchAll(); }, []);
 
   useEffect(() => {
+    // Debounced refetch shared by both realtime tables (coalesces bursts of bids).
+    const scheduleRefetch = () => {
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+      refreshTimer.current = setTimeout(fetchAll, 400);
+    };
     const ch = supabase.channel('admin-auctions-rt')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'auctions' }, () => {
-        if (refreshTimer.current) clearTimeout(refreshTimer.current);
-        refreshTimer.current = setTimeout(fetchAll, 400);
-      })
+      // Auction status / settlement changes (live banner, history, winner).
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'auctions' }, scheduleRefetch)
+      // Bids drive the per-row bid counts shown on this dashboard — without this
+      // subscription the counts only changed on auction status updates, never on
+      // new bids. (Requires migration 031 to publish auction_bids to realtime.)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'auction_bids' }, scheduleRefetch)
       .subscribe();
-    return () => { if (refreshTimer.current) clearTimeout(refreshTimer.current); supabase.removeChannel(ch); };
+
+    // Safety-net poll: if realtime drops (app backgrounded, network change),
+    // the dashboard still converges within 15s instead of needing a manual refresh.
+    const poll = setInterval(fetchAll, 15000);
+
+    return () => {
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+      clearInterval(poll);
+      supabase.removeChannel(ch);
+    };
   }, []);
 
   const live = allAuctions.find(a => a.status === 'live');

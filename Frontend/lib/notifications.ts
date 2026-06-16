@@ -4,6 +4,29 @@ import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { supabase } from './supabase';
 
+// Show notifications even when the app is in the foreground (banner + sound).
+// Without this, push messages received while the app is open are silently
+// dropped, so members never see auction/payment alerts while using the app.
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
+
+// Android requires an explicit channel for heads-up notifications.
+export async function ensureAndroidNotificationChannel() {
+  if (Platform.OS !== 'android') return;
+  await Notifications.setNotificationChannelAsync('default', {
+    name: 'VSYK Alerts',
+    importance: Notifications.AndroidImportance.HIGH,
+    vibrationPattern: [0, 250, 250, 250],
+    lightColor: '#005E7D',
+  });
+}
+
 export async function registerForPushNotificationsAsync(customerId: string) {
     if (!Device.isDevice) return;
 
@@ -16,6 +39,8 @@ export async function registerForPushNotificationsAsync(customerId: string) {
     }
 
     if (finalStatus !== 'granted') return;
+
+    await ensureAndroidNotificationChannel();
 
     let projectId: string | undefined;
     const extra: any = (Constants.expoConfig as any)?.extra;
@@ -31,4 +56,24 @@ export async function registerForPushNotificationsAsync(customerId: string) {
         platform: Platform.OS,
         updated_at: new Date().toISOString(),
     });
+}
+
+// Map a notification's data payload to an in-app destination. Auction-related
+// alerts deep-link to the auctions tab; payment reminders to the wallet.
+export function routeForNotificationData(data: any): string | null {
+    const type = data?.type;
+    switch (type) {
+        case 'auction_starting_soon':
+        case 'auction_live':
+        case 'auction_completed':
+        case 'auction_winner':
+        case 'auction_closed':
+        case 'auction_scheduled':
+            return '/(tabs)/auctions';
+        case 'payment_due':
+        case 'installment_due':
+            return '/(tabs)/wallet';
+        default:
+            return null;
+    }
 }

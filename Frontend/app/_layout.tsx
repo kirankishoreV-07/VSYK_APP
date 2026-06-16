@@ -1,9 +1,11 @@
 import '../global.css';
 import { useEffect, useState } from 'react';
-import { Stack } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useFonts } from 'expo-font';
+import * as Notifications from 'expo-notifications';
 import { MemberSessionProvider } from '../lib/MemberSessionContext';
+import { routeForNotificationData } from '../lib/notifications';
 import {
   SpaceGrotesk_300Light,
   SpaceGrotesk_400Regular,
@@ -39,6 +41,34 @@ const queryClient = new QueryClient({
   },
 });
 
+// Handles taps on push notifications (cold start + warm), routing the user to
+// the relevant screen. Rendered inside the router tree so useRouter is valid.
+function NotificationRouter() {
+  const router = useRouter();
+
+  useEffect(() => {
+    let mounted = true;
+
+    const go = (response: Notifications.NotificationResponse | null) => {
+      const data = response?.notification?.request?.content?.data;
+      const path = routeForNotificationData(data);
+      if (path && mounted) router.push(path as any);
+    };
+
+    // App opened from a tap while killed (cold start).
+    Notifications.getLastNotificationResponseAsync().then(go).catch(() => {});
+
+    // App already running / backgrounded.
+    const sub = Notifications.addNotificationResponseReceivedListener(go);
+    return () => {
+      mounted = false;
+      sub.remove();
+    };
+  }, [router]);
+
+  return null;
+}
+
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
     SpaceGrotesk_300Light,
@@ -70,6 +100,7 @@ export default function RootLayout() {
       <QueryClientProvider client={queryClient}>
         <MemberSessionProvider>
           <StatusBar style="light" />
+          <NotificationRouter />
           <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="index" options={{ headerShown: false }} />
             <Stack.Screen name="(auth)" options={{ headerShown: false }} />

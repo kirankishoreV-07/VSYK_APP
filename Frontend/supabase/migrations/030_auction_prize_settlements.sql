@@ -7,6 +7,7 @@
 -- ============================================================
 
 -- Main table for prize payouts (supports multiple partials per winner per auction)
+
 CREATE TABLE IF NOT EXISTS public.auction_prize_settlements (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     auction_id UUID REFERENCES public.auctions(id) ON DELETE CASCADE NOT NULL,
@@ -26,6 +27,14 @@ CREATE TABLE IF NOT EXISTS public.auction_prize_settlements (
 );
 
 ALTER TABLE public.auction_prize_settlements ENABLE ROW LEVEL SECURITY;
+
+-- Idempotency: drop existing policies first so this migration can be safely
+-- re-run in the Supabase SQL editor without "policy already exists" (42710).
+DROP POLICY IF EXISTS "Admin can insert prize settlements"  ON public.auction_prize_settlements;
+DROP POLICY IF EXISTS "Admin can view all prize settlements" ON public.auction_prize_settlements;
+DROP POLICY IF EXISTS "Admin can update prize settlements"   ON public.auction_prize_settlements;
+DROP POLICY IF EXISTS "Admin can delete prize settlements"   ON public.auction_prize_settlements;
+DROP POLICY IF EXISTS "Members can view own prize settlements" ON public.auction_prize_settlements;
 
 -- Admin full access (demo + real use)
 CREATE POLICY "Admin can insert prize settlements"
