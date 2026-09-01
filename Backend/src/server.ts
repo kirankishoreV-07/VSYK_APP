@@ -1,10 +1,17 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
+import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import admin from 'firebase-admin';
 import { createClient } from '@supabase/supabase-js';
+import { whatsappRouter } from './whatsapp';
+import { authRouter } from './auth/otp';
+import { paymentsRouter } from './payments/payments';
+import { notifyInstallmentDueForAuction, runOverdueSweep, notifyAuctionScheduled, sweepStaleNotificationClaims } from './whatsapp/proactiveNotifications';
+import { requireAdminAuth } from './middleware/adminAuth';
+import { accountRouter } from './account/deletion';
 
 dotenv.config();
 
@@ -40,8 +47,49 @@ try {
   console.warn('FCM init failed:', err);
 }
 
-app.use(cors());
+// CORS: only relevant to browser-origin requests (the native Expo app,
+// Gupshup's webhook, and server-to-server calls never send an Origin header
+// at all, so they are unaffected either way). ALLOWED_ORIGINS is a
+// comma-separated allowlist for any web-based frontend (e.g. an Expo web
+// build or an admin web console); previously cors() defaulted to '*' (any
+// origin). Empty/unset ALLOWED_ORIGINS denies all browser cross-origin
+// access while still allowing every non-browser client.
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'));
+  },
+}));
+
+// Baseline IP-level rate limiting. This is independent of (and in addition
+// to) the OTP-specific per-phone/per-window limits in auth/otp.ts — those
+// stop one phone number from being hammered, this stops one IP from
+// hammering the API with many different phone numbers/requests.
+app.use(rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+}));
+// Tighter limit specifically on the OTP endpoints (auth abuse is the
+// highest-value target here) — defense in depth on top of the app-level
+// per-phone limits already enforced inside auth/otp.ts.
+const otpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 app.use(express.json());
+app.use('/api/whatsapp', whatsappRouter);
+app.use('/api/auth', otpLimiter, authRouter);
+app.use('/api/account', accountRouter);
 
 app.get('/api/health', (req: Request, res: Response) => {
   res.json({ status: 'ok', message: 'VSYK Chits Backend is running!' });
@@ -119,8 +167,41 @@ async function sendOnce(
 const rupees = (paise: number | null | undefined) =>
   `₹${Math.round(Number(paise || 0) / 100).toLocaleString('en-IN')}`;
 
+// runAuctionScheduler is triggered both by the 60s setInterval below AND by
+// the manual /api/auctions/scheduler/run endpoint. Neither had a guard
+// against overlapping runs — if a tick takes >60s (slow Supabase, large
+// backlog), the next interval tick (or a manual trigger) could start while
+// the previous one is still writing (auction status flips, payment_schedules
+// updates), racing on the same rows. Per-notification dedup already makes
+// double *sends* safe, but the underlying auction-state writes are not
+// idempotent against a genuine concurrent run, so a simple in-process lock
+// is enough (single backend instance; no cross-process coordination needed).
+let schedulerInFlight = false;
+
 async function runAuctionScheduler() {
+  if (schedulerInFlight) {
+    console.warn('[Scheduler] Skipped — previous run still in flight.');
+    return { opened: 0, closed: 0, reminded: 0, paymentReminders: 0, skippedOverlap: true };
+  }
+  schedulerInFlight = true;
+  try {
+    return await runAuctionSchedulerInner();
+  } finally {
+    schedulerInFlight = false;
+  }
+}
+
+async function runAuctionSchedulerInner() {
   if (!supabaseAdmin) return { opened: 0, closed: 0, reminded: 0, paymentReminders: 0 };
+
+  // Recover any WhatsApp notification claim orphaned by a prior process
+  // crash mid-send before doing anything else this tick.
+  try {
+    const recovered = await sweepStaleNotificationClaims();
+    if (recovered > 0) console.warn(`[Scheduler] Recovered ${recovered} stale notification claim(s).`);
+  } catch (err) {
+    console.warn('[Scheduler] Stale-claim sweep failed:', err);
+  }
 
   const now = new Date();
   const nowIso = now.toISOString();
@@ -154,39 +235,58 @@ async function runAuctionScheduler() {
   }
 
   // ── 2. Open auctions whose scheduled_at has passed → go live ─────────────
+  // PLACEHOLDER_SCHEDULE_SENTINEL excludes never-actually-scheduled auction
+  // rows: Frontend/lib/auctionUtils.ts creates placeholder rows (min_bid: 0,
+  // no admin action taken yet) with scheduled_at pinned to 1970-01-01 as a
+  // "not really scheduled" sentinel (DB requires scheduled_at NOT NULL). That
+  // sentinel is always <= now, so without this filter EVERY unconfigured
+  // placeholder across the whole app looks "due to open" — this caused a
+  // real incident (2026-08-17): a single tick flooded auction_events with
+  // 12,615+ spurious 'started' rows for placeholders no admin ever scheduled.
+  const PLACEHOLDER_SCHEDULE_SENTINEL = '1970-01-01T00:00:00.000Z';
   const { data: toOpen } = await supabaseAdmin
     .from('auctions')
     .select('id, chit_group_id, auction_number, chit_groups(name)')
     .eq('status', 'upcoming')
+    .gt('scheduled_at', PLACEHOLDER_SCHEDULE_SENTINEL)
     .lte('scheduled_at', nowIso);
 
   const openIds = (toOpen || []).map((a: any) => a.id);
   if (openIds.length > 0) {
-    await supabaseAdmin.from('auctions').update({ status: 'live' }).in('id', openIds);
-    await supabaseAdmin.from('auction_events').insert(
-      openIds.map((id: string) => ({
-        auction_id: id,
-        event_type: 'started',
-        performed_by: 'System',
-        notes: 'Auction opened automatically',
-      }))
-    );
-
-    for (const auction of toOpen || []) {
-      const groupName = (auction as any).chit_groups?.name || 'Your group';
-      const memberIds = await getGroupMemberCustomerIds(auction.chit_group_id);
-      // Keyed by auction id so the "started" push is sent exactly once even if
-      // the status update and this loop overlap with the next tick.
-      await sendOnce(
-        `auction_live:${auction.id}`,
-        'auction_live',
-        memberIds,
-        {
-          title: 'Auction Started',
-          body: `${groupName} Auction #${auction.auction_number || ''} has started. Tap to place your bid now!`,
-          data: { auctionId: auction.id, type: 'auction_live' },
-        },
+    const { error: openErr } = await supabaseAdmin.from('auctions').update({ status: 'live' }).in('id', openIds);
+    if (openErr) {
+      // Previously unchecked — a large batch could fail the bulk update
+      // (e.g. a huge `id=in.(...)` filter) while the event-log insert below
+      // still succeeded, silently desyncing "logged as started" from "is
+      // actually live". Bail out rather than log a 'started' event for
+      // auctions that were never actually flipped to live.
+      console.error('[Scheduler] Bulk auction open update failed — skipping event log/notify for this batch:', openErr.message);
+    } else {
+      await supabaseAdmin.from('auction_events').insert(
+        openIds.map((id: string) => ({
+          auction_id: id,
+          event_type: 'started',
+          performed_by: 'System',
+          notes: 'Auction opened automatically',
+        }))
       );
+
+      for (const auction of toOpen || []) {
+        const groupName = (auction as any).chit_groups?.name || 'Your group';
+        const memberIds = await getGroupMemberCustomerIds(auction.chit_group_id);
+        // Keyed by auction id so the "started" push is sent exactly once even if
+        // the status update and this loop overlap with the next tick.
+        await sendOnce(
+          `auction_live:${auction.id}`,
+          'auction_live',
+          memberIds,
+          {
+            title: 'Auction Started',
+            body: `${groupName} Auction #${auction.auction_number || ''} has started. Tap to place your bid now!`,
+            data: { auctionId: auction.id, type: 'auction_live' },
+          },
+        );
+      }
     }
   }
 
@@ -305,15 +405,82 @@ async function runAuctionScheduler() {
     }
   }
 
-  // ── 4. Payment due reminders ─────────────────────────────────────────────
+  // ── 4. Payment due reminders (FCM) ────────────────────────────────────────
   // Notify members of unpaid installments due today or tomorrow, once each.
   const paymentReminders = await runPaymentReminders(now);
+
+  // ── 5. WhatsApp: Installment Due for cycles completed in this tick ───────
+  // Covers BOTH the auto-close path above and the admin's manual "Declare
+  // Winner"/settlement flows (which write status='completed' directly from
+  // the client) — every completed auction is scanned here regardless of how
+  // it was completed. Deduped per schedule via notification_log, so replays
+  // of already-notified auctions are cheap no-ops (no unpaid rows left).
+  let waInstallmentDue = 0;
+  for (const auction of toClose || []) {
+    try {
+      const tally = await notifyInstallmentDueForAuction(auction.id);
+      waInstallmentDue += tally.sent;
+    } catch (err) {
+      console.warn('[Scheduler] WhatsApp installment-due notify failed for', auction.id, err);
+    }
+  }
+  // Also sweep auctions completed recently by the admin app (not auto-closed
+  // by this tick) within a short recency window, so manual declare-winner
+  // gets the same notification without scanning the entire auctions table.
+  try {
+    const recentSince = new Date(now.getTime() - 15 * 60 * 1000).toISOString();
+    const { data: recentlyCompleted } = await supabaseAdmin
+      .from('auctions')
+      .select('id')
+      .eq('status', 'completed')
+      .gte('ended_at', recentSince);
+    for (const a of recentlyCompleted || []) {
+      const tally = await notifyInstallmentDueForAuction((a as any).id);
+      waInstallmentDue += tally.sent;
+    }
+  } catch (err) {
+    console.warn('[Scheduler] WhatsApp installment-due recency sweep failed:', err);
+  }
+
+  // ── 6. WhatsApp: Payment Overdue (exactly once, ~7 days after due date) ──
+  let waOverdue = 0;
+  try {
+    const tally = await runOverdueSweep(now);
+    waOverdue = tally.sent;
+  } catch (err) {
+    console.warn('[Scheduler] WhatsApp overdue sweep failed:', err);
+  }
+
+  // ── 7. WhatsApp: Auction Scheduled (once, when admin finishes configuring) ─
+  // The admin's schedule-save is a direct frontend→Supabase write (no backend
+  // hook), so this poll is the trigger: any 'upcoming' auction with a real
+  // min_bid (min_bid=0 is the zero-value placeholder created at group setup,
+  // never a real schedule) is "configured". notifyAuctionScheduled claims a
+  // per-(auction, member) key, so re-scanning the same auction on later ticks
+  // (it stays 'upcoming' until it goes live) is a cheap no-op, not a re-send.
+  let waAuctionScheduled = 0;
+  try {
+    const { data: configured } = await supabaseAdmin
+      .from('auctions')
+      .select('id')
+      .eq('status', 'upcoming')
+      .gt('min_bid', 0);
+    for (const a of configured || []) {
+      const tally = await notifyAuctionScheduled((a as any).id);
+      waAuctionScheduled += tally.sent;
+    }
+  } catch (err) {
+    console.warn('[Scheduler] WhatsApp auction-scheduled notify failed:', err);
+  }
 
   return {
     opened: openIds.length,
     closed: (toClose || []).length,
     reminded,
     paymentReminders,
+    waInstallmentDue,
+    waOverdue,
+    waAuctionScheduled,
   };
 }
 
@@ -371,61 +538,19 @@ async function runPaymentReminders(now: Date) {
   return sent;
 }
 
-app.post('/api/payments/razorpay/order', async (req: Request, res: Response) => {
-  try {
-    if (!razorpay) {
-      return res.status(500).json({ error: 'Razorpay keys are not configured.' });
-    }
+// Payments are now server-authoritative — see src/payments/payments.ts.
+// Order creation binds to the caller's own schedule; verify re-fetches the
+// payment from Razorpay, records paid_amount idempotently, and only marks a
+// schedule fully paid when the full amount is actually verified.
+app.use('/api/payments', paymentsRouter);
 
-    const { amount, currency = 'INR', receipt, notes } = req.body ?? {};
-    const parsedAmount = Number(amount);
-
-    if (!parsedAmount || Number.isNaN(parsedAmount) || parsedAmount <= 0) {
-      return res.status(400).json({ error: 'Invalid amount.' });
-    }
-
-    const order = await razorpay.orders.create({
-      amount: Math.round(parsedAmount),
-      currency,
-      receipt,
-      notes,
-    });
-
-    return res.json({
-      id: order.id,
-      amount: order.amount,
-      currency: order.currency,
-      receipt: order.receipt,
-      keyId: razorpayKeyId,
-    });
-  } catch (error: any) {
-    return res.status(500).json({ error: error?.message || 'Failed to create order.' });
-  }
-});
-
-app.post('/api/payments/razorpay/verify', (req: Request, res: Response) => {
-  if (!razorpayKeySecret) {
-    return res.status(500).json({ error: 'Razorpay keys are not configured.' });
-  }
-
-  const { orderId, paymentId, signature } = req.body ?? {};
-  if (!orderId || !paymentId || !signature) {
-    return res.status(400).json({ error: 'Missing verification fields.' });
-  }
-
-  const expected = crypto
-    .createHmac('sha256', razorpayKeySecret)
-    .update(`${orderId}|${paymentId}`)
-    .digest('hex');
-
-  if (expected !== signature) {
-    return res.status(400).json({ verified: false, error: 'Invalid signature.' });
-  }
-
-  return res.json({ verified: true });
-});
-
-app.post('/api/auctions/scheduler/run', async (_req: Request, res: Response) => {
+// These 5 admin/scheduler routes mutate real financial data (apply-settlement
+// rewrites payment_schedules.amount/dividend_amount for a whole group) or
+// send real pushes. requireAdminAuth (src/middleware/adminAuth.ts) verifies
+// the caller's JWT resolves to a real row in admin_users — the same check
+// RLS's is_admin() uses — with the static ADMIN_API_SECRET as a fallback for
+// non-interactive callers.
+app.post('/api/auctions/scheduler/run', requireAdminAuth, async (_req: Request, res: Response) => {
   try {
     const result = await runAuctionScheduler();
     return res.json({ ok: true, ...result });
@@ -434,7 +559,7 @@ app.post('/api/auctions/scheduler/run', async (_req: Request, res: Response) => 
   }
 });
 
-app.post('/api/auctions/notify-winner', async (req: Request, res: Response) => {
+app.post('/api/auctions/notify-winner', requireAdminAuth, async (req: Request, res: Response) => {
   try {
     if (!supabaseAdmin) return res.status(500).json({ error: 'Supabase not configured.' });
     const { auctionId } = req.body ?? {};
@@ -471,7 +596,7 @@ app.post('/api/auctions/notify-winner', async (req: Request, res: Response) => {
   }
 });
 
-app.post('/api/auctions/notify-installments', async (req: Request, res: Response) => {
+app.post('/api/auctions/notify-installments', requireAdminAuth, async (req: Request, res: Response) => {
   try {
     if (!supabaseAdmin) return res.status(500).json({ error: 'Supabase not configured.' });
     const { auctionId, message } = req.body ?? {};
@@ -497,7 +622,7 @@ app.post('/api/auctions/notify-installments', async (req: Request, res: Response
   }
 });
 
-app.post('/api/auctions/notify-upcoming', async (req: Request, res: Response) => {
+app.post('/api/auctions/notify-upcoming', requireAdminAuth, async (req: Request, res: Response) => {
   try {
     if (!supabaseAdmin) return res.status(500).json({ error: 'Supabase not configured.' });
     const { auctionId } = req.body ?? {};
@@ -523,7 +648,7 @@ app.post('/api/auctions/notify-upcoming', async (req: Request, res: Response) =>
   }
 });
 
-app.post('/api/auctions/apply-settlement', async (req: Request, res: Response) => {
+app.post('/api/auctions/apply-settlement', requireAdminAuth, async (req: Request, res: Response) => {
   try {
     if (!supabaseAdmin) return res.status(500).json({ error: 'Supabase not configured.' });
     const { auctionId } = req.body ?? {};

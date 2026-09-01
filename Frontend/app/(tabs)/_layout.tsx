@@ -122,6 +122,7 @@ export default function TabLayout() {
       <Tabs.Screen name="profile/insights" options={{ href: null }} />
       <Tabs.Screen name="profile/nominees" options={{ href: null }} />
       <Tabs.Screen name="profile/foreclosure" options={{ href: null }} />
+      <Tabs.Screen name="profile/privacy-policy" options={{ href: null }} />
     </Tabs>
   );
 }
