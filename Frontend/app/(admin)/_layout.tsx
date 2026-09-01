@@ -1,10 +1,57 @@
-import { Tabs } from 'expo-router';
+import { useEffect, useState } from 'react';
+import { Tabs, useRouter } from 'expo-router';
 import { BlurView } from 'expo-blur';
-import { StyleSheet, Platform, View } from 'react-native';
+import { StyleSheet, Platform, View, ActivityIndicator } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
+import { supabase } from '../../lib/supabase';
+
+// Guards every /(admin)/* screen: a Supabase Auth session alone is not
+// enough (a logged-in member also has one) — admin status requires a row in
+// admin_users, checked via RLS on every load so a revoked/never-admin
+// session can never render admin screens even if the login screen was
+// bypassed some other way.
+function useAdminGuard() {
+  const router = useRouter();
+  const [checked, setChecked] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function check() {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        if (!cancelled) router.replace('/(auth)/login');
+        return;
+      }
+      const { data: adminRow } = await supabase
+        .from('admin_users')
+        .select('id')
+        .eq('id', session.user.id)
+        .maybeSingle();
+      if (!adminRow) {
+        if (!cancelled) router.replace('/(auth)/login');
+        return;
+      }
+      if (!cancelled) setChecked(true);
+    }
+    check();
+    return () => { cancelled = true; };
+  }, [router]);
+
+  return checked;
+}
 
 export default function AdminLayout() {
+  const isAdmin = useAdminGuard();
+
+  if (!isAdmin) {
+    return (
+      <View style={styles.loadingScreen}>
+        <ActivityIndicator size="large" color="#005E7D" />
+      </View>
+    );
+  }
+
   return (
     <Tabs
       screenOptions={{
@@ -148,6 +195,12 @@ export default function AdminLayout() {
 }
 
 const styles = StyleSheet.create({
+  loadingScreen: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#fff',
+  },
   tabBar: {
     position: 'absolute',
     bottom: 0,

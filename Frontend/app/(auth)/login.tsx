@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -18,75 +18,134 @@ import { Image } from 'expo-image';
 import Svg, { Path } from 'react-native-svg';
 import { Colors, Shadows, Spacing, Radii } from '../../lib/constants';
 import { supabase } from '../../lib/supabase';
+import { apiPost } from '../../lib/api';
 import { useMemberSession } from '../../lib/MemberSessionContext';
+
+interface OtpVerifyResponse {
+  ok: boolean;
+  customerId: string;
+  session: { access_token: string; refresh_token: string };
+}
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { setMember } = useMemberSession();
+  const { loginWithSession } = useMemberSession();
   const [role, setRole] = useState<'member' | 'admin'>('member');
   const [phone, setPhone] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  // Member OTP flow
+  const [memberStep, setMemberStep] = useState<'phone' | 'otp'>('phone');
+  const [otp, setOtp] = useState('');
+  const [resendIn, setResendIn] = useState(0);
   const [biometricEnabled, setBiometricEnabled] = useState(false);
 
-  const handleMemberLogin = async () => {
-    const cleanPhone = phone.trim().replace(/^\+91/, '');
-    if (cleanPhone.length < 10) {
+  // Countdown for the OTP resend cooldown.
+  useEffect(() => {
+    if (resendIn <= 0) return;
+    const t = setTimeout(() => setResendIn((s) => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [resendIn]);
+
+  const cleanMemberPhone = () => phone.trim().replace(/\D/g, '').replace(/^91/, '').slice(-10);
+
+  // Step 1 — request an OTP delivered over WhatsApp. The backend is the sole
+  // authority on eligibility; we intentionally show a generic message so the
+  // screen never reveals whether a number is registered.
+  const handleRequestOtp = async () => {
+    const cleanPhone = cleanMemberPhone();
+    if (cleanPhone.length !== 10) {
       Alert.alert('Invalid Number', 'Please enter a valid 10-digit mobile number.');
       return;
     }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from('customers')
-        .select('id, full_name, phone')
-        .or(`phone.eq.${cleanPhone},phone.eq.+91${cleanPhone}`)
-        .single();
-
-      if (error || !data) {
-        Alert.alert('Not Found', 'This phone number is not registered. Please contact your admin.');
-        setLoading(false);
-        return;
-      }
-
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      await setMember(data.id);
-      router.replace('/(tabs)');
+      await apiPost('/api/auth/otp/request', { phone: cleanPhone });
+      setOtp('');
+      setMemberStep('otp');
+      setResendIn(60);
     } catch (err: any) {
-      Alert.alert('Error', err.message || 'An unexpected error occurred.');
+      Alert.alert('Could not send OTP', err?.message || 'Please try again in a moment.');
+    } finally {
       setLoading(false);
     }
   };
 
-  const handleAdminLogin = async () => {
-    if (!username || !password) {
-      Alert.alert('Error', 'Please enter both username and password.');
+  // Step 2 — verify the OTP and install the real authenticated session.
+  const handleVerifyOtp = async () => {
+    const cleanPhone = cleanMemberPhone();
+    if (!/^\d{6}$/.test(otp)) {
+      Alert.alert('Invalid OTP', 'Enter the 6-digit code sent to your WhatsApp.');
       return;
     }
-    
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setLoading(true);
-    
     try {
-      const { data, error } = await supabase
-        .from('admin_users')
-        .select('*')
-        .eq('username', username)
-        .eq('password', password)
-        .single();
-        
-      if (error || !data) {
-        Alert.alert('Invalid Credentials', 'The username or password you entered is incorrect.');
+      const res = await apiPost<OtpVerifyResponse>('/api/auth/otp/verify', {
+        phone: cleanPhone,
+        otp,
+      });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      await loginWithSession(res.session, res.customerId);
+      router.replace('/(tabs)');
+    } catch (err: any) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert('Verification Failed', err?.message || 'Invalid or expired OTP.');
+      setLoading(false);
+    }
+  };
+
+  const resetMemberFlow = () => {
+    setMemberStep('phone');
+    setOtp('');
+    setResendIn(0);
+  };
+
+  // Real Supabase Auth sign-in, then confirm the resulting session actually
+  // belongs to an admin (row in admin_users, checked via RLS: a non-admin
+  // authenticated user simply gets zero rows back, never an error) before
+  // allowing entry to the admin app. Signing in without this check would let
+  // any valid Supabase Auth user (e.g. a member account) into /(admin)/* —
+  // the route guard in the admin layout re-checks this on every load too.
+  const handleAdminLogin = async () => {
+    if (!username || !password) {
+      Alert.alert('Error', 'Please enter both email and password.');
+      return;
+    }
+
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setLoading(true);
+
+    try {
+      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+        email: username.trim(),
+        password,
+      });
+
+      if (authError || !authData.session) {
+        Alert.alert('Invalid Credentials', 'The email or password you entered is incorrect.');
         setLoading(false);
         return;
       }
-      
+
+      const { data: adminRow, error: adminError } = await supabase
+        .from('admin_users')
+        .select('id')
+        .eq('id', authData.session.user.id)
+        .maybeSingle();
+
+      if (adminError || !adminRow) {
+        await supabase.auth.signOut();
+        Alert.alert('Not an Admin Account', 'This account does not have admin access.');
+        setLoading(false);
+        return;
+      }
+
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setLoading(false);
       router.replace('/(admin)/dashboard');
-      
     } catch (err) {
       Alert.alert('Error', 'An unexpected error occurred.');
       setLoading(false);
@@ -184,57 +243,116 @@ export default function LoginScreen() {
           {/* Login Form Card */}
           <View style={styles.formCard}>
             {role === 'member' ? (
-              <>
-                {/* Phone Input */}
-                <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>REGISTERED PHONE NUMBER</Text>
-                  <View style={styles.phoneInputRow}>
-                    <Text style={styles.phonePrefix}>+91</Text>
+              memberStep === 'phone' ? (
+                <>
+                  {/* Phone Input */}
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>REGISTERED PHONE NUMBER</Text>
+                    <View style={styles.phoneInputRow}>
+                      <Text style={styles.phonePrefix}>+91</Text>
+                      <TextInput
+                        style={styles.phoneInput}
+                        placeholder="98765 43210"
+                        placeholderTextColor="#CBD5E1"
+                        keyboardType="phone-pad"
+                        maxLength={10}
+                        value={phone}
+                        onChangeText={setPhone}
+                        editable={!loading}
+                      />
+                    </View>
+                  </View>
+
+                  <Text style={{ fontFamily: 'Inter_400Regular', fontSize: 13, color: '#94A3B8', marginBottom: 8, textAlign: 'center' }}>
+                    We'll send a one-time code to your WhatsApp number registered with VSYK Chits.
+                  </Text>
+
+                  {/* Send OTP Button */}
+                  <TouchableOpacity
+                    style={styles.submitBtn}
+                    onPress={handleRequestOtp}
+                    activeOpacity={0.9}
+                    disabled={loading}
+                  >
+                    <Text style={styles.submitBtnText}>
+                      {loading ? 'Sending...' : 'Send OTP on WhatsApp'}
+                    </Text>
+                    {!loading && (
+                      <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.onBackground}>
+                        <Path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8-8-8z" />
+                      </Svg>
+                    )}
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <>
+                  {/* OTP Input */}
+                  <View style={styles.inputGroup}>
+                    <View style={styles.otpHeaderRow}>
+                      <Text style={styles.inputLabel}>ENTER 6-DIGIT OTP</Text>
+                      <TouchableOpacity onPress={resetMemberFlow} disabled={loading}>
+                        <Text style={styles.resendOtp}>CHANGE NUMBER</Text>
+                      </TouchableOpacity>
+                    </View>
                     <TextInput
-                      style={styles.phoneInput}
-                      placeholder="98765 43210"
+                      style={[styles.textInput, { textAlign: 'center', letterSpacing: 8, fontSize: 22 }]}
+                      placeholder="______"
                       placeholderTextColor="#CBD5E1"
-                      keyboardType="phone-pad"
-                      maxLength={10}
-                      value={phone}
-                      onChangeText={setPhone}
+                      keyboardType="number-pad"
+                      maxLength={6}
+                      value={otp}
+                      onChangeText={(t) => setOtp(t.replace(/\D/g, ''))}
+                      editable={!loading}
+                      autoFocus
                     />
                   </View>
-                </View>
 
-                <Text style={{ fontFamily: 'Inter_400Regular', fontSize: 13, color: '#94A3B8', marginBottom: 8, textAlign: 'center' }}>
-                  Enter the mobile number registered with your chit group admin.
-                </Text>
-
-                {/* Submit Button */}
-                <TouchableOpacity
-                  style={styles.submitBtn}
-                  onPress={handleMemberLogin}
-                  activeOpacity={0.9}
-                  disabled={loading}
-                >
-                  <Text style={styles.submitBtnText}>
-                    {loading ? 'Verifying...' : 'Access My Account'}
+                  <Text style={{ fontFamily: 'Inter_400Regular', fontSize: 13, color: '#94A3B8', marginBottom: 8, textAlign: 'center' }}>
+                    Sent to WhatsApp +91 {phone.slice(-10)}. Code expires in 10 minutes.
                   </Text>
-                  {!loading && (
-                    <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.onBackground}>
-                      <Path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8-8-8z" />
-                    </Svg>
-                  )}
-                </TouchableOpacity>
-              </>
+
+                  {/* Verify Button */}
+                  <TouchableOpacity
+                    style={styles.submitBtn}
+                    onPress={handleVerifyOtp}
+                    activeOpacity={0.9}
+                    disabled={loading}
+                  >
+                    <Text style={styles.submitBtnText}>
+                      {loading ? 'Verifying...' : 'Verify & Login'}
+                    </Text>
+                    {!loading && (
+                      <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.onBackground}>
+                        <Path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8-8-8z" />
+                      </Svg>
+                    )}
+                  </TouchableOpacity>
+
+                  {/* Resend */}
+                  <TouchableOpacity
+                    onPress={handleRequestOtp}
+                    disabled={loading || resendIn > 0}
+                    style={{ alignItems: 'center', paddingVertical: 8 }}
+                  >
+                    <Text style={[styles.resendOtp, (loading || resendIn > 0) && { color: '#CBD5E1' }]}>
+                      {resendIn > 0 ? `RESEND OTP IN ${resendIn}s` : 'RESEND OTP'}
+                    </Text>
+                  </TouchableOpacity>
+                </>
+              )
             ) : (
               <>
-                {/* Admin Username Input */}
+                {/* Admin Email Input */}
                 <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>USERNAME</Text>
+                  <Text style={styles.inputLabel}>EMAIL</Text>
                   <TextInput
                     style={styles.textInput}
-                    placeholder="Enter admin username"
+                    placeholder="Enter admin email"
                     placeholderTextColor="#CBD5E1"
                     value={username}
                     onChangeText={setUsername}
                     autoCapitalize="none"
+                    keyboardType="email-address"
                   />
                 </View>
 

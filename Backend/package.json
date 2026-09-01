@@ -19,6 +19,7 @@
     "dotenv": "^17.4.2",
     "expo": "^56.0.9",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.6.2",
     "firebase-admin": "^12.6.0",
     "razorpay": "^2.9.6"
   },

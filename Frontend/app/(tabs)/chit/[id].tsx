@@ -12,7 +12,7 @@ import Svg, { Path, Circle } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { Colors, Shadows } from '../../../lib/constants';
 import { useMemberSession } from '../../../lib/MemberSessionContext';
-import { apiPost } from '../../../lib/api';
+import { apiPostAuthed } from '../../../lib/api';
 import { dedupeAuctionCycles, getCycleDueAmount } from '../../../lib/chitPayments';
 import { isMemberAuctionWinner, WINNER_HIGHLIGHT } from '../../../lib/auctionWinner';
 import type { AuctionPrizeSettlement } from '../../(admin)/customers/_components/types';
@@ -576,58 +576,10 @@ export default function ChitDetailScreen() {
     const amountInPaise = payAmount || payableAmount || payment.amount;
     const group = data?.chit_group;
 
-    const markPaid = async (paymentId?: string) => {
-      // Get the auction for this month if it exists
-      const auction = settlementByMonth.get(payment.month_number);
-
-      // Get total previously paid for this month
-      const { data: previousPayments } = await supabase
-        .from('chit_member_transactions')
-        .select('amount')
-        .eq('chit_member_id', id)
-        .eq('payment_type', 'installment')
-        .eq('status', 'completed')
-        .or(auction?.id ? `auction_id.eq.${auction.id},notes.ilike.%Month ${payment.month_number}%` : `notes.ilike.%Month ${payment.month_number}%`);
-
-      const previousTotal = (previousPayments || []).reduce((sum, tx) => sum + tx.amount, 0);
-      const totalPaidIncludingCurrent = previousTotal + amountInPaise;
-
-      // Check if this payment completes the month's obligation
-      const isFullPayment = totalPaidIncludingCurrent >= payableAmount;
-
-      if (isFullPayment) {
-        const { error } = await supabase
-          .from('payment_schedules')
-          .update({
-            paid: true,
-            paid_at: new Date().toISOString(),
-          })
-          .eq('id', payment.id);
-        if (error) throw error;
-      }
-
-      // Insert transaction with auction_id if available
-      await supabase.from('chit_member_transactions').insert([{
-        chit_member_id: id,
-        auction_id: auction?.id || null,
-        amount: amountInPaise,
-        payment_type: 'installment',
-        status: 'completed',
-        notes: `Month ${payment.month_number}${paymentId ? ` - Razorpay: ${paymentId}` : ''}`,
-      }]); // non-critical, ignore any insert errors
-
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
-      // Show different messages for partial vs full payments
-      if (isFullPayment && previousTotal > 0) {
-        Alert.alert('Payment Completed!', `Month ${payment.month_number} fully paid with ${formatPaise(amountInPaise)}.\n\nTotal paid for this month: ${formatPaise(totalPaidIncludingCurrent)}`);
-      } else if (!isFullPayment) {
-        const remaining = payableAmount - totalPaidIncludingCurrent;
-        Alert.alert('Partial Payment Recorded', `Paid ${formatPaise(amountInPaise)} for Month ${payment.month_number}.\n\nRemaining: ${formatPaise(remaining)}`);
-      } else {
-        Alert.alert('Payment Successful!', `Month ${payment.month_number} payment of ${formatPaise(amountInPaise)} recorded.`);
-      }
-
+    // Payment state is written ONLY by the backend after Razorpay verification
+    // (see Backend/src/payments/payments.ts). The client just refreshes its
+    // cached views once the server confirms the recorded payment.
+    const refreshAfterPayment = () => {
       queryClient.invalidateQueries({ queryKey: ['chit-detail', id, memberId] });
       queryClient.invalidateQueries({ queryKey: ['active-chits', memberId] });
       queryClient.invalidateQueries({ queryKey: ['dashboard-stats', memberId] });
@@ -648,10 +600,12 @@ export default function ChitDetailScreen() {
         let keyId = RAZORPAY_KEY;
 
         try {
-          const order = await apiPost<{ id: string; keyId: string }>('/api/payments/razorpay/order', {
+          // Server derives the real remaining from paid_amount and binds the
+          // order to this schedule + the authenticated customer. `amount` is a
+          // requested partial; the server clamps it to the remaining balance.
+          const order = await apiPostAuthed<{ id: string; keyId: string; amount: number }>('/api/payments/razorpay/order', {
+            paymentScheduleId: payment.id,
             amount: amountInPaise,
-            receipt: `chit-${id}-${payment.month_number}`,
-            notes: { membershipId: id, month: payment.month_number },
           });
           orderId = order.id;
           keyId = order.keyId || keyId;
@@ -677,7 +631,11 @@ export default function ChitDetailScreen() {
         };
         const paymentData = await RazorpayCheckout.open(options);
         if (paymentData?.razorpay_order_id && paymentData?.razorpay_payment_id && paymentData?.razorpay_signature) {
-          const verify = await apiPost<{ verified: boolean }>('/api/payments/razorpay/verify', {
+          // The backend verifies the signature, re-fetches the payment from
+          // Razorpay, and records it. It is the ONLY writer of payment state.
+          const verify = await apiPostAuthed<{
+            verified: boolean; fullyPaid: boolean; partial: boolean; remaining: number;
+          }>('/api/payments/razorpay/verify', {
             orderId: paymentData.razorpay_order_id,
             paymentId: paymentData.razorpay_payment_id,
             signature: paymentData.razorpay_signature,
@@ -687,29 +645,24 @@ export default function ChitDetailScreen() {
             setPayingId(null);
             return;
           }
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          if (verify.fullyPaid) {
+            Alert.alert('Payment Successful', `Month ${payment.month_number} is now fully paid.`);
+          } else {
+            Alert.alert('Partial Payment Recorded', `Received ${formatPaise(amountInPaise)}.\n\nRemaining: ${formatPaise(verify.remaining)}`);
+          }
+          refreshAfterPayment();
         }
-        await markPaid(paymentData?.razorpay_payment_id);
       } else {
-        // Expo Go fallback — simulate with confirmation
+        // No native Razorpay (e.g. Expo Go): payments require a dev/prod build.
+        // We intentionally do NOT simulate/mark payments — payment state can
+        // only come from a verified Razorpay transaction.
         Alert.alert(
-          'Confirm Payment',
-          `Pay ${formatPaise(amountInPaise)} for Month ${payment.month_number}?\n\n(Test Mode - No actual charge)`,
-          [
-            { text: 'Cancel', style: 'cancel', onPress: () => setPayingId(null) },
-            {
-              text: 'Pay Now (Test)', onPress: async () => {
-                try {
-                  await markPaid('TEST_' + Date.now());
-                } catch (err: any) {
-                  Alert.alert('Error', err.message);
-                } finally {
-                  setPayingId(null);
-                }
-              },
-            },
-          ],
+          'Payment Unavailable Here',
+          'Online payment needs the full VSYK Chits app build. Please use a development or production build to pay.',
         );
-        return; // early return; setPayingId handled inside
+        setPayingId(null);
+        return;
       }
     } catch (e: any) {
       if (e?.code !== 'PAYMENT_CANCELLED') {
