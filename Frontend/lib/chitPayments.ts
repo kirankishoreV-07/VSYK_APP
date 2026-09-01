@@ -177,6 +177,16 @@ export async function applyAuctionSettlementToSchedules(
   }
 
   try {
+    // Fetch group for date derivation on inserts + fallback values
+    const { data: group } = await supabaseClient
+      .from('chit_groups')
+      .select('id, start_date, monthly_installment, duration_months')
+      .eq('id', chitGroupId)
+      .maybeSingle();
+
+    const groupStart = group?.start_date || null;
+    const baseInstallment = Number(group?.monthly_installment || 0);
+
     // Fetch current members (with shares)
     const { data: members, error: membersErr } = await supabaseClient
       .from('chit_members')
@@ -193,14 +203,17 @@ export async function applyAuctionSettlementToSchedules(
       return result;
     }
 
-    // Due date for a settled cycle is one week from the FIRST time settlement
-    // is applied — computed fresh only for brand-new schedule rows. Re-running
-    // settlement (double-click, admin reopening the modal to correct a bid)
-    // must NOT push the due date further out each time, so an existing row's
-    // due_date is never recomputed/overwritten here.
-    const settled = new Date();
-    settled.setDate(settled.getDate() + 7);
-    const dueDateForNewRow = settled.toISOString().split('T')[0];
+    // Helper to compute a due_date for this cycle (last day of the logical month)
+    const computeDueDate = (monthNum: number): string => {
+      const base = groupStart ? new Date(groupStart) : new Date();
+      base.setDate(1);
+      const d = new Date(base);
+      d.setMonth(d.getMonth() + monthNum);
+      d.setDate(0); // last day of that month
+      return d.toISOString().split('T')[0];
+    };
+
+    const dueDateForCycle = computeDueDate(auctionNumber);
 
     for (const m of members as Array<{ id: string; participation_share?: number | null }>) {
       const share = Number(m.participation_share || 1);
@@ -211,15 +224,13 @@ export async function applyAuctionSettlementToSchedules(
         // Check if a schedule row already exists for this member + month
         const { data: existing } = await supabaseClient
           .from('payment_schedules')
-          .select('id, amount, dividend_amount, due_date')
+          .select('id, amount, dividend_amount')
           .eq('chit_member_id', m.id)
           .eq('month_number', auctionNumber)
           .maybeSingle();
 
         if (existing?.id) {
-          // Update only if different (avoid unnecessary writes). due_date is
-          // intentionally excluded — it is set once, at row creation, and
-          // never shifted by a re-run of settlement.
+          // Update only if different (avoid unnecessary writes)
           const needsUpdate =
             Number(existing.amount || 0) !== targetAmount ||
             Number(existing.dividend_amount || 0) !== targetDividend;
@@ -246,7 +257,7 @@ export async function applyAuctionSettlementToSchedules(
           const insertRow: any = {
             chit_member_id: m.id,
             month_number: auctionNumber,
-            due_date: dueDateForNewRow,
+            due_date: dueDateForCycle,
             amount: targetAmount,
             paid: false,
             paid_at: null,

@@ -9,7 +9,6 @@ import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../../lib/supabase';
-import { apiPostAuthed } from '../../lib/api';
 import { Colors, Shadows } from '../../lib/constants';
 import { useMemberSession } from '../../lib/MemberSessionContext';
 import { useActiveChits, useDashboardStats, formatPaise } from '../../lib/hooks/useDashboard';
@@ -134,39 +133,6 @@ export default function ProfileScreen() {
         },
       },
     ]);
-  };
-
-  // Because a chit fund membership involves ongoing financial obligations,
-  // deletion is a reviewed request (Backend/src/account/deletion.ts), not an
-  // instant self-service hard delete — this only submits the request.
-  const handleDeleteAccount = () => {
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-    Alert.alert(
-      'Delete My Account',
-      'This will submit a request to permanently delete your personal information. Your financial and payment records will be retained as required by law, but your name, contact details, and KYC documents will be removed once processed. This cannot be undone. Continue?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Request Deletion',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              const res = await apiPostAuthed<{ ok: boolean; alreadyRequested: boolean }>('/api/account/delete-request', {});
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              Alert.alert(
-                res.alreadyRequested ? 'Already Requested' : 'Request Submitted',
-                res.alreadyRequested
-                  ? 'Your account deletion request is already pending review.'
-                  : 'Your account deletion request has been submitted and will be reviewed.',
-              );
-            } catch (err: any) {
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-              Alert.alert('Error', err?.message || 'Failed to submit deletion request.');
-            }
-          },
-        },
-      ],
-    );
   };
 
   if (!memberProfile) {
@@ -441,17 +407,6 @@ export default function ProfileScreen() {
             </TouchableOpacity>
           )}
 
-          {/* Privacy Policy */}
-          {!editMode && (
-            <TouchableOpacity
-              style={s.privacyBtn}
-              activeOpacity={0.8}
-              onPress={() => { Haptics.selectionAsync(); router.push('/(tabs)/profile/privacy-policy' as any); }}
-            >
-              <Text style={s.privacyBtnTxt}>Privacy Policy</Text>
-            </TouchableOpacity>
-          )}
-
           {/* Logout */}
           {!editMode && (
             <TouchableOpacity style={s.logoutBtn} activeOpacity={0.8} onPress={handleLogout}>
@@ -459,13 +414,6 @@ export default function ProfileScreen() {
                 <Path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z" />
               </Svg>
               <Text style={s.logoutTxt}>Sign Out</Text>
-            </TouchableOpacity>
-          )}
-
-          {/* Delete Account — reviewed request, not instant hard-delete */}
-          {!editMode && (
-            <TouchableOpacity style={s.deleteBtn} activeOpacity={0.8} onPress={handleDeleteAccount}>
-              <Text style={s.deleteBtnTxt}>Delete My Account</Text>
             </TouchableOpacity>
           )}
 
@@ -570,25 +518,12 @@ const s = StyleSheet.create({
   },
   cancelBtnText: { fontFamily: 'Inter_600SemiBold', fontSize: 15, color: '#64748B' },
 
-  privacyBtn: {
-    alignItems: 'center', justifyContent: 'center',
-    paddingVertical: 14, borderRadius: 14, borderWidth: 1, borderColor: '#E2E8F0',
-    backgroundColor: '#F8FAFC', marginBottom: 12,
-  },
-  privacyBtnTxt: { fontFamily: 'Inter_600SemiBold', fontSize: 15, color: '#334155' },
-
   logoutBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
     paddingVertical: 16, borderRadius: 14, borderWidth: 1, borderColor: '#FECACA',
     backgroundColor: '#FFF5F5',
   },
   logoutTxt: { fontFamily: 'Inter_700Bold', fontSize: 16, color: '#EF4444' },
-
-  deleteBtn: {
-    alignItems: 'center', justifyContent: 'center',
-    paddingVertical: 12, marginTop: 12,
-  },
-  deleteBtnTxt: { fontFamily: 'Inter_500Medium', fontSize: 13, color: '#94A3B8', textDecorationLine: 'underline' },
 
   version: { fontFamily: 'Inter_400Regular', fontSize: 12, color: '#94A3B8', textAlign: 'center' },
 

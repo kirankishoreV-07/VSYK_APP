@@ -7,7 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { supabase } from '../../../../lib/supabase';
-import { apiPostAdmin } from '../../../../lib/api';
+import { apiPost } from '../../../../lib/api';
 import type { Auction } from './types';
 import { applyAuctionSettlementToSchedules } from '../../../../lib/chitPayments';
 
@@ -204,7 +204,7 @@ export function AuctionSettlementModal({
             onSaved();
 
             try {
-                await apiPostAdmin('/api/auctions/notify-installments', {
+                await apiPost('/api/auctions/notify-installments', {
                     auctionId: auction.id,
                     message: `Installment for Auction #${auctionNumber || ''} is due. Please pay now.`,
                 });

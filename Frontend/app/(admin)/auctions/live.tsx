@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -7,7 +6,7 @@ import Svg, { Path, Circle } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
 import { supabase } from '../../../lib/supabase';
-import { apiPostAdmin } from '../../../lib/api';
+import { apiPost } from '../../../lib/api';
 import { isAuctionConfiguredUpcoming } from '../../../lib/auctionUtils';
 import { applyAuctionSettlementToSchedules } from '../../../lib/chitPayments';
 
@@ -331,7 +330,7 @@ export default function AdminLiveAuction() {
 
               // Push notifications — non-critical
               try {
-                await apiPostAdmin('/api/auctions/notify-installments', {
+                await apiPost('/api/auctions/notify-installments', {
                   auctionId: auction.id,
                   message: `Installment for Auction #${auction.auction_number || ''} is due. Please pay now.`,
                 });
