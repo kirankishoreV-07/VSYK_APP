@@ -1,21 +1,39 @@
-import { useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Dimensions, TextInput, Alert } from 'react-native';
+import { useEffect, useState } from 'react';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, TextInput, Alert, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { Colors, Shadows } from '../../../lib/constants';
-
-const { width } = Dimensions.get('window');
+import { apiPostAuthed } from '../../../lib/api';
+import { useMemberSession } from '../../../lib/MemberSessionContext';
+import { formatPaise, useActiveChits } from '../../../lib/hooks/useDashboard';
 
 export default function ForeclosureScreen() {
   const router = useRouter();
+  const { memberId } = useMemberSession();
+  const { data: activeChits = [], isLoading: loadingChits, error: chitsError } = useActiveChits(memberId);
   const [reason, setReason] = useState('');
+  const [selectedMembershipId, setSelectedMembershipId] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!selectedMembershipId && activeChits.length > 0) {
+      setSelectedMembershipId(activeChits[0].membership_id);
+    }
+  }, [activeChits, selectedMembershipId]);
+
+  const selectedChit = activeChits.find((chit) => chit.membership_id === selectedMembershipId);
 
   const handleSubmit = () => {
-    if (!reason.trim()) {
+    if (!selectedMembershipId) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Required', 'Please provide a reason for early exit.');
+      Alert.alert('No Active Chit', 'Select an active chit group before submitting a request.');
+      return;
+    }
+    if (reason.trim().length < 10) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert('Reason Required', 'Please provide at least 10 characters explaining your early-exit request.');
       return;
     }
 
@@ -28,11 +46,27 @@ export default function ForeclosureScreen() {
         { 
           text: 'Submit', 
           style: 'destructive',
-          onPress: () => {
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-            Alert.alert('Request Submitted', 'Our team will review your request and get back to you shortly.', [
-              { text: 'OK', onPress: () => router.back() }
-            ]);
+          onPress: async () => {
+            setSubmitting(true);
+            try {
+              const result = await apiPostAuthed<{ ok: boolean; alreadyRequested: boolean }>(
+                '/api/account/foreclosure-request',
+                { chitMemberId: selectedMembershipId, reason: reason.trim() },
+              );
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              Alert.alert(
+                result.alreadyRequested ? 'Already Submitted' : 'Request Submitted',
+                result.alreadyRequested
+                  ? 'A foreclosure request for this chit group is already pending review.'
+                  : 'Your request was recorded and will be reviewed by the admin.',
+                [{ text: 'OK', onPress: () => router.back() }],
+              );
+            } catch (error: any) {
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+              Alert.alert('Submission Failed', error?.message || 'Could not submit the request. Please try again.');
+            } finally {
+              setSubmitting(false);
+            }
           }
         }
       ]
@@ -66,16 +100,54 @@ export default function ForeclosureScreen() {
           </View>
         </View>
 
-        {/* Current Status */}
+        {/* Eligible memberships */}
         <View style={s.card}>
-          <Text style={s.cardLabel}>CURRENT ELIGIBILITY</Text>
-          <Text style={s.cardTitle}>Eligible with Penalty</Text>
-          <Text style={s.cardSub}>You have completed 12 out of 20 months in your active chit groups.</Text>
-          
-          <View style={s.feeBox}>
-            <Text style={s.feeLabel}>Estimated Processing Fee</Text>
-            <Text style={s.feeVal}>~₹4,500.00</Text>
-          </View>
+          <Text style={s.cardLabel}>SELECT CHIT GROUP</Text>
+          {loadingChits ? (
+            <ActivityIndicator color={Colors.secondary} style={s.loader} />
+          ) : chitsError ? (
+            <Text style={s.errorText}>Could not load your active chit groups.</Text>
+          ) : activeChits.length === 0 ? (
+            <Text style={s.cardSub}>You do not have an active chit eligible for foreclosure.</Text>
+          ) : (
+            <>
+              <View style={s.chitOptions}>
+                {activeChits.map((chit) => {
+                  const selected = chit.membership_id === selectedMembershipId;
+                  return (
+                    <TouchableOpacity
+                      key={chit.membership_id}
+                      style={[s.chitOption, selected && s.chitOptionSelected]}
+                      onPress={() => setSelectedMembershipId(chit.membership_id)}
+                    >
+                      <View style={[s.radio, selected && s.radioSelected]}>
+                        {selected && <View style={s.radioDot} />}
+                      </View>
+                      <View style={s.chitText}>
+                        <Text style={s.chitName}>{chit.chit_group.name}</Text>
+                        <Text style={s.chitMeta}>
+                          Month {chit.current_month} of {chit.chit_group.duration_months}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              {selectedChit && (
+                <>
+                  <Text style={s.cardTitle}>Eligible with Penalty</Text>
+                  <Text style={s.cardSub}>
+                    You have completed {Math.max(0, selectedChit.current_month - 1)} of {selectedChit.chit_group.duration_months} months in this chit.
+                  </Text>
+                  <View style={s.feeBox}>
+                    <Text style={s.feeLabel}>Estimated Processing Fee (2%)</Text>
+                    <Text style={s.feeVal}>~{formatPaise(selectedChit.chit_group.value * 0.02)}</Text>
+                  </View>
+                </>
+              )}
+            </>
+          )}
         </View>
 
         {/* Request Form */}
@@ -99,8 +171,13 @@ export default function ForeclosureScreen() {
 
       {/* Fixed Footer */}
       <View style={s.footer}>
-        <TouchableOpacity style={s.submitBtn} activeOpacity={0.9} onPress={handleSubmit}>
-          <Text style={s.submitTxt}>SUBMIT REQUEST</Text>
+        <TouchableOpacity
+          style={[s.submitBtn, (submitting || loadingChits || !selectedMembershipId) && s.submitBtnDisabled]}
+          activeOpacity={0.9}
+          onPress={handleSubmit}
+          disabled={submitting || loadingChits || !selectedMembershipId}
+        >
+          {submitting ? <ActivityIndicator color="#FFFFFF" /> : <Text style={s.submitTxt}>SUBMIT REQUEST</Text>}
         </TouchableOpacity>
       </View>
     </SafeAreaView>
@@ -124,6 +201,17 @@ const s = StyleSheet.create({
   cardLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: '#64748B', letterSpacing: 1, marginBottom: 8 },
   cardTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 24, color: Colors.primary, marginBottom: 4 },
   cardSub: { fontFamily: 'Inter_400Regular', fontSize: 14, color: '#64748B', lineHeight: 22, marginBottom: 20 },
+  loader: { paddingVertical: 24 },
+  errorText: { fontFamily: 'Inter_500Medium', fontSize: 14, color: '#B91C1C', lineHeight: 20 },
+  chitOptions: { gap: 10, marginBottom: 20 },
+  chitOption: { flexDirection: 'row', alignItems: 'center', padding: 14, borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0', backgroundColor: '#F8FAFC' },
+  chitOptionSelected: { borderColor: Colors.secondary, backgroundColor: '#ECFEFF' },
+  radio: { width: 20, height: 20, borderRadius: 10, borderWidth: 2, borderColor: '#94A3B8', alignItems: 'center', justifyContent: 'center', marginRight: 12 },
+  radioSelected: { borderColor: Colors.secondary },
+  radioDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: Colors.secondary },
+  chitText: { flex: 1 },
+  chitName: { fontFamily: 'Inter_600SemiBold', fontSize: 15, color: Colors.primary },
+  chitMeta: { fontFamily: 'Inter_400Regular', fontSize: 12, color: '#64748B', marginTop: 2 },
   feeBox: { backgroundColor: '#F8FAFC', padding: 16, borderRadius: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0' },
   feeLabel: { fontFamily: 'Inter_500Medium', fontSize: 13, color: Colors.primary },
   feeVal: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 16, color: '#EF4444' },
@@ -135,5 +223,6 @@ const s = StyleSheet.create({
 
   footer: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: 24, backgroundColor: 'rgba(248,250,252,0.95)', borderTopWidth: 1, borderTopColor: 'rgba(226,232,240,0.5)' },
   submitBtn: { backgroundColor: '#EF4444', paddingVertical: 18, borderRadius: 16, alignItems: 'center', shadowColor: '#EF4444', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 8, elevation: 4 },
+  submitBtnDisabled: { opacity: 0.5 },
   submitTxt: { fontFamily: 'Inter_700Bold', fontSize: 14, color: '#FFFFFF', letterSpacing: 1 },
 });

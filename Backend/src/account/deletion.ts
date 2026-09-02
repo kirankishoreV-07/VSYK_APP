@@ -38,6 +38,85 @@ async function getAuthedCustomerId(req: Request): Promise<string | null> {
 export const accountRouter = Router();
 
 /**
+ * Member-initiated early-exit request. The authenticated customer may only
+ * submit a request for one of their own active memberships. Writes happen
+ * through the service-role client because foreclosure_requests is deliberately
+ * backend-only under the production RLS lockdown.
+ */
+accountRouter.post('/foreclosure-request', async (req: Request, res: Response) => {
+  try {
+    const admin = getAdmin();
+    if (!admin) return res.status(500).json({ error: 'Request service is not configured.' });
+
+    const customerId = await getAuthedCustomerId(req);
+    if (!customerId) return res.status(401).json({ error: 'Authentication required.' });
+
+    const chitMemberId = String(req.body?.chitMemberId || '').trim();
+    const reason = String(req.body?.reason || '').trim();
+    if (!chitMemberId) return res.status(400).json({ error: 'Select a chit group.' });
+    if (reason.length < 10) {
+      return res.status(400).json({ error: 'Please provide at least 10 characters explaining your request.' });
+    }
+    if (reason.length > 1000) {
+      return res.status(400).json({ error: 'Reason must be 1000 characters or fewer.' });
+    }
+
+    const { data: membership, error: membershipError } = await admin
+      .from('chit_members')
+      .select('id, bid_status')
+      .eq('id', chitMemberId)
+      .eq('customer_id', customerId)
+      .maybeSingle();
+    if (membershipError) {
+      console.error('[Foreclosure] Membership lookup failed:', membershipError.message);
+      return res.status(500).json({ error: 'Could not validate the selected chit group.' });
+    }
+    if (!membership) return res.status(404).json({ error: 'Chit membership not found.' });
+    if (!['active', 'bidding'].includes((membership as any).bid_status)) {
+      return res.status(409).json({ error: 'Only an active chit can be submitted for foreclosure.' });
+    }
+
+    const { data: existing, error: existingError } = await admin
+      .from('foreclosure_requests')
+      .select('id')
+      .eq('chit_member_id', chitMemberId)
+      .eq('status', 'pending')
+      .maybeSingle();
+    if (existingError) {
+      console.error('[Foreclosure] Existing-request lookup failed:', existingError.message);
+      return res.status(500).json({ error: 'Could not check the request status.' });
+    }
+    if (existing) return res.json({ ok: true, alreadyRequested: true, requestId: existing.id });
+
+    const { data: created, error: insertError } = await admin
+      .from('foreclosure_requests')
+      .insert({
+        chit_member_id: chitMemberId,
+        reason,
+        status: 'pending',
+        penalty_rate: 2,
+      })
+      .select('id')
+      .single();
+
+    if (insertError) {
+      // A concurrent duplicate request can race the lookup. Treat the unique
+      // constraint as an idempotent success instead of surfacing an error.
+      if ((insertError as any).code === '23505') {
+        return res.json({ ok: true, alreadyRequested: true });
+      }
+      console.error('[Foreclosure] Insert failed:', insertError.message);
+      return res.status(500).json({ error: 'Failed to record the foreclosure request.' });
+    }
+
+    return res.status(201).json({ ok: true, alreadyRequested: false, requestId: created.id });
+  } catch (err: any) {
+    console.error('[Foreclosure] Request failed:', err?.message || err);
+    return res.status(500).json({ error: 'Failed to submit foreclosure request.' });
+  }
+});
+
+/**
  * Member-initiated deletion request. Idempotent — re-requesting after an
  * already-pending request is a no-op, not an error.
  */

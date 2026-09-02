@@ -8,6 +8,7 @@ import {
   StyleSheet,
   Switch,
   KeyboardAvoidingView,
+  Keyboard,
   Platform,
   Alert,
 } from 'react-native';
@@ -40,6 +41,8 @@ export default function LoginScreen() {
   const [otp, setOtp] = useState('');
   const [resendIn, setResendIn] = useState(0);
   const [biometricEnabled, setBiometricEnabled] = useState(false);
+  const adminEmailRef = useRef<TextInput>(null);
+  const adminPasswordRef = useRef<TextInput>(null);
 
   // Countdown for the OTP resend cooldown.
   useEffect(() => {
@@ -110,23 +113,35 @@ export default function LoginScreen() {
   // any valid Supabase Auth user (e.g. a member account) into /(admin)/* —
   // the route guard in the admin layout re-checks this on every load too.
   const handleAdminLogin = async () => {
-    if (!username || !password) {
+    const email = username.trim().toLowerCase();
+    if (!email || !password) {
       Alert.alert('Error', 'Please enter both email and password.');
       return;
     }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      Alert.alert('Invalid Email', 'Please enter a valid admin email address.');
+      adminEmailRef.current?.focus();
+      return;
+    }
 
+    Keyboard.dismiss();
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setLoading(true);
 
     try {
       const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-        email: username.trim(),
+        email,
         password,
       });
 
       if (authError || !authData.session) {
-        Alert.alert('Invalid Credentials', 'The email or password you entered is incorrect.');
-        setLoading(false);
+        const invalidCredentials = /invalid login credentials/i.test(authError?.message || '');
+        Alert.alert(
+          invalidCredentials ? 'Invalid Credentials' : 'Login Service Error',
+          invalidCredentials
+            ? 'The email or password you entered is incorrect.'
+            : authError?.message || 'Could not connect to the login service. Please try again.',
+        );
         return;
       }
 
@@ -137,17 +152,16 @@ export default function LoginScreen() {
         .maybeSingle();
 
       if (adminError || !adminRow) {
-        await supabase.auth.signOut();
+        await supabase.auth.signOut({ scope: 'local' });
         Alert.alert('Not an Admin Account', 'This account does not have admin access.');
-        setLoading(false);
         return;
       }
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setLoading(false);
       router.replace('/(admin)/dashboard');
-    } catch (err) {
-      Alert.alert('Error', 'An unexpected error occurred.');
+    } catch (err: any) {
+      Alert.alert('Login Failed', err?.message || 'An unexpected error occurred.');
+    } finally {
       setLoading(false);
     }
   };
@@ -178,6 +192,8 @@ export default function LoginScreen() {
         <ScrollView
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
         >
           {/* Hero Branding */}
           <View style={styles.heroSection}>
@@ -226,6 +242,7 @@ export default function LoginScreen() {
               onPress={() => {
                 setRole('admin');
                 Haptics.selectionAsync();
+                requestAnimationFrame(() => adminEmailRef.current?.focus());
               }}
               activeOpacity={0.8}
             >
@@ -346,13 +363,21 @@ export default function LoginScreen() {
                 <View style={styles.inputGroup}>
                   <Text style={styles.inputLabel}>EMAIL</Text>
                   <TextInput
+                    ref={adminEmailRef}
                     style={styles.textInput}
                     placeholder="Enter admin email"
                     placeholderTextColor="#CBD5E1"
                     value={username}
                     onChangeText={setUsername}
                     autoCapitalize="none"
+                    autoCorrect={false}
+                    autoComplete="email"
+                    textContentType="emailAddress"
                     keyboardType="email-address"
+                    returnKeyType="next"
+                    editable={!loading}
+                    onSubmitEditing={() => adminPasswordRef.current?.focus()}
+                    blurOnSubmit={false}
                   />
                 </View>
 
@@ -360,12 +385,20 @@ export default function LoginScreen() {
                 <View style={styles.inputGroup}>
                   <Text style={styles.inputLabel}>PASSWORD</Text>
                   <TextInput
+                    ref={adminPasswordRef}
                     style={styles.textInput}
                     placeholder="Enter admin password"
                     placeholderTextColor="#CBD5E1"
                     value={password}
                     onChangeText={setPassword}
                     secureTextEntry
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    autoComplete="current-password"
+                    textContentType="password"
+                    returnKeyType="done"
+                    editable={!loading}
+                    onSubmitEditing={handleAdminLogin}
                   />
                 </View>
 
