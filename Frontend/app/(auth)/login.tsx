@@ -28,6 +28,11 @@ interface OtpVerifyResponse {
   session: { access_token: string; refresh_token: string };
 }
 
+interface AdminLoginResponse {
+  ok: boolean;
+  session: { access_token: string; refresh_token: string };
+}
+
 export default function LoginScreen() {
   const router = useRouter();
   const { loginWithSession } = useMemberSession();
@@ -113,42 +118,29 @@ export default function LoginScreen() {
   // any valid Supabase Auth user (e.g. a member account) into /(admin)/* —
   // the route guard in the admin layout re-checks this on every load too.
   const handleAdminLogin = async () => {
-    const email = username.trim().toLowerCase();
-    if (!email || !password) {
-      Alert.alert('Error', 'Please enter both email and password.');
+    const identifier = username.normalize('NFKC').replace(/\s+/g, '');
+    if (!identifier || !password) {
+      Alert.alert('Error', 'Please enter both username/email and password.');
       return;
     }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      Alert.alert('Invalid Email', 'Please enter a valid admin email address.');
-      adminEmailRef.current?.focus();
-      return;
-    }
+    setUsername(identifier);
 
     Keyboard.dismiss();
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setLoading(true);
 
     try {
-      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-        email,
+      const authData = await apiPost<AdminLoginResponse>('/api/auth/admin/login', {
+        identifier,
         password,
       });
-
-      if (authError || !authData.session) {
-        const invalidCredentials = /invalid login credentials/i.test(authError?.message || '');
-        Alert.alert(
-          invalidCredentials ? 'Invalid Credentials' : 'Login Service Error',
-          invalidCredentials
-            ? 'The email or password you entered is incorrect.'
-            : authError?.message || 'Could not connect to the login service. Please try again.',
-        );
-        return;
-      }
+      const { error: sessionError } = await supabase.auth.setSession(authData.session);
+      if (sessionError) throw sessionError;
 
       const { data: adminRow, error: adminError } = await supabase
         .from('admin_users')
         .select('id')
-        .eq('id', authData.session.user.id)
+        .eq('id', (await supabase.auth.getUser()).data.user?.id)
         .maybeSingle();
 
       if (adminError || !adminRow) {
@@ -361,24 +353,27 @@ export default function LoginScreen() {
               <>
                 {/* Admin Email Input */}
                 <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>EMAIL</Text>
+                  <Text style={styles.inputLabel}>USERNAME OR EMAIL</Text>
                   <TextInput
                     ref={adminEmailRef}
                     style={styles.textInput}
-                    placeholder="Enter admin email"
+                    placeholder="Enter admin username or email"
                     placeholderTextColor="#CBD5E1"
                     value={username}
-                    onChangeText={setUsername}
+                    onChangeText={(value) => setUsername(value.replace(/\s/g, ''))}
                     autoCapitalize="none"
                     autoCorrect={false}
-                    autoComplete="email"
-                    textContentType="emailAddress"
-                    keyboardType="email-address"
+                    autoComplete="username"
+                    textContentType="username"
+                    keyboardType="default"
                     returnKeyType="next"
                     editable={!loading}
                     onSubmitEditing={() => adminPasswordRef.current?.focus()}
                     blurOnSubmit={false}
                   />
+                  <Text style={styles.inputHint}>
+                    Use your registered admin username or Supabase email.
+                  </Text>
                 </View>
 
                 {/* Admin Password Input */}
@@ -587,6 +582,13 @@ const styles = StyleSheet.create({
     color: '#94A3B8',
     textTransform: 'uppercase',
     marginLeft: 4,
+  },
+  inputHint: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 12,
+    lineHeight: 17,
+    color: '#64748B',
+    marginHorizontal: 4,
   },
   phoneInputRow: {
     flexDirection: 'row',

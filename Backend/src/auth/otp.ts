@@ -62,6 +62,10 @@ function getPhoneCandidates(phone10: string): string[] {
   return Array.from(new Set([phone10, e164, `+${e164}`]));
 }
 
+function genericAdminLoginError(res: Response) {
+  return res.status(401).json({ error: 'The username or password is incorrect.' });
+}
+
 function hashSecret(value: string): string {
   const pepper = process.env.OTP_PEPPER || process.env.SUPABASE_SERVICE_ROLE_KEY || '';
   if (!pepper) {
@@ -79,6 +83,79 @@ function timingSafeEqualHex(a: string, b: string): boolean {
   const right = Buffer.from(b, 'hex');
   return left.length === right.length && crypto.timingSafeEqual(left, right);
 }
+
+/**
+ * Admin login accepts either the configured legacy username or the admin's
+ * Supabase email. The username-to-email mapping stays on the trusted backend;
+ * passwords are verified only by Supabase Auth and are never stored here.
+ */
+authRouter.post('/admin/login', async (req: Request, res: Response) => {
+  try {
+    const identifier = String(req.body?.identifier || '').trim();
+    const password = String(req.body?.password || '');
+    if (!identifier || !password) return genericAdminLoginError(res);
+
+    const admin = getAdminClient();
+    const config = getSupabaseConfig();
+    if (!admin || !config.anonKey) {
+      return res.status(500).json({ error: 'Admin login is not configured.' });
+    }
+
+    let email = identifier.toLowerCase();
+    if (!identifier.includes('@')) {
+      const configuredUsername = (process.env.ADMIN_LOGIN_USERNAME || '').trim();
+      if (!configuredUsername || identifier.toLowerCase() !== configuredUsername.toLowerCase()) {
+        return genericAdminLoginError(res);
+      }
+
+      // The current application has one administrator. Refuse ambiguous
+      // username resolution if more than one marker exists; email login still
+      // works for multi-admin installations.
+      const { data: adminRows, error: rowsError } = await admin
+        .from('admin_users')
+        .select('id')
+        .limit(2);
+      if (rowsError || !adminRows || adminRows.length !== 1) {
+        if (rowsError) console.error('[Admin Auth] Admin lookup failed:', rowsError.message);
+        return genericAdminLoginError(res);
+      }
+
+      const { data: authUser, error: userError } = await admin.auth.admin.getUserById(adminRows[0].id);
+      if (userError || !authUser.user?.email) {
+        if (userError) console.error('[Admin Auth] Auth user lookup failed:', userError.message);
+        return genericAdminLoginError(res);
+      }
+      email = authUser.user.email;
+    }
+
+    const verifier = createClient(config.url, config.anonKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const { data: signIn, error: signInError } = await verifier.auth.signInWithPassword({ email, password });
+    if (signInError || !signIn.session) return genericAdminLoginError(res);
+
+    const { data: adminMarker, error: markerError } = await admin
+      .from('admin_users')
+      .select('id')
+      .eq('id', signIn.session.user.id)
+      .maybeSingle();
+    if (markerError || !adminMarker) {
+      await verifier.auth.signOut({ scope: 'local' });
+      return genericAdminLoginError(res);
+    }
+
+    return res.json({
+      ok: true,
+      session: {
+        access_token: signIn.session.access_token,
+        refresh_token: signIn.session.refresh_token,
+      },
+    });
+  } catch (error: any) {
+    console.error('[Admin Auth] Login failed:', error?.message || error);
+    return res.status(500).json({ error: 'Could not complete admin login.' });
+  }
+});
 
 function generateOtp(): string {
   return crypto.randomInt(100000, 1000000).toString();

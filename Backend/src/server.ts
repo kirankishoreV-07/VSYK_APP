@@ -688,9 +688,16 @@ app.post('/api/auctions/apply-settlement', requireAdminAuth, async (req: Request
   }
 });
 
-setInterval(() => {
-  runAuctionScheduler().catch((err) => console.warn('Scheduler error:', err));
-}, 60 * 1000);
+// Scheduled jobs can mutate financial state and send customer notifications.
+// Require an explicit production opt-in so starting a local/API-only server
+// for login testing can never trigger those side effects.
+if (process.env.ENABLE_SCHEDULER === 'true') {
+  setInterval(() => {
+    runAuctionScheduler().catch((err) => console.warn('Scheduler error:', err));
+  }, 60 * 1000);
+} else {
+  console.log('[Scheduler] Disabled (set ENABLE_SCHEDULER=true to enable).');
+}
 
 app.listen(port, () => {
   console.log(`Server is running on port ${port}`);
