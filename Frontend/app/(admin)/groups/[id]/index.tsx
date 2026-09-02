@@ -388,11 +388,18 @@ export default function AdminGroupDetail() {
   useEffect(() => {
     if (!group?.id) return;
 
-    // IMPORTANT: Channel name MUST be unique per group id.
-    // Reusing a static name like 'admin-group-detail-updates' causes
-    // "cannot add postgres_changes callbacks after subscribe()" when the effect
-    // re-runs (navigation, StrictMode, group change, fast refresh, etc.).
-    const channelName = `admin-group-detail-${group.id}`;
+    // Supabase Realtime now returns an existing channel when the topic already
+    // exists. removeChannel() is asynchronous, so a quick remount (navigation,
+    // StrictMode, or Fast Refresh) can otherwise receive the old subscribed
+    // channel and throw when these callbacks are added. Use a unique topic for
+    // every effect instance and opportunistically remove stale instances.
+    const channelPrefix = `admin-group-detail-${group.id}`;
+    for (const existing of supabase.getChannels()) {
+      if (existing.topic.startsWith(`realtime:${channelPrefix}`)) {
+        void supabase.removeChannel(existing);
+      }
+    }
+    const channelName = `${channelPrefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
     const channel = supabase
       .channel(channelName)
@@ -406,7 +413,7 @@ export default function AdminGroupDetail() {
       });
 
     return () => {
-      supabase.removeChannel(channel);
+      void supabase.removeChannel(channel);
     };
   }, [group?.id, fetchGroup, fetchMembers, fetchAuctions]);
 
