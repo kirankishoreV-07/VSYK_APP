@@ -294,8 +294,37 @@ export default function AdminGroups() {
   };
 
   const handleSaveGroup = async () => {
-    if (!groupName || !chitAmount || !installments) {
-      Alert.alert('Validation Error', 'Please fill Group Name, Chit Amount, and Installments');
+    const normalizedCode = groupCode.trim();
+    const normalizedName = groupName.trim();
+    const chitValue = Number(chitAmount);
+    const installmentCount = Number(installments);
+    const monthlyAmount = Number(emiAmount);
+    const depositValue = depositedAmount ? Number(depositedAmount) : 0;
+    const commissionRate = agentCommission ? Number(agentCommission) : 0;
+    const annualInterestRate = interestRate ? Number(interestRate) : 0;
+
+    if (!normalizedCode || !normalizedName || !chitAmount || !installments || !emiAmount) {
+      Alert.alert('Validation Error', 'Group Code, Group Name, Chit Value, Number of Months, and Monthly Installment are required.');
+      return;
+    }
+    if (!Number.isFinite(chitValue) || chitValue <= 0) {
+      Alert.alert('Validation Error', 'Chit Value must be greater than zero.');
+      return;
+    }
+    if (!Number.isInteger(installmentCount) || installmentCount < 1 || installmentCount > 120) {
+      Alert.alert('Validation Error', 'Number of Months must be a whole number between 1 and 120.');
+      return;
+    }
+    if (!Number.isFinite(monthlyAmount) || monthlyAmount <= 0 || monthlyAmount > chitValue) {
+      Alert.alert('Validation Error', 'Monthly Installment must be greater than zero and cannot exceed the Chit Value.');
+      return;
+    }
+    if (!Number.isFinite(depositValue) || depositValue < 0 || depositValue > chitValue) {
+      Alert.alert('Validation Error', 'Deposited Amount must be between zero and the Chit Value.');
+      return;
+    }
+    if (![commissionRate, annualInterestRate].every((value) => Number.isFinite(value) && value >= 0 && value <= 100)) {
+      Alert.alert('Validation Error', 'Commission and Interest rates must be between 0 and 100.');
       return;
     }
 
@@ -318,14 +347,14 @@ export default function AdminGroups() {
     setIsSaving(true);
     try {
       const payload = {
-        name: groupName,
-        value: Number(chitAmount) * 100, // store in paise
-        duration_months: Number(installments),
-        monthly_installment: Number(emiAmount) * 100 || 0,
-        group_code: groupCode,
-        agent_in_charge: agentInCharge,
-        foreman_name: foremanName,
-        description,
+        name: normalizedName,
+        value: Math.round(chitValue * 100),
+        duration_months: installmentCount,
+        monthly_installment: Math.round(monthlyAmount * 100),
+        group_code: normalizedCode,
+        agent_in_charge: agentInCharge.trim() || null,
+        foreman_name: foremanName.trim() || null,
+        description: description.trim() || null,
         // Regulatory fields only for accounted groups
         agr_number: accountingType === 'accounted' ? agrNumber : null,
         agr_date: accountingType === 'accounted' ? parseDateStr(agrDate) : null,
@@ -337,40 +366,48 @@ export default function AdminGroups() {
         fd_closing_date: accountingType === 'accounted' ? parseDateStr(fdClosingDate) : null,
         start_date: accountingType === 'accounted' ? parseDateStr(startDate) : null,
         end_date: accountingType === 'accounted' ? parseDateStr(endDate) : null,
-        bank_name: accountingType === 'accounted' ? bankName : null,
-        deposited_amount: Number(depositedAmount) * 100 || 0,
-        interest_rate: Number(interestRate) || 0,
-        no_of_installments: Number(installments),
-        emi_amount: Number(emiAmount) * 100 || 0,
-        agent_commission_rate: Number(agentCommission) || 0,
+        bank_name: accountingType === 'accounted' ? bankName.trim() || null : null,
+        deposited_amount: Math.round(depositValue * 100),
+        interest_rate: annualInterestRate,
+        no_of_installments: installmentCount,
+        emi_amount: Math.round(monthlyAmount * 100),
+        agent_commission_rate: commissionRate,
         foreman_commission_amount: 0,
         frequency,
         bidding_day: biddingDate,
         bidding_time: biddingTime,
         capacity,
-        terms_conditions: terms,
+        terms_conditions: terms.trim() || null,
         accounting_type: accountingType, // NEW: Add accounting type
-        status: 'active'
+        // New groups stay private until every share is enrolled and an admin
+        // explicitly activates them from the group detail screen.
+        status: 'draft'
       };
 
       const { error } = await supabase.from('chit_groups').insert([payload]);
 
       if (error) {
         console.error('Insert Error:', error);
-        alert('Failed to save group: ' + error.message);
+        if (error.code === '23505') {
+          Alert.alert('Group Already Exists', 'A chit group with this Group Code already exists.');
+        } else {
+          Alert.alert('Unable to Create Group', error.message || 'The group could not be saved.');
+        }
       } else {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        setGroupCode(''); setGroupName(''); setAgentInCharge(''); setForemanName(''); setDescription('');
+        setAgrNumber(''); setAgrDate(''); setPsoNumber(''); setPsoDate(''); setFdNumber(''); setFdDate('');
+        setCdraNumber(''); setFdClosingDate(''); setStartDate(''); setEndDate(''); setBankName('');
+        setChitAmount(''); setDepositedAmount(''); setInstallments(''); setEmiAmount(''); setInterestRate('');
+        setAgentCommission(''); setForemanCommission(''); setFrequency('Monthly'); setBiddingDate('');
+        setBiddingTime(''); setCapacity(50); setTerms(''); setAccountingType('accounted');
 
-        // Reset major fields
-        setGroupCode(''); setGroupName(''); setChitAmount(''); setInstallments(''); setEmiAmount('');
-        setAccountingType('accounted'); // Reset accounting type
-
-        closeModal();
+        closeModal(true);
         fetchGroups();
       }
     } catch (err: any) {
       console.error(err);
-      alert('An error occurred while saving.');
+      Alert.alert('Unable to Create Group', err?.message || 'An error occurred while saving.');
     } finally {
       setIsSaving(false);
     }
@@ -381,7 +418,25 @@ export default function AdminGroups() {
     setModalVisible(true);
   };
 
-  const closeModal = () => {
+  const isFormDirty = [
+    groupCode, groupName, agentInCharge, description, agrNumber, agrDate, psoNumber, psoDate,
+    fdNumber, fdDate, cdraNumber, fdClosingDate, startDate, endDate, bankName, chitAmount,
+    depositedAmount, installments, emiAmount, interestRate, agentCommission, biddingDate,
+    biddingTime, terms,
+  ].some((value) => value.trim().length > 0);
+
+  const closeModal = (discardChanges = false) => {
+    if (isFormDirty && !discardChanges) {
+      Alert.alert(
+        'Discard group details?',
+        'You have unsaved changes. Leave this form and discard them?',
+        [
+          { text: 'Keep editing', style: 'cancel' },
+          { text: 'Discard', style: 'destructive', onPress: () => closeModal(true) },
+        ],
+      );
+      return;
+    }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setModalVisible(false);
   };
@@ -394,11 +449,11 @@ export default function AdminGroups() {
           <AppLogo size={36} />
           <Text style={styles.appBarTitle}>VSYK CHITS</Text>
         </View>
-        <TouchableOpacity style={styles.iconButton} onPress={() => Haptics.selectionAsync()}>
+        <View style={styles.iconButton} accessibilityElementsHidden>
           <Svg width={24} height={24} viewBox="0 0 24 24" fill="#00789E">
             <Path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2zm-2 1H8v-6c0-2.48 1.51-4.5 4-4.5s4 2.02 4 4.5v6z" />
           </Svg>
-        </TouchableOpacity>
+        </View>
       </View>
 
       <ScrollView
@@ -452,7 +507,7 @@ export default function AdminGroups() {
       </ScrollView>
 
       {/* Full Screen Modal */}
-      <Modal visible={isModalVisible} animationType="slide" presentationStyle="pageSheet">
+      <Modal visible={isModalVisible} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => closeModal()}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalContainer}>
 
           <View style={styles.modalHeader}>
@@ -460,7 +515,7 @@ export default function AdminGroups() {
               <Text style={styles.modalTitle}>Initialize New Group</Text>
               <Text style={styles.modalSubtitle}>Configure the parameters for the new chit cycle</Text>
             </View>
-            <TouchableOpacity style={styles.closeBtn} onPress={closeModal}>
+            <TouchableOpacity style={styles.closeBtn} onPress={() => closeModal()} accessibilityRole="button" accessibilityLabel="Close group form">
               <Svg width={24} height={24} viewBox="0 0 24 24" fill="#64748B">
                 <Path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
               </Svg>
@@ -479,11 +534,11 @@ export default function AdminGroups() {
               <View style={styles.rowInputs}>
                 <View style={[styles.inputGroup, { flex: 1 }]}>
                   <Text style={styles.inputLabel}>GROUP CODE</Text>
-                  <TextInput style={styles.input} placeholder="VS-001" value={groupCode} onChangeText={setGroupCode} />
+                  <TextInput style={styles.input} placeholder="Enter unique group code" value={groupCode} onChangeText={setGroupCode} autoCapitalize="characters" />
                 </View>
                 <View style={[styles.inputGroup, { flex: 2 }]}>
                   <Text style={styles.inputLabel}>GROUP NAME</Text>
-                  <TextInput style={styles.input} placeholder="Wealth Max 2025" value={groupName} onChangeText={setGroupName} />
+                  <TextInput style={styles.input} placeholder="Enter chit group name" value={groupName} onChangeText={setGroupName} />
                 </View>
               </View>
 
@@ -491,7 +546,7 @@ export default function AdminGroups() {
                 <Text style={styles.inputLabel}>IN-CHARGE NAME</Text>
                 <TextInput
                   style={styles.input}
-                  placeholder="Foreman / Agent Name"
+                  placeholder="Enter foreman or agent name"
                   value={agentInCharge}
                   onChangeText={(val) => { setAgentInCharge(val); setForemanName(val); }}
                 />
@@ -499,7 +554,7 @@ export default function AdminGroups() {
 
               <View style={styles.inputGroup}>
                 <Text style={styles.inputLabel}>DESCRIPTION</Text>
-                <TextInput style={[styles.input, { minHeight: 60 }]} placeholder="Short description..." multiline value={description} onChangeText={setDescription} />
+                <TextInput style={[styles.input, { minHeight: 60 }]} placeholder="Enter group description (optional)" multiline value={description} onChangeText={setDescription} />
               </View>
 
               <View style={styles.inputGroup}>
@@ -567,7 +622,7 @@ export default function AdminGroups() {
                 <View style={styles.rowInputs}>
                   <View style={[styles.inputGroup, { flex: 1 }]}>
                     <Text style={styles.inputLabel}>AGR NUMBER *</Text>
-                    <TextInput style={styles.input} value={agrNumber} onChangeText={setAgrNumber} />
+                    <TextInput style={styles.input} placeholder="Enter agreement number" value={agrNumber} onChangeText={setAgrNumber} />
                   </View>
                   <View style={[styles.inputGroup, { flex: 1 }]}>
                     <Text style={styles.inputLabel}>AGR DATE</Text>
@@ -580,7 +635,7 @@ export default function AdminGroups() {
                 <View style={styles.rowInputs}>
                   <View style={[styles.inputGroup, { flex: 1 }]}>
                     <Text style={styles.inputLabel}>PSO NUMBER *</Text>
-                    <TextInput style={styles.input} value={psoNumber} onChangeText={setPsoNumber} />
+                    <TextInput style={styles.input} placeholder="Enter PSO number" value={psoNumber} onChangeText={setPsoNumber} />
                   </View>
                   <View style={[styles.inputGroup, { flex: 1 }]}>
                     <Text style={styles.inputLabel}>PSO DATE</Text>
@@ -593,7 +648,7 @@ export default function AdminGroups() {
                 <View style={styles.rowInputs}>
                   <View style={[styles.inputGroup, { flex: 1 }]}>
                     <Text style={styles.inputLabel}>FD NUMBER *</Text>
-                    <TextInput style={styles.input} value={fdNumber} onChangeText={setFdNumber} />
+                    <TextInput style={styles.input} placeholder="Enter fixed-deposit number" value={fdNumber} onChangeText={setFdNumber} />
                   </View>
                   <View style={[styles.inputGroup, { flex: 1 }]}>
                     <Text style={styles.inputLabel}>FD DATE</Text>
@@ -606,7 +661,7 @@ export default function AdminGroups() {
                 <View style={styles.rowInputs}>
                   <View style={[styles.inputGroup, { flex: 1 }]}>
                     <Text style={styles.inputLabel}>CDRA NUMBER</Text>
-                    <TextInput style={styles.input} value={cdraNumber} onChangeText={setCdraNumber} />
+                    <TextInput style={styles.input} placeholder="Enter CDRA number (optional)" value={cdraNumber} onChangeText={setCdraNumber} />
                   </View>
                   <View style={[styles.inputGroup, { flex: 1 }]}>
                     <Text style={styles.inputLabel}>FD CLOSING DATE</Text>
@@ -644,33 +699,33 @@ export default function AdminGroups() {
               <View style={styles.rowInputs}>
                 <View style={[styles.inputGroup, { flex: 1 }]}>
                   <Text style={styles.inputLabel}>CHIT VALUE (₹)</Text>
-                  <TextInput style={styles.input} placeholder="2,50,000" keyboardType="number-pad" value={chitAmount} onChangeText={setChitAmount} />
+                  <TextInput style={styles.input} placeholder="Enter total chit amount" keyboardType="decimal-pad" value={chitAmount} onChangeText={setChitAmount} />
                 </View>
                 <View style={[styles.inputGroup, { flex: 1 }]}>
                   <Text style={styles.inputLabel}>NO. OF MONTHS</Text>
-                  <TextInput style={styles.input} keyboardType="number-pad" value={installments} onChangeText={setInstallments} />
+                  <TextInput style={styles.input} placeholder="Enter number of months" keyboardType="number-pad" value={installments} onChangeText={setInstallments} />
                 </View>
               </View>
 
               <View style={styles.rowInputs}>
                 <View style={[styles.inputGroup, { flex: 1 }]}>
                   <Text style={styles.inputLabel}>MONTHLY INSTALLMENT (₹)</Text>
-                  <TextInput style={styles.input} keyboardType="number-pad" value={emiAmount} onChangeText={setEmiAmount} />
+                  <TextInput style={styles.input} placeholder="Enter monthly instalment amount" keyboardType="decimal-pad" value={emiAmount} onChangeText={setEmiAmount} />
                 </View>
                 <View style={[styles.inputGroup, { flex: 1 }]}>
                   <Text style={styles.inputLabel}>DEPOSITED AMOUNT (₹)</Text>
-                  <TextInput style={styles.input} keyboardType="number-pad" value={depositedAmount} onChangeText={setDepositedAmount} />
+                  <TextInput style={styles.input} placeholder="Enter deposited amount (optional)" keyboardType="decimal-pad" value={depositedAmount} onChangeText={setDepositedAmount} />
                 </View>
               </View>
 
               <View style={styles.rowInputs}>
                 <View style={[styles.inputGroup, { flex: 1 }]}>
                   <Text style={styles.inputLabel}>COMMISSION RATE (%)</Text>
-                  <TextInput style={styles.input} keyboardType="number-pad" value={agentCommission} onChangeText={setAgentCommission} />
+                  <TextInput style={styles.input} placeholder="Enter commission percentage" keyboardType="decimal-pad" value={agentCommission} onChangeText={setAgentCommission} />
                 </View>
                 <View style={[styles.inputGroup, { flex: 1 }]}>
                   <Text style={styles.inputLabel}>INTEREST RATE (%)</Text>
-                  <TextInput style={styles.input} keyboardType="number-pad" value={interestRate} onChangeText={setInterestRate} />
+                  <TextInput style={styles.input} placeholder="Enter annual interest percentage" keyboardType="decimal-pad" value={interestRate} onChangeText={setInterestRate} />
                 </View>
               </View>
 
@@ -706,7 +761,7 @@ export default function AdminGroups() {
                 </View>
                 <View style={[styles.inputGroup, { flex: 1 }]}>
                   <Text style={styles.inputLabel}>BANK NAME</Text>
-                  <TextInput style={styles.input} value={bankName} onChangeText={setBankName} />
+                  <TextInput style={styles.input} placeholder="Enter bank name (optional)" value={bankName} onChangeText={setBankName} />
                 </View>
               </View>
             </View>
@@ -751,14 +806,14 @@ export default function AdminGroups() {
 
               <View style={styles.inputGroup}>
                 <Text style={styles.inputLabel}>TERMS & CONDITIONS</Text>
-                <TextInput style={[styles.input, { minHeight: 80, textAlignVertical: 'top' }]} placeholder="Specify any custom T&C..." multiline value={terms} onChangeText={setTerms} />
+                <TextInput style={[styles.input, { minHeight: 80, textAlignVertical: 'top' }]} placeholder="Enter terms and conditions (optional)" multiline value={terms} onChangeText={setTerms} />
               </View>
             </View>
 
           </ScrollView>
 
           <View style={styles.modalFooter}>
-            <TouchableOpacity style={styles.cancelBtn} onPress={closeModal} disabled={isSaving}>
+            <TouchableOpacity style={styles.cancelBtn} onPress={() => closeModal()} disabled={isSaving}>
               <Text style={styles.cancelBtnText}>CANCEL</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.saveBtn} onPress={handleSaveGroup} disabled={isSaving}>

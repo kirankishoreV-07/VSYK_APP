@@ -42,3 +42,11 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Playwright test output
+test-results/
+playwright-report/
+
+# Firebase Android config (contains project keys)
+google-services.json
+GoogleService-Info.plist

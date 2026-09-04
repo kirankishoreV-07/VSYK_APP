@@ -97,16 +97,33 @@ export default function ProfileScreen() {
 
   const handleSave = async () => {
     if (!memberId) return;
+
+    const normalizedName = fullName.trim();
+    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedPostalCode = postalCode.trim();
+    if (!normalizedName) {
+      Alert.alert('Invalid Name', 'Please enter your full name.');
+      return;
+    }
+    if (normalizedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      Alert.alert('Invalid Email', 'Please enter a valid email address.');
+      return;
+    }
+    if (normalizedPostalCode && !/^\d{6}$/.test(normalizedPostalCode)) {
+      Alert.alert('Invalid Postal Code', 'Please enter a valid 6-digit postal code.');
+      return;
+    }
+
     setSaving(true);
     try {
       const { error } = await supabase.from('customers').update({
-        full_name: fullName.trim() || memberProfile?.full_name,
-        email: email.trim() || null,
+        full_name: normalizedName,
+        email: normalizedEmail || null,
         address_line1: addressLine1.trim() || null,
         address_line2: addressLine2.trim() || null,
         city: city.trim() || null,
         state: stateForm.trim() || null,
-        postal_code: postalCode.trim() || null,
+        postal_code: normalizedPostalCode || null,
         notes: notes.trim() || null,
       }).eq('id', memberId);
 
@@ -253,11 +270,11 @@ export default function ProfileScreen() {
                 <>
                   <View style={s.fieldGroup}>
                     <Text style={s.fieldLabel}>FULL NAME</Text>
-                    <TextInput style={s.input} value={fullName} onChangeText={setFullName} placeholder="Full name" />
+                    <TextInput style={s.input} value={fullName} onChangeText={setFullName} placeholder="Enter your full name" />
                   </View>
                   <View style={s.fieldGroup}>
                     <Text style={s.fieldLabel}>EMAIL ADDRESS</Text>
-                    <TextInput style={s.input} value={email} onChangeText={setEmail} placeholder="user@example.com" keyboardType="email-address" autoCapitalize="none" />
+                    <TextInput style={s.input} value={email} onChangeText={setEmail} placeholder="Enter your email address" keyboardType="email-address" autoCapitalize="none" />
                   </View>
                 </>
               ) : (
@@ -294,21 +311,21 @@ export default function ProfileScreen() {
                 <>
                   <View style={s.fieldGroup}>
                     <Text style={s.fieldLabel}>ADDRESS LINE 1</Text>
-                    <TextInput style={s.input} value={addressLine1} onChangeText={setAddressLine1} placeholder="Flat/House No, Building" />
+                    <TextInput style={s.input} value={addressLine1} onChangeText={setAddressLine1} placeholder="Enter house number and building" />
                   </View>
                   <View style={s.fieldGroup}>
                     <Text style={s.fieldLabel}>ADDRESS LINE 2</Text>
-                    <TextInput style={s.input} value={addressLine2} onChangeText={setAddressLine2} placeholder="Street, Area" />
+                    <TextInput style={s.input} value={addressLine2} onChangeText={setAddressLine2} placeholder="Enter street and area (optional)" />
                   </View>
                   <View style={s.fieldGroup}>
                     <Text style={s.fieldLabel}>CITY</Text>
-                    <TextInput style={s.input} value={city} onChangeText={setCity} placeholder="City" />
+                    <TextInput style={s.input} value={city} onChangeText={setCity} placeholder="Enter city" />
                   </View>
                   <View style={[s.fieldGroup, { zIndex: 100 }]}>
                     <Text style={s.fieldLabel}>STATE</Text>
                     <TouchableOpacity style={s.dropdownBtn} onPress={() => setShowStateDD(!showStateDD)}>
                       <Text style={stateForm ? s.dropdownVal : s.dropdownPlaceholder}>
-                        {stateForm || 'Select State'}
+                        {stateForm || 'Select state'}
                       </Text>
                       <Svg width={16} height={16} viewBox="0 0 24 24" fill="#94A3B8">
                         <Path d="M7 10l5 5 5-5z" />
@@ -326,7 +343,7 @@ export default function ProfileScreen() {
                   </View>
                   <View style={s.fieldGroup}>
                     <Text style={s.fieldLabel}>POSTAL CODE</Text>
-                    <TextInput style={s.input} value={postalCode} onChangeText={setPostalCode} placeholder="000000" keyboardType="number-pad" maxLength={6} />
+                    <TextInput style={s.input} value={postalCode} onChangeText={setPostalCode} placeholder="Enter 6-digit postal code" keyboardType="number-pad" maxLength={6} />
                   </View>
                 </>
               ) : (
@@ -383,7 +400,7 @@ export default function ProfileScreen() {
                       style={[s.input, { minHeight: 80, textAlignVertical: 'top' }]}
                       value={notes}
                       onChangeText={setNotes}
-                      placeholder="Any additional notes..."
+                      placeholder="Enter additional notes (optional)"
                       multiline
                     />
                   </View>

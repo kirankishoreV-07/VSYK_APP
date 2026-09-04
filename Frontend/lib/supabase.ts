@@ -1,6 +1,7 @@
 import 'react-native-url-polyfill/auto';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient } from '@supabase/supabase-js';
+import type { SupportedStorage } from '@supabase/supabase-js';
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL!;
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!;
@@ -13,6 +14,27 @@ const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!;
 // that one-time auth migration explicit and prevents the stale token from
 // being restored. Users with an old session will simply log in again.
 const AUTH_STORAGE_KEY = 'vsyk-auth-session-v2';
+
+// Expo Router renders web routes on the server as well as in the browser.
+// React Native AsyncStorage's web adapter reads `window.localStorage`, which
+// throws during SSR because `window` does not exist. Use a guarded web adapter
+// so direct links/refreshes render safely while native platforms keep using
+// AsyncStorage exactly as before.
+const webAuthStorage: SupportedStorage = {
+  getItem: async (key) => (
+    typeof window === 'undefined' ? null : window.localStorage.getItem(key)
+  ),
+  setItem: async (key, value) => {
+    if (typeof window !== 'undefined') window.localStorage.setItem(key, value);
+  },
+  removeItem: async (key) => {
+    if (typeof window !== 'undefined') window.localStorage.removeItem(key);
+  },
+};
+
+const authStorage: SupportedStorage = typeof window === 'undefined'
+  ? webAuthStorage
+  : (typeof document !== 'undefined' ? webAuthStorage : AsyncStorage);
 
 /** Remove the pre-v2 Supabase storage entries after the auth-key migration. */
 export async function clearLegacySupabaseAuthStorage(): Promise<void> {
@@ -33,7 +55,7 @@ export async function clearLegacySupabaseAuthStorage(): Promise<void> {
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
-    storage: AsyncStorage,
+    storage: authStorage,
     storageKey: AUTH_STORAGE_KEY,
     autoRefreshToken: true,
     persistSession: true,

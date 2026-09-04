@@ -19,6 +19,7 @@ import crypto from 'crypto';
 import Razorpay from 'razorpay';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { notifyPartialPayment } from '../whatsapp/proactiveNotifications';
+import { requireAdminAuth } from '../middleware/adminAuth';
 
 // ── Pure application logic (unit-tested offline) ──────────────
 
@@ -55,6 +56,41 @@ export function applyPayment(due: number, currentPaid: number, incoming: number)
     isPartial: appliedAmount > 0 && !fullyPaid,
     overpaid: safeIncoming - appliedAmount,
   };
+}
+
+export interface CapturedPaymentValidation {
+  ok: boolean;
+  capturedAmount: number;
+  reconciliationRequired: boolean;
+  error?: string;
+}
+
+/** Validate the provider record independently of any client-submitted amount. */
+export function validateCapturedPayment(
+  payment: any,
+  expectedOrderId: string,
+  expectedAmount: number,
+): CapturedPaymentValidation {
+  if (!payment || payment.order_id !== expectedOrderId) {
+    return { ok: false, capturedAmount: 0, reconciliationRequired: false, error: 'Payment does not match order.' };
+  }
+  if (payment.status !== 'captured') {
+    return { ok: false, capturedAmount: 0, reconciliationRequired: false, error: 'Payment not captured.' };
+  }
+  if (String(payment.currency || '').toUpperCase() !== 'INR') {
+    return { ok: false, capturedAmount: 0, reconciliationRequired: false, error: 'Unexpected payment currency.' };
+  }
+
+  const capturedAmount = Number(payment.amount);
+  if (!Number.isSafeInteger(capturedAmount) || capturedAmount <= 0 || capturedAmount !== expectedAmount) {
+    return {
+      ok: true,
+      capturedAmount: Number.isFinite(capturedAmount) ? capturedAmount : 0,
+      reconciliationRequired: true,
+      error: 'Captured amount does not match the payment order.',
+    };
+  }
+  return { ok: true, capturedAmount, reconciliationRequired: false };
 }
 
 // ── Config ────────────────────────────────────────────────────
@@ -146,7 +182,7 @@ paymentsRouter.post('/razorpay/order', async (req: Request, res: Response) => {
     let payAmount = remaining;
     if (amount !== undefined && amount !== null) {
       const req2 = Math.round(Number(amount));
-      if (!req2 || Number.isNaN(req2) || req2 <= 0) return res.status(400).json({ error: 'Invalid amount.' });
+      if (!Number.isSafeInteger(req2) || req2 <= 0) return res.status(400).json({ error: 'Invalid amount.' });
       payAmount = Math.min(req2, remaining);
     }
 
@@ -157,14 +193,13 @@ paymentsRouter.post('/razorpay/order', async (req: Request, res: Response) => {
       notes: { paymentScheduleId, customerId: authed.customerId },
     });
 
-    const { error: insErr } = await admin.from('payment_orders').insert({
-      razorpay_order_id: order.id,
-      customer_id: authed.customerId,
-      chit_member_id: (schedule as any).chit_member_id,
-      payment_schedule_id: (schedule as any).id,
-      month_number: (schedule as any).month_number,
-      amount: payAmount,
-      status: 'created',
+    const { error: insErr } = await admin.rpc('register_payment_order', {
+      p_razorpay_order_id: order.id,
+      p_customer_id: authed.customerId,
+      p_chit_member_id: (schedule as any).chit_member_id,
+      p_payment_schedule_id: (schedule as any).id,
+      p_month_number: (schedule as any).month_number,
+      p_amount: payAmount,
     });
     if (insErr) {
       console.error('[Payments] order persist failed:', insErr.message);
@@ -222,6 +257,9 @@ paymentsRouter.post('/razorpay/verify', async (req: Request, res: Response) => {
 
     // 3. Idempotency: already processed → return current state, no re-credit.
     if ((order as any).status === 'paid') {
+      if ((order as any).razorpay_payment_id !== paymentId) {
+        return res.status(409).json({ verified: false, error: 'This order was already paid using another payment.' });
+      }
       const { data: sch } = await admin
         .from('payment_schedules')
         .select('amount, paid_amount, paid')
@@ -234,77 +272,156 @@ paymentsRouter.post('/razorpay/verify', async (req: Request, res: Response) => {
 
     // 4. Re-fetch the payment from Razorpay — trust Razorpay, not the client.
     const payment: any = await razorpay.payments.fetch(paymentId);
-    if (!payment || payment.order_id !== orderId) {
-      return res.status(400).json({ verified: false, error: 'Payment does not match order.' });
-    }
-    if (payment.status !== 'captured') {
+    const validation = validateCapturedPayment(payment, orderId, Number((order as any).amount || 0));
+    if (!validation.ok) {
+      if (validation.error === 'Payment not captured.') {
       await admin.from('payment_orders').update({ status: 'failed', updated_at: new Date().toISOString() }).eq('id', (order as any).id);
-      return res.status(400).json({ verified: false, error: 'Payment not captured.' });
+      }
+      return res.status(400).json({ verified: false, error: validation.error });
     }
-    const capturedAmount = Number(payment.amount || 0);
+    const capturedAmount = validation.capturedAmount;
 
-    // 5. Apply to the schedule's running balance (server-authoritative).
-    const { data: schedule, error: schErr } = await admin
-      .from('payment_schedules')
-      .select('id, chit_member_id, month_number, amount, paid_amount, paid')
-      .eq('id', (order as any).payment_schedule_id)
-      .maybeSingle();
-    if (schErr || !schedule) return res.status(500).json({ error: 'Could not load schedule.' });
-
-    const due = Number((schedule as any).amount || 0);
-    const currentPaid = Number((schedule as any).paid_amount || 0);
-    const result = applyPayment(due, currentPaid, capturedAmount);
-
-    const { error: updErr } = await admin
-      .from('payment_schedules')
-      .update({
-        paid_amount: result.newPaidAmount,
-        paid: result.fullyPaid,
-        paid_at: result.fullyPaid ? new Date().toISOString() : (schedule as any).paid_at ?? null,
-      })
-      .eq('id', (schedule as any).id);
-    if (updErr) {
-      console.error('[Payments] schedule update failed:', updErr.message);
-      return res.status(500).json({ error: 'Could not record payment.' });
-    }
-
-    // Record the transaction (history) and consume the order (idempotency).
-    await admin.from('chit_member_transactions').insert({
-      chit_member_id: (schedule as any).chit_member_id,
-      amount: result.appliedAmount,
-      payment_type: 'installment',
-      status: 'completed',
-      notes: `Month ${(schedule as any).month_number} - Razorpay: ${paymentId}`,
+    // 5. Lock the order + schedule and apply every ledger change in one DB
+    // transaction. The RPC also rechecks the expected captured amount.
+    const { data: applyRows, error: applyErr } = await admin.rpc('apply_verified_payment', {
+      p_razorpay_order_id: orderId,
+      p_razorpay_payment_id: paymentId,
+      p_customer_id: authed.customerId,
+      p_captured_amount: capturedAmount,
     });
-    await admin
-      .from('payment_orders')
-      .update({ status: 'paid', razorpay_payment_id: paymentId, updated_at: new Date().toISOString() })
-      .eq('id', (order as any).id);
+    if (applyErr) {
+      console.error('[Payments] atomic apply failed:', applyErr.message);
+      return res.status(500).json({ error: 'Could not record payment safely.' });
+    }
+
+    const result: any = Array.isArray(applyRows) ? applyRows[0] : applyRows;
+    if (!result) return res.status(500).json({ error: 'Payment update returned no result.' });
+    if (result.result_status === 'reconciliation_required') {
+      return res.status(409).json({
+        verified: false,
+        reconciliationRequired: true,
+        error: 'Payment captured but needs reconciliation. Please contact support and do not pay again.',
+      });
+    }
 
     // Only PARTIAL payments trigger a WhatsApp notification — full payment
     // sends NO generic success message (by design). Deduped per
     // (schedule, paymentId) so a retried/duplicate verify call can never
     // send this twice for the same Razorpay payment.
-    if (result.isPartial) {
+    const isPartial = Number(result.applied_amount || 0) > 0 && !result.fully_paid;
+    if (isPartial && result.result_status === 'applied') {
       notifyPartialPayment({
-        scheduleId: (schedule as any).id,
-        chitMemberId: (schedule as any).chit_member_id,
+        scheduleId: (order as any).payment_schedule_id,
+        chitMemberId: (order as any).chit_member_id,
         paymentId,
-        appliedAmount: result.appliedAmount,
+        appliedAmount: Number(result.applied_amount),
         remaining: result.remaining,
       }).catch((e: any) => console.error('[Payments] partial notify error:', e?.message));
     }
 
     return res.json({
       verified: true,
-      fullyPaid: result.fullyPaid,
-      partial: result.isPartial,
-      paidAmount: result.newPaidAmount,
+      alreadyProcessed: result.result_status === 'already_processed',
+      fullyPaid: result.fully_paid,
+      partial: isPartial,
+      appliedAmount: Number(result.applied_amount || 0),
+      paidAmount: Number(result.paid_amount || 0),
       remaining: result.remaining,
-      overpaid: result.overpaid,
     });
   } catch (error: any) {
     console.error('[Payments] verify error:', error?.message || error);
     return res.status(500).json({ error: 'Could not verify payment.' });
+  }
+});
+
+/** Record an accounted installment received by an admin. The DB resolves the
+ * auction cycle's schedule and writes the balance + ledger row atomically. */
+paymentsRouter.post('/admin/record', requireAdminAuth, async (req: Request, res: Response) => {
+  try {
+    const admin = getAdmin();
+    if (!admin) return res.status(500).json({ error: 'Payments not configured.' });
+
+    const { chitMemberId, auctionId, amount, paymentMethod, notes } = req.body ?? {};
+    const amountPaise = Math.round(Number(amount));
+    if (!chitMemberId || !auctionId) {
+      return res.status(400).json({ error: 'Member and auction are required.' });
+    }
+    if (!Number.isSafeInteger(amountPaise) || amountPaise <= 0) {
+      return res.status(400).json({ error: 'Enter a valid payment amount.' });
+    }
+
+    const { data, error } = await admin.rpc('record_admin_installment_payment', {
+      p_chit_member_id: chitMemberId,
+      p_auction_id: auctionId,
+      p_amount: amountPaise,
+      p_payment_method: String(paymentMethod || 'manual'),
+      p_notes: notes ? String(notes).trim().slice(0, 500) : null,
+      p_recorded_by: res.locals.adminUserId,
+    });
+    if (error) {
+      const message = error.message || 'Could not record payment.';
+      const isInputError = /not found|exceeds|positive/i.test(message);
+      return res.status(isInputError ? 400 : 500).json({ error: message });
+    }
+
+    const result: any = Array.isArray(data) ? data[0] : data;
+    return res.json({ ok: true, ...result });
+  } catch (error: any) {
+    console.error('[Payments] admin record error:', error?.message || error);
+    return res.status(500).json({ error: 'Could not record payment.' });
+  }
+});
+
+/** Record the winner payout and its ledger row in the same transaction. */
+paymentsRouter.post('/admin/prize-payout', requireAdminAuth, async (req: Request, res: Response) => {
+  try {
+    const admin = getAdmin();
+    if (!admin) return res.status(500).json({ error: 'Payments not configured.' });
+
+    const { auctionId, chitMemberId, amount, notes, denominations } = req.body ?? {};
+    const amountPaise = Math.round(Number(amount));
+    if (!auctionId || !chitMemberId) {
+      return res.status(400).json({ error: 'Auction and winner are required.' });
+    }
+    if (!Number.isSafeInteger(amountPaise) || amountPaise <= 0) {
+      return res.status(400).json({ error: 'Enter a valid prize payout amount.' });
+    }
+
+    const denomination = (value: unknown) => Math.round(Number(value || 0));
+    const denoms = {
+      d500: denomination(denominations?.[500]),
+      d200: denomination(denominations?.[200]),
+      d100: denomination(denominations?.[100]),
+      d50: denomination(denominations?.[50]),
+      d20: denomination(denominations?.[20]),
+      d10: denomination(denominations?.[10]),
+    };
+    if (Object.values(denoms).some((value) => !Number.isSafeInteger(value) || value < 0)) {
+      return res.status(400).json({ error: 'Invalid denomination count.' });
+    }
+
+    const { data, error } = await admin.rpc('record_prize_payout', {
+      p_auction_id: auctionId,
+      p_chit_member_id: chitMemberId,
+      p_amount: amountPaise,
+      p_notes: notes ? String(notes).trim().slice(0, 500) : null,
+      p_denomination_500: denoms.d500,
+      p_denomination_200: denoms.d200,
+      p_denomination_100: denoms.d100,
+      p_denomination_50: denoms.d50,
+      p_denomination_20: denoms.d20,
+      p_denomination_10: denoms.d10,
+      p_recorded_by: res.locals.adminUserId,
+    });
+    if (error) {
+      const message = error.message || 'Could not record prize payout.';
+      return res.status(/not found|winner|exceeds|positive|negative/i.test(message) ? 400 : 500).json({ error: message });
+    }
+
+    const result: any = Array.isArray(data) ? data[0] : data;
+    return res.json({ ok: true, ...result });
+  } catch (error: any) {
+    console.error('[Payments] prize payout error:', error?.message || error);
+    return res.status(500).json({ error: 'Could not record prize payout.' });
   }
 });

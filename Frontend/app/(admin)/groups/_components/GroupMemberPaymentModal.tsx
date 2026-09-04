@@ -21,6 +21,7 @@ import { isMemberAuctionWinner, WINNER_HIGHLIGHT } from '../../../../lib/auction
 import { buildCsvDocument, paiseToCsvAmount, shareCsvFile } from '../../../../lib/csvExport';
 import { generateCSVFilename } from '../../customers/_components/utils';
 import type { ChitMember } from '../../customers/_components/types';
+import { apiPostAdmin } from '../../../../lib/api';
 
 function formatDate(value: any) {
   if (!value) return 'N/A';
@@ -192,17 +193,25 @@ export function GroupMemberPaymentModal({
 
     setLoggingPayment(true);
     try {
-      const { error } = await supabase.from('chit_member_transactions').insert([{
-        chit_member_id: member.id,
-        auction_id: selectedAuctionId,
+      const result = await apiPostAdmin<{
+        ok: boolean;
+        fully_paid: boolean;
+        paid_amount: number;
+        remaining: number;
+      }>('/api/payments/admin/record', {
+        chitMemberId: member.id,
+        auctionId: selectedAuctionId,
         amount: amountInPaise,
-        payment_type: 'installment',
-        status: 'completed',
-      }]);
-
-      if (error) throw error;
+        paymentMethod: 'manual',
+      });
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert(
+        result.fully_paid ? 'Payment Completed' : 'Partial Payment Recorded',
+        result.fully_paid
+          ? 'The installment is fully paid and the schedule has been updated.'
+          : `Remaining balance: ${formatRupees(result.remaining)}`,
+      );
       setPaymentAmount('');
       setSelectedAuctionId('');
       setShowLogPayment(false);
@@ -587,7 +596,7 @@ export function GroupMemberPaymentModal({
             <Text style={styles.sectionTitle}>Payment Amount (₹)</Text>
             <TextInput
               style={styles.amountInput}
-              placeholder="0.00"
+              placeholder="Enter partial or full payment amount"
               keyboardType="numeric"
               value={paymentAmount}
               onChangeText={setPaymentAmount}

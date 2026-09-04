@@ -9,7 +9,6 @@ import * as Haptics from 'expo-haptics';
 import { supabase } from '../../../../lib/supabase';
 import { apiPostAdmin } from '../../../../lib/api';
 import type { Auction } from './types';
-import { applyAuctionSettlementToSchedules } from '../../../../lib/chitPayments';
 
 type SettlementMember = {
     id: string;
@@ -26,6 +25,7 @@ type SettlementGroup = {
     no_of_installments?: number | null;
     duration_months?: number | null;
     capacity?: number | null;
+    agent_commission_rate?: number | null;
 };
 
 interface AuctionSettlementModalProps {
@@ -63,7 +63,7 @@ export function AuctionSettlementModal({
 
     const calculatedEmi = ((Number(group?.value) || 0) / (Number(group?.no_of_installments) || Number(group?.duration_months) || 1));
     const baseEmi = (Number(group?.emi_amount) || Number(group?.monthly_installment) || calculatedEmi) / 100;
-    const commissionRate = 0.05;
+    const commissionRate = Math.min(Math.max(Number(group?.agent_commission_rate ?? 5), 0), 100) / 100;
     const shareCount = totalShares > 0 ? totalShares : (memberCount > 0 ? memberCount : Number(group?.capacity) || 50);
     const chitValueRupees = (Number(group?.value || 0) / 100);
     const isCompleted = auction?.status === 'completed';
@@ -164,42 +164,25 @@ export function AuctionSettlementModal({
             const winnerMember = members.find((m) => m.id === winnerId);
             const winnerName = winnerMember?.customers?.full_name?.trim() || null;
 
-            const { error: auctionError } = await supabase
-                .from('auctions')
-                .update({
-                    winner_member_id: winnerId || null,
-                    winner_name: winnerName,
-                    status: 'completed',
-                    installment_due: toPaise(String(baseEmi || 0)),
-                    dividend_amount: dividendPaise,
-                    discount_amount: toPaise(discount),
-                    final_due_amount: finalDuePaise,
-                    winner_prize_amount: toPaise(prize),
-                    ended_at: new Date().toISOString(),
-                })
-                .eq('id', auction.id);
-
-            if (auctionError) throw auctionError;
-
-            if (auctionNumber != null && group?.id) {
-                // Use the robust applier (updates existing + inserts missing schedules for the cycle).
-                // This guarantees admin-side customer payment dues / outstanding reflect the settlement.
-                const applyRes = await applyAuctionSettlementToSchedules(
-                    supabase,
-                    group.id,
-                    auctionNumber,
-                    finalDuePaise,
-                    dividendPaise,
-                );
-                if (applyRes.errors.length > 0) {
-                    console.warn('Settlement modal schedule apply issues:', applyRes.errors);
-                }
-            }
+            const applyResult = await apiPostAdmin<{ ok: boolean; updated: number }>(
+                '/api/auctions/apply-settlement',
+                {
+                    auctionId: auction.id,
+                    winnerMemberId: winnerId || null,
+                    winnerName,
+                    currentBid: toPaise(discount),
+                    installmentDue: toPaise(String(baseEmi || 0)),
+                    dividendAmount: dividendPaise,
+                    discountAmount: toPaise(discount),
+                    finalDueAmount: finalDuePaise,
+                    winnerPrizeAmount: toPaise(prize),
+                },
+            );
 
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
             Alert.alert(
                 'Settlement Saved',
-                `Auction #${auctionNumber} settled. Payable installment set to ₹${Math.round(finalDuePaise / 100).toLocaleString('en-IN')}. Members can now be collected for this cycle.`,
+                `Auction #${auctionNumber} settled for ${applyResult.updated} member${applyResult.updated === 1 ? '' : 's'}. Payable installment set to ₹${Math.round(finalDuePaise / 100).toLocaleString('en-IN')}.`,
             );
             onSaved();
 
@@ -294,7 +277,7 @@ export function AuctionSettlementModal({
                                 keyboardType="numeric"
                                 value={discount}
                                 onChangeText={(v) => { setManualPayable(false); setDiscount(v); }}
-                                placeholder="0"
+                                placeholder="Enter winning discount amount"
                             />
                         </View>
                         <View style={styles.field}>
@@ -308,7 +291,7 @@ export function AuctionSettlementModal({
                                 keyboardType="numeric"
                                 value={finalDue}
                                 onChangeText={(v) => { setManualPayable(true); setFinalDue(v); }}
-                                placeholder="e.g. 20000"
+                                placeholder="Enter payable instalment amount"
                             />
                             <Text style={styles.fieldHint}>Used for cash collection & online payments</Text>
                         </View>

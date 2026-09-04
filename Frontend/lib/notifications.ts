@@ -1,6 +1,5 @@
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
-import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { supabase } from './supabase';
 
@@ -42,11 +41,7 @@ export async function registerForPushNotificationsAsync(customerId: string) {
 
     await ensureAndroidNotificationChannel();
 
-    let projectId: string | undefined;
-    const extra: any = (Constants.expoConfig as any)?.extra;
-    projectId = extra?.eas?.projectId || extra?.projectId;
-
-    const tokenResponse = await Notifications.getDevicePushTokenAsync({ projectId });
+    const tokenResponse = await Notifications.getDevicePushTokenAsync();
     const token = tokenResponse?.data;
     if (!token) return;
 
@@ -69,7 +64,7 @@ export function routeForNotificationData(data: any): string | null {
         case 'auction_winner':
         case 'auction_closed':
         case 'auction_scheduled':
-            return '/(tabs)/auctions';
+            return '/(tabs)/member-auctions';
         case 'payment_due':
         case 'installment_due':
             return '/(tabs)/wallet';

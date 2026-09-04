@@ -16,10 +16,27 @@ type ChitGroup = {
   duration_months: number; monthly_installment: number; status: string;
 };
 
-function matchScore(g: ChitGroup, filter: FilterKey): number {
-  if (filter === 'short') return g.duration_months <= 12 ? 98 : 72;
-  if (filter === 'high_return') return g.value >= 500000 ? 95 : 78;
-  return 85;
+/** Transparent, rule-based fit labels — not a score, not "AI". Each label
+ * states the real fact it's based on so nothing is presented as inferred. */
+function fitLabels(g: ChitGroup, filter: FilterKey): string[] {
+  const labels: string[] = [];
+  if (g.duration_months <= 12) labels.push('Short tenure');
+  if (g.value >= 500000) labels.push('High value');
+  if (filter === 'short' && g.duration_months <= 12) labels.push('Matches filter');
+  if (filter === 'high_return' && g.value >= 500000) labels.push('Matches filter');
+  return labels;
+}
+
+function sortWeight(g: ChitGroup, filter: FilterKey): number {
+  if (filter === 'short') return g.duration_months <= 12 ? 1 : 0;
+  if (filter === 'high_return') return g.value >= 500000 ? 1 : 0;
+  return 0;
+}
+
+/** Illustrative payout range, not a fake-precise figure — the real payout
+ * depends on auction bidding and is never knowable in advance. */
+function payoutRange(value: number): { low: number; high: number } {
+  return { low: Math.round(value * 0.85), high: Math.round(value * 0.95) };
 }
 
 import { useMemberSession } from '../../lib/MemberSessionContext';
@@ -103,7 +120,7 @@ export default function JoinChitScreen() {
     };
   }, [queryClient]);
 
-  const sorted = [...(chits ?? [])].sort((a, b) => matchScore(b, filter) - matchScore(a, filter));
+  const sorted = [...(chits ?? [])].sort((a, b) => sortWeight(b, filter) - sortWeight(a, filter));
 
   const handleJoin = (chit: ChitGroup) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
@@ -128,16 +145,16 @@ export default function JoinChitScreen() {
       </View>
 
       <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
-        {/* AI Header */}
+        {/* Header */}
         <View style={s.aiHeader}>
           <View style={s.aiIconRow}>
             <View style={s.aiIcon}>
-              <Text style={{ fontSize: 18 }}>🤖</Text>
+              <Text style={{ fontSize: 18 }}>🔍</Text>
             </View>
-            <Text style={s.aiLabel}>AI MATCHMAKER</Text>
+            <Text style={s.aiLabel}>RECOMMENDED FOR YOU</Text>
           </View>
-          <Text style={s.heroTitle}>Smart Recommendations</Text>
-          <Text style={s.heroSub}>Based on your savings patterns and goals, we've identified the optimal chit funds for your portfolio.</Text>
+          <Text style={s.heroTitle}>Available Chit Groups</Text>
+          <Text style={s.heroSub}>Groups matching your selected filter, sorted first. Payout figures below are illustrative — the actual amount depends on auction bidding.</Text>
         </View>
 
         {/* Filter Chips */}
@@ -166,18 +183,21 @@ export default function JoinChitScreen() {
           </View>
         ) : (
           sorted.map((chit, idx) => {
-            const score = matchScore(chit, filter);
-            const isTop = idx === 0;
-            const estPayout = formatPaise(chit.value * 0.92);
+            const labels = fitLabels(chit, filter);
+            const isTop = idx === 0 && sortWeight(chit, filter) > 0;
+            const range = payoutRange(chit.value);
             return (
               <View key={chit.id} style={[s.card, isTop && s.cardTop]}>
-                {/* Match Score Badge */}
-                <View style={s.scoreBadge}>
-                  <View style={[s.scoreCircle, { borderColor: isTop ? Colors.secondary : '#E2E8F0' }]}>
-                    <Text style={[s.scorePct, { color: isTop ? Colors.secondary : '#64748B' }]}>{score}%</Text>
+                {/* Fit labels — plain facts, not a score */}
+                {labels.length > 0 && (
+                  <View style={s.fitLabelRow}>
+                    {labels.map((label) => (
+                      <View key={label} style={[s.fitChip, isTop && s.fitChipTop]}>
+                        <Text style={[s.fitChipText, isTop && s.fitChipTextTop]}>{label}</Text>
+                      </View>
+                    ))}
                   </View>
-                  <Text style={[s.scoreLabel, { color: isTop ? Colors.secondary : '#94A3B8' }]}>Match</Text>
-                </View>
+                )}
 
                 {/* Header */}
                 <Text style={s.cardCategory}>{chit.name.toUpperCase().substring(0, 20)}</Text>
@@ -190,8 +210,8 @@ export default function JoinChitScreen() {
                     <Text style={s.statVal}>{chit.duration_months} Months</Text>
                   </View>
                   <View style={s.statCol}>
-                    <Text style={s.statLabel}>EST. PAYOUT</Text>
-                    <Text style={s.statVal}>{estPayout}</Text>
+                    <Text style={s.statLabel}>ILLUSTRATIVE PAYOUT</Text>
+                    <Text style={s.statVal}>{formatPaise(range.low)}–{formatPaise(range.high)}</Text>
                   </View>
                   <View style={s.statCol}>
                     <Text style={s.statLabel}>MONTHLY</Text>
@@ -216,14 +236,14 @@ export default function JoinChitScreen() {
           })
         )}
 
-        {/* AI Explanation */}
+        {/* Explanation */}
         <View style={s.aiCard}>
           <View style={s.aiCardIcon}>
-            <Text style={{ fontSize: 20 }}>🧠</Text>
+            <Text style={{ fontSize: 20 }}>ℹ️</Text>
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={s.aiCardTitle}>Why these chits?</Text>
-            <Text style={s.aiCardSub}>Our AI analyzed your savings patterns and suggests these funds to maximize your dividend yield while maintaining low risk levels.</Text>
+            <Text style={s.aiCardTitle}>How this list is ordered</Text>
+            <Text style={s.aiCardSub}>Groups matching your selected filter (tenure or value) are shown first. Payout ranges are illustrative only — the actual amount a member receives depends on that month's auction bidding, not a fixed formula.</Text>
           </View>
         </View>
 
@@ -256,11 +276,12 @@ const s = StyleSheet.create({
 
   card: { backgroundColor: '#FFF', borderRadius: 20, padding: 18, gap: 12, borderWidth: 1, borderColor: '#F1F5F9', position: 'relative', overflow: 'hidden', ...Shadows.subtle },
   cardTop: { borderColor: Colors.secondary, borderWidth: 2 },
-  scoreBadge: { position: 'absolute', top: 16, right: 16, alignItems: 'center', gap: 2 },
-  scoreCircle: { width: 48, height: 48, borderRadius: 24, borderWidth: 3, alignItems: 'center', justifyContent: 'center' },
-  scorePct: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 13 },
-  scoreLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 9, letterSpacing: 0.5, textTransform: 'uppercase' },
-  cardCategory: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: Colors.primary, letterSpacing: 1, textTransform: 'uppercase', paddingRight: 64 },
+  fitLabelRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  fitChip: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 100, backgroundColor: '#F1F5F9' },
+  fitChipTop: { backgroundColor: 'rgba(1,120,158,0.12)' },
+  fitChipText: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: '#64748B' },
+  fitChipTextTop: { color: Colors.secondary },
+  cardCategory: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: Colors.primary, letterSpacing: 1, textTransform: 'uppercase' },
   cardValue: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 22, color: '#0B1C30', letterSpacing: -0.5 },
 
   statsGrid: { flexDirection: 'row', gap: 0 },

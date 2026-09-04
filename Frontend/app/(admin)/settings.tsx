@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -10,6 +10,23 @@ import { Colors, Shadows } from '../../lib/constants';
 
 export default function AdminSettings() {
   const router = useRouter();
+  const [adminName, setAdminName] = useState('Administrator');
+
+  useEffect(() => {
+    let active = true;
+    const loadAdminIdentity = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data } = await supabase
+        .from('admin_users')
+        .select('full_name')
+        .eq('id', user.id)
+        .maybeSingle();
+      if (active && data?.full_name) setAdminName(data.full_name);
+    };
+    loadAdminIdentity();
+    return () => { active = false; };
+  }, []);
 
   const handleLogout = async () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
@@ -23,7 +40,7 @@ export default function AdminSettings() {
           style: "destructive",
           onPress: async () => {
             await supabase.auth.signOut();
-            router.replace('/');
+            router.replace('/(auth)/login');
           }
         }
       ]
@@ -44,11 +61,11 @@ export default function AdminSettings() {
         {/* Profile / Admin Info */}
         <View style={styles.profileSection}>
           <View style={styles.avatar}>
-            <Text style={styles.avatarText}>AD</Text>
+            <Text style={styles.avatarText}>{adminName.slice(0, 2).toUpperCase()}</Text>
           </View>
           <View>
-            <Text style={styles.adminName}>Administrator</Text>
-            <Text style={styles.adminRole}>System Manager</Text>
+            <Text style={styles.adminName}>{adminName}</Text>
+            <Text style={styles.adminRole}>Administrator</Text>
           </View>
         </View>
 
@@ -69,6 +86,27 @@ export default function AdminSettings() {
               </Svg>
             </View>
             <Text style={styles.menuText}>Reports & Analytics</Text>
+          </View>
+          <Svg width={20} height={20} viewBox="0 0 24 24" fill="#94A3B8">
+            <Path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z" />
+          </Svg>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.menuItem}
+          activeOpacity={0.7}
+          onPress={() => {
+            Haptics.selectionAsync();
+            router.push('/(admin)/collections/followups');
+          }}
+        >
+          <View style={styles.menuItemLeft}>
+            <View style={[styles.iconBox, { backgroundColor: '#F0FDF4' }]}>
+              <Svg width={20} height={20} viewBox="0 0 24 24" fill="#16A34A">
+                <Path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4V8h16v10zM6 10h8v2H6zm0 4h5v2H6z" />
+              </Svg>
+            </View>
+            <Text style={styles.menuText}>Collections Follow-ups</Text>
           </View>
           <Svg width={20} height={20} viewBox="0 0 24 24" fill="#94A3B8">
             <Path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z" />

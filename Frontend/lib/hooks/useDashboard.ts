@@ -9,7 +9,7 @@ export type ChitGroup = {
   value: number;              // in paise
   duration_months: number;
   monthly_installment: number; // in paise
-  status: 'active' | 'completed' | 'cancelled';
+  status: 'draft' | 'active' | 'completed' | 'cancelled';
   accounting_type: 'accounted' | 'unaccounted';
 };
 
@@ -130,11 +130,16 @@ export function useDashboardStats(memberId: string | null) {
           if (m.chit_group) {
             portfolioValue += Number((m.chit_group as any).value || 0);
           }
-          // Safely calling RPC, if missing we ignore
-          const { data: sumData } = await Promise.resolve(
-            supabase.rpc('sum_dividends', { p_member_id: m.id })
-          ).catch(() => ({ data: 0 }));
-          totalEarnings += sumData || 0;
+          const { data: dividendRows, error: dividendError } = await supabase
+            .from('chit_member_transactions')
+            .select('amount')
+            .eq('chit_member_id', m.id)
+            .eq('payment_type', 'dividend')
+            .eq('status', 'completed');
+          if (dividendError) throw dividendError;
+          totalEarnings += (dividendRows || []).reduce(
+            (sum, row) => sum + Number(row.amount || 0), 0,
+          );
         }
       }
 

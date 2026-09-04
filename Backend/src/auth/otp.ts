@@ -18,6 +18,8 @@ type LookupResult =
   | { status: 'found'; customer: CustomerForAuth }
   | { status: 'not_found' | 'ambiguous' | 'inactive' | 'opted_out' | 'temporary_error'; customer: null };
 
+// Keep this synchronized with the expiry configured on the approved
+// authentication template. Gupshup currently has this template at 10 minutes.
 const OTP_EXPIRY_MS = 10 * 60 * 1000;
 const OTP_RATE_WINDOW_MS = 15 * 60 * 1000;
 const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
@@ -220,6 +222,11 @@ async function findEligibleCustomer(phone: string): Promise<LookupResult> {
   }
 
   const customer = matching[0] as CustomerForAuth;
+  // Pressing "Send OTP on WhatsApp" is an explicit, user-initiated request
+  // for an authentication message. Do not confuse that with consent for
+  // proactive reminders/marketing. Continue to honour an explicit STOP/
+  // opt-out, while allowing existing customers whose legacy consent flag has
+  // never been populated. Proactive notifications remain strict opt-in only.
   if (customer.whatsapp_opt_in === false && customer.whatsapp_opt_out_at) {
     return { status: 'opted_out', customer: null };
   }

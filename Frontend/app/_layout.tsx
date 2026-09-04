@@ -31,6 +31,9 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { View, ActivityIndicator } from 'react-native';
 import { Colors } from '../lib/constants';
 import '../lib/i18n';
+import { installWebAlertAdapter } from '../lib/webAlertAdapter';
+
+installWebAlertAdapter();
 
 const queryClient = new QueryClient({
   defaultOptions: {

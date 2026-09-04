@@ -181,7 +181,7 @@ export default function AdminAuctionsIndex() {
         </View>
         <TouchableOpacity
           style={[st.liveBtn, !live && st.liveBtnOff]}
-          onPress={() => { Haptics.selectionAsync(); router.push('/(admin)/auctions/live'); }}
+          onPress={() => { Haptics.selectionAsync(); router.push(live ? { pathname: '/(admin)/auctions/live', params: { auctionId: live.id } } : '/(admin)/auctions/live'); }}
         >
           <View style={[st.liveDot, { backgroundColor: live ? '#FFFFFF' : '#94A3B8' }]} />
           <Text style={[st.liveBtnText, !live && { color: '#64748B' }]}>{live ? 'LIVE NOW' : 'No Live'}</Text>
@@ -222,7 +222,7 @@ function UpcomingTab({ live, upcoming, router }: { live: AuctionRow | undefined;
     <View>
       {/* Live banner */}
       {live && (
-        <TouchableOpacity style={st.liveBanner} onPress={() => router.push('/(admin)/auctions/live')} activeOpacity={0.85}>
+        <TouchableOpacity style={st.liveBanner} onPress={() => router.push({ pathname: '/(admin)/auctions/live', params: { auctionId: live.id } })} activeOpacity={0.85}>
           <View style={st.livePulse} />
           <View style={{ flex: 1 }}>
             <Text style={st.liveBannerTitle}>AUCTION IN PROGRESS</Text>

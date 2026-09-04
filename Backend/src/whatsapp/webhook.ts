@@ -56,7 +56,12 @@ export async function handleWebhook(req: Request, res: Response): Promise<void> 
   // mismatch (never reveal via status code) — matches the existing
   // ignored-event pattern below.
   const expectedToken = process.env.GUPSHUP_WEBHOOK_TOKEN || '';
-  if (expectedToken && req.headers?.['x-webhook-token'] !== expectedToken) {
+  if (!expectedToken) {
+    console.error('[Webhook] Rejected — GUPSHUP_WEBHOOK_TOKEN is not configured');
+    res.status(503).json({ status: 'unavailable', reason: 'webhook verification not configured' });
+    return;
+  }
+  if (req.headers?.['x-webhook-token'] !== expectedToken) {
     console.warn('[Webhook] Rejected — missing/incorrect webhook token');
     res.status(200).json({ status: 'ignored', reason: 'unauthorized' });
     return;
@@ -94,7 +99,9 @@ export async function handleWebhook(req: Request, res: Response): Promise<void> 
 
     case 'message-event':
       // Delivery status — log and acknowledge
-      handleDeliveryStatus(event);
+      handleDeliveryStatus(event).catch((err) =>
+        console.error('[Webhook] Delivery status persistence error:', err.message),
+      );
       res.status(200).json({ status: 'ack' });
       return;
 
@@ -223,7 +230,7 @@ async function checkIdempotency(messageId: string): Promise<boolean> {
 
 // ── Delivery Status Handler ───────────────────────────────────
 
-function handleDeliveryStatus(event: GupshupWebhookEvent): void {
+async function handleDeliveryStatus(event: GupshupWebhookEvent): Promise<void> {
   const payload = event.payload as any;
   const status = payload?.type || 'unknown';
   const destination = payload?.destination || 'unknown';
@@ -231,13 +238,30 @@ function handleDeliveryStatus(event: GupshupWebhookEvent): void {
   const reason = payload?.payload?.reason || payload?.reason || '';
 
   // Record the transition so checkDeliveryStatus() can report it later.
-  if (payload?.id) {
+  // For delivery reports, `gsId` is the Gupshup message ID returned by the
+  // send API; `id` may instead be WhatsApp's message ID. OTP requests store
+  // the former, so key delivery state by gsId when it is present.
+  const trackingId = payload?.gsId || payload?.id;
+  if (trackingId) {
     recordDeliveryStatus(
-      payload.id,
+      trackingId,
       status,
       code ? Number(code) : undefined,
       reason || undefined,
     );
+
+    const supabase = getSupabase();
+    if (supabase) {
+      const { error } = await supabase.from('whatsapp_delivery_events').upsert({
+        message_id: String(trackingId),
+        status: String(status),
+        code: code ? Number(code) : null,
+        reason: reason ? String(reason).slice(0, 500) : null,
+        destination_last4: String(destination).replace(/\D/g, '').slice(-4) || null,
+        updated_at: new Date().toISOString(),
+      } as any, { onConflict: 'message_id' });
+      if (error) throw error;
+    }
   }
 
   // Log delivery status for monitoring with exact error code & reason
@@ -252,10 +276,25 @@ function handleDeliveryStatus(event: GupshupWebhookEvent): void {
   if (status === 'failed') {
     console.error(
       '[Webhook] Delivery failed',
-      payload?.id ? `(msgId: ${String(payload.id).slice(0, 12)}...)` : '',
+      trackingId ? `(msgId: ${String(trackingId).slice(0, 12)}...)` : '',
       code ? `code=${code}` : '',
       reason ? `reason="${reason}"` : '',
       `destination=${maskPhone(destination)}`,
     );
   }
+}
+
+export async function getPersistedDeliveryStatus(messageId: string) {
+  const supabase = getSupabase();
+  if (!supabase || !messageId) return null;
+  const { data, error } = await supabase
+    .from('whatsapp_delivery_events')
+    .select('message_id, status, code, reason, updated_at')
+    .eq('message_id', messageId)
+    .maybeSingle();
+  if (error) {
+    console.warn('[Webhook] Could not load persisted delivery status:', error.message);
+    return null;
+  }
+  return data;
 }

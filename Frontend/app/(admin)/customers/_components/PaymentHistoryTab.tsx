@@ -207,10 +207,17 @@ export function PaymentHistoryTab({
                 );
                 const dueKnown = cycleDue != null;
                 const monthTxs = transactions.filter(
-                    (t) =>
-                        t.payment_type === 'installment' &&
-                        Math.abs(new Date(t.transaction_date).getMonth() - new Date(schedule.due_date).getMonth()) <=
-                            1,
+                    (t) => {
+                        if (t.payment_type !== 'installment') return false;
+                        if (t.payment_schedule_id) return t.payment_schedule_id === schedule.id;
+                        if (t.auction_id) {
+                            return groupAuctions.some(
+                                (a) => a.id === t.auction_id && a.auction_number === schedule.month_number,
+                            );
+                        }
+                        const notedMonth = t.notes?.match(/Month\s+(\d+)/i)?.[1];
+                        return notedMonth ? Number(notedMonth) === schedule.month_number : false;
+                    },
                 );
                 const completedTxs = monthTxs.filter((t) => t.status === 'completed' || t.status === 'success');
                 const failedTxs = monthTxs.filter((t) => t.status === 'failed');

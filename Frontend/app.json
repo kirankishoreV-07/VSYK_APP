@@ -2,6 +2,7 @@
   "expo": {
     "name": "VSYK",
     "slug": "vsyk",
+    "owner": "kiran_007",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -18,16 +19,26 @@
       "bundleIdentifier": "com.vsykchits.app",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
-      }
+      },
+      "buildNumber": "1"
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
+      "permissions": [
+        "android.permission.INTERNET"
+      ],
+      "blockedPermissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ],
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "package": "com.vsykchits.app"
+      "package": "com.vsykchits.app",
+      "googleServicesFile": "./google-services.json",
+      "versionCode": 1
     },
     "web": {
       "bundler": "metro",

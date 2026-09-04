@@ -1,8 +1,10 @@
-import { Tabs } from 'expo-router';
-import { View, Text, StyleSheet, Platform } from 'react-native';
+import { Tabs, useRouter } from 'expo-router';
+import { useEffect } from 'react';
+import { ActivityIndicator, View, Text, StyleSheet, Platform } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 import { Colors } from '../../lib/constants';
 import { useTranslation } from 'react-i18next';
+import { useMemberSession } from '../../lib/MemberSessionContext';
 
 // ─── Tab Item Component ───────────────────────────────────────
 type TabIconProps = { focused: boolean; label: string; children: React.ReactNode };
@@ -51,6 +53,20 @@ const ProfileIcon = ({ c }: { c: string }) => (
 // ─── Layout ───────────────────────────────────────────────────
 export default function TabLayout() {
   const { t, i18n } = useTranslation();
+  const { memberId, isLoading } = useMemberSession();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!isLoading && !memberId) router.replace('/(auth)/login');
+  }, [isLoading, memberId, router]);
+
+  if (isLoading || !memberId) {
+    return (
+      <View style={styles.loading}>
+        <ActivityIndicator size="large" color={Colors.primary} />
+      </View>
+    );
+  }
   
   // Use a simple key to force re-render of Tabs when language changes
   const langKey = i18n.language;
@@ -86,7 +102,7 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="auctions"
+        name="member-auctions"
         options={{
           tabBarIcon: ({ focused }) => (
             <TabItem focused={focused} label={t('nav.auctions')}>
@@ -129,6 +145,12 @@ export default function TabLayout() {
 
 // ─── Styles ───────────────────────────────────────────────────
 const styles = StyleSheet.create({
+  loading: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F8FAFC',
+  },
   tabBar: {
     height: Platform.OS === 'ios' ? 82 : 66,
     backgroundColor: 'rgba(255,255,255,0.97)',

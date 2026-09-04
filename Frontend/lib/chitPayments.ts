@@ -155,6 +155,8 @@ export function getFullyCollectedMonths(
 export const getUnaccountedCycleDueAmount = getCycleDueAmount;
 
 /**
+ * @deprecated Settlement writes now go through the authenticated backend and
+ * public.apply_auction_settlement so auction + schedule changes are atomic.
  * Robustly applies (or creates) the post-auction settlement amounts on payment_schedules
  * for every member in the group for the given auction cycle (month_number = auction_number).
  * - Updates existing schedule rows.
@@ -296,7 +298,7 @@ export async function applyAuctionSettlementToSchedules(
 /**
  * Ensure base payment_schedules rows exist for a newly added member (all cycles).
  * Uses base monthly_installment (pre-settlement). Settlements for past cycles
- * should be applied separately via applyAuctionSettlementToSchedules.
+ * are backfilled by the backend's atomic auction settlement endpoint.
  */
 export async function ensureBaseSchedulesForMember(
   supabaseClient: { from: (table: string) => any },

@@ -35,7 +35,7 @@ function missingTemplate(envKey: string): GupshupSendResult {
  * Installment due reminder — sent only AFTER the admin has manually settled
  * the auction (auctions.final_due_amount is set). Shows the same numbers the
  * app itself shows: base installment, dividend (from payment_schedules —
- * pushed by applyAuctionSettlementToSchedules, never recomputed here), and
+ * persisted by the atomic apply_auction_settlement database function, and
  * the resulting amount due. Notification-only — no link/CTA. Members are
  * directed to pay from the app (App → OTP login → My Dues → Select
  * installment → Pay via Razorpay), never via a WhatsApp URL.
@@ -150,6 +150,34 @@ export async function sendAuctionScheduledNotice(
     date,
     time,
     chitValue,
+  ]);
+}
+
+/**
+ * Personal "starting soon" reminder — sent ONLY to members who explicitly
+ * set a reminder for this specific auction (auction_reminders table), not
+ * the whole group. Distinct from sendAuctionScheduledNotice (sent once,
+ * to everyone, when the auction is first configured). Notification-only —
+ * no link/CTA.
+ * Template body concept:
+ *   "Hello {{1}}, your reminder: the {{2}} auction (Month {{3}}) starts in
+ *    about {{4}} minutes. Open the VSYK Chits app to place your bid."
+ */
+export async function sendAuctionReminderNotice(
+  phone: string,
+  memberName: string,
+  groupOrCycle: string,
+  month: string,
+  minutesUntil: string,
+): Promise<GupshupSendResult> {
+  const templateId = getTemplateId('GUPSHUP_TEMPLATE_AUCTION_REMINDER');
+  if (!templateId) return missingTemplate('GUPSHUP_TEMPLATE_AUCTION_REMINDER');
+
+  return sendTemplateMessage(normalizePhoneToGupshup(phone), templateId, [
+    memberName,
+    groupOrCycle,
+    month,
+    minutesUntil,
   ]);
 }
 

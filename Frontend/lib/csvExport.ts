@@ -29,8 +29,9 @@ export function buildCsvDocument(
   metadata: Array<[string, string]>,
   headers: string[],
   rows: Array<Array<string | number | null | undefined>>,
+  title = 'Payment History Export',
 ): string {
-  const lines: string[] = ['# VSYK Chits — Payment History Export'];
+  const lines: string[] = [`# VSYK Chits — ${title}`];
 
   for (const [key, value] of metadata) {
     lines.push(`# ${escapeCsvCell(key)},${escapeCsvCell(value)}`);

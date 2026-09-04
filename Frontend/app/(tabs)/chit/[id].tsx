@@ -18,8 +18,6 @@ import { isMemberAuctionWinner, WINNER_HIGHLIGHT } from '../../../lib/auctionWin
 import type { AuctionPrizeSettlement } from '../../(admin)/customers/_components/types';
 import { MemberPrizePayoutDetailsModal } from './MemberPrizePayoutDetailsModal';
 
-const RAZORPAY_KEY = 'rzp_test_SmauVIQGRqu5gR';
-
 type PaymentRow = {
   id: string;
   month_number: number;
@@ -110,7 +108,7 @@ function useChitDetail(membershipId: string, memberId: string | null) {
         .select('id, current_month, bid_status, chit_group:chit_groups(id,name,value,duration_months,monthly_installment,status,start_date,accounting_type)')
         .eq('id', membershipId)
         .eq('customer_id', memberId)
-        .single();
+        .maybeSingle();
       if (!m) return null;
       const group = (m as any).chit_group;
       const payments = await ensurePaymentSchedules(membershipId, group);
@@ -597,7 +595,8 @@ export default function ChitDetailScreen() {
 
       if (RazorpayCheckout && RazorpayCheckout.open) {
         let orderId: string | undefined;
-        let keyId = RAZORPAY_KEY;
+        let keyId = '';
+        let orderAmount = 0;
 
         try {
           // Server derives the real remaining from paid_amount and binds the
@@ -608,7 +607,11 @@ export default function ChitDetailScreen() {
             amount: amountInPaise,
           });
           orderId = order.id;
-          keyId = order.keyId || keyId;
+          keyId = order.keyId;
+          orderAmount = Number(order.amount || 0);
+          if (!orderId || !keyId || !Number.isSafeInteger(orderAmount) || orderAmount <= 0) {
+            throw new Error('Payment server returned an invalid order.');
+          }
         } catch (orderErr: any) {
           Alert.alert('Payment Error', orderErr?.message || 'Failed to create payment order.');
           setPayingId(null);
@@ -620,7 +623,7 @@ export default function ChitDetailScreen() {
           currency: 'INR',
           key: keyId,
           order_id: orderId,
-          amount: amountInPaise,
+          amount: orderAmount,
           name: 'VSYK Chit Funds',
           prefill: {
             email: memberProfile.email ?? 'member@vsyk.in',
@@ -634,7 +637,7 @@ export default function ChitDetailScreen() {
           // The backend verifies the signature, re-fetches the payment from
           // Razorpay, and records it. It is the ONLY writer of payment state.
           const verify = await apiPostAuthed<{
-            verified: boolean; fullyPaid: boolean; partial: boolean; remaining: number;
+            verified: boolean; fullyPaid: boolean; partial: boolean; remaining: number; appliedAmount: number;
           }>('/api/payments/razorpay/verify', {
             orderId: paymentData.razorpay_order_id,
             paymentId: paymentData.razorpay_payment_id,
@@ -649,7 +652,7 @@ export default function ChitDetailScreen() {
           if (verify.fullyPaid) {
             Alert.alert('Payment Successful', `Month ${payment.month_number} is now fully paid.`);
           } else {
-            Alert.alert('Partial Payment Recorded', `Received ${formatPaise(amountInPaise)}.\n\nRemaining: ${formatPaise(verify.remaining)}`);
+            Alert.alert('Partial Payment Recorded', `Received ${formatPaise(verify.appliedAmount)}.\n\nRemaining: ${formatPaise(verify.remaining)}`);
           }
           refreshAfterPayment();
         }

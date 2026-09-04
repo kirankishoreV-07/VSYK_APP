@@ -6,7 +6,7 @@
 // ============================================================
 
 import { Router, Request, Response } from 'express';
-import { handleWebhook } from './webhook';
+import { getPersistedDeliveryStatus, handleWebhook } from './webhook';
 import { checkDeliveryStatus } from './gupshup';
 import { requireAdminAuth } from '../middleware/adminAuth';
 
@@ -20,6 +20,8 @@ whatsappRouter.post('/webhook', handleWebhook);
 // Was previously public with no auth at all — message ids are otherwise
 // unguessable, but this closes off using it to probe/enumerate them.
 // Admin-only (diagnostics use case), same auth as the other admin routes.
-whatsappRouter.get('/status/:messageId', requireAdminAuth, (req: Request, res: Response) => {
-  res.json(checkDeliveryStatus(String(req.params.messageId)));
+whatsappRouter.get('/status/:messageId', requireAdminAuth, async (req: Request, res: Response) => {
+  const messageId = String(req.params.messageId);
+  const persisted = await getPersistedDeliveryStatus(messageId);
+  res.json(persisted || checkDeliveryStatus(messageId));
 });

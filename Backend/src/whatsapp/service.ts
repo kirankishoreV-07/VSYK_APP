@@ -5,8 +5,7 @@
 // payment due, and payment history using the existing Supabase
 // schema. All financial data comes from the real database.
 //
-// Uses SUPABASE_SERVICE_ROLE_KEY when available for admin
-// access, falls back to SUPABASE_ANON_KEY (demo RLS allows it).
+// Requires SUPABASE_SERVICE_ROLE_KEY for backend-only access.
 // ============================================================
 
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
@@ -28,16 +27,11 @@ function getSupabase(): SupabaseClient | null {
   if (_supabase) return _supabase;
 
   const url = process.env.SUPABASE_URL || '';
-  // Prefer service role key for backend operations; fall back to anon key
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '';
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
   if (!url || !key) {
     console.warn('[WhatsApp Service] Supabase URL or key missing.');
     return null;
-  }
-
-  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
-    console.warn('[WhatsApp Service] SUPABASE_SERVICE_ROLE_KEY not set — using anon key. Some queries may fail with stricter RLS.');
   }
 
   _supabase = createClient(url, key);
@@ -128,7 +122,7 @@ export async function findAuthorizedWhatsAppCustomer(phone: string): Promise<Wha
 
   const customer = matching[0] as VsykCustomer;
 
-  if (customer.whatsapp_opt_in === false && customer.whatsapp_opt_out_at) {
+  if (customer.whatsapp_opt_in !== true) {
     return { status: 'opted_out', customer };
   }
 

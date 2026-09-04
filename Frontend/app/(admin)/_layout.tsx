@@ -1,10 +1,40 @@
-import { useEffect, useState } from 'react';
-import { Tabs, useRouter } from 'expo-router';
+import { useEffect, useRef, useState } from 'react';
+import { Tabs, usePathname, useRouter } from 'expo-router';
 import { BlurView } from 'expo-blur';
 import { StyleSheet, Platform, View, ActivityIndicator } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { supabase } from '../../lib/supabase';
+
+function parentPathForNestedAdminRoute(pathname: string): string | null {
+  if (/^\/customers\/[^/]+\/(groups|payments|auctions|diagnostics|activity)$/.test(pathname)) {
+    return pathname.replace(/\/(groups|payments|auctions|diagnostics|activity)$/, '');
+  }
+  if (/^\/customers\/[^/]+$/.test(pathname)) return '/customers';
+  if (/^\/groups\/[^/]+\/members$/.test(pathname)) return pathname.replace(/\/members$/, '');
+  if (/^\/groups\/[^/]+$/.test(pathname)) return '/groups';
+  if (pathname === '/auctions/live') return '/auctions';
+  if (pathname === '/reports') return '/settings';
+  if (pathname === '/collections/followups') return '/dashboard';
+  return null;
+}
+
+function useWebAdminHistoryGuard() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const activePath = useRef(pathname);
+  activePath.current = pathname;
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    const handlePopState = () => {
+      const parent = parentPathForNestedAdminRoute(activePath.current);
+      if (parent && window.location.pathname !== parent) router.replace(parent as any);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [router]);
+}
 
 // Guards every /(admin)/* screen: a Supabase Auth session alone is not
 // enough (a logged-in member also has one) — admin status requires a row in
@@ -43,6 +73,7 @@ function useAdminGuard() {
 
 export default function AdminLayout() {
   const isAdmin = useAdminGuard();
+  useWebAdminHistoryGuard();
 
   if (!isAdmin) {
     return (
@@ -155,16 +186,16 @@ export default function AdminLayout() {
         options={{ href: null, title: 'Reports' }}
       />
       <Tabs.Screen
+        name="collections/followups"
+        options={{ href: null, title: 'Collections Follow-ups' }}
+      />
+      <Tabs.Screen
         name="auctions/live"
         options={{ href: null, title: 'Live Auction' }}
       />
       <Tabs.Screen
         name="groups/[id]"
         options={{ href: null, title: 'Group Detail' }}
-      />
-      <Tabs.Screen
-        name="groups/[id]/members"
-        options={{ href: null, title: 'Group Members' }}
       />
       <Tabs.Screen
         name="customers/[id]"

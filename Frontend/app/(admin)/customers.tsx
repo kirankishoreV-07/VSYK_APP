@@ -10,6 +10,9 @@ import { useRouter } from 'expo-router';
 
 type CustomerType = 'Individual' | 'Company';
 
+let persistedCustomerSearch = '';
+let persistedCustomerScrollY = 0;
+
 const INDIAN_STATES = [
   "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh",
   "Goa", "Gujarat", "Haryana", "Himachal Pradesh", "Jharkhand", "Karnataka",
@@ -30,12 +33,13 @@ const TOP_CITIES = [
 
 export default function AdminCustomers() {
   const router = useRouter();
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery, setSearchQuery] = useState(persistedCustomerSearch);
   const [activeFilter, setActiveFilter] = useState('All Customers');
   const [isModalVisible, setModalVisible] = useState(false);
   const [customers, setCustomers] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const slideAnim = React.useRef(new Animated.Value(400)).current;
+  const listRef = React.useRef<ScrollView>(null);
 
   // New Customer Form State
   const [customerType, setCustomerType] = useState<CustomerType>('Individual');
@@ -56,6 +60,11 @@ export default function AdminCustomers() {
   const [postalCode, setPostalCode] = useState('');
   const [notes, setNotes] = useState('');
 
+  const isFormDirty = [
+    fullName, panNumber, aadhaar, mobile, email, age, gstin,
+    addressLine1, addressLine2, city, stateForm, postalCode, notes,
+  ].some((value) => value.trim().length > 0);
+
   const openModal = () => {
     setModalVisible(true);
     Animated.timing(slideAnim, {
@@ -66,7 +75,18 @@ export default function AdminCustomers() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
 
-  const closeModal = () => {
+  const closeModal = (discardChanges = false) => {
+    if (isFormDirty && !discardChanges) {
+      Alert.alert(
+        'Discard customer details?',
+        'You have unsaved changes. Leave this form and discard them?',
+        [
+          { text: 'Keep editing', style: 'cancel' },
+          { text: 'Discard', style: 'destructive', onPress: () => closeModal(true) },
+        ],
+      );
+      return;
+    }
     Animated.timing(slideAnim, {
       toValue: 800,
       duration: 300,
@@ -94,6 +114,13 @@ export default function AdminCustomers() {
   }, []);
 
   useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      listRef.current?.scrollTo({ y: persistedCustomerScrollY, animated: false });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
+  useEffect(() => {
     const channel = supabase
       .channel('admin-customers-updates')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, fetchCustomers)
@@ -105,8 +132,25 @@ export default function AdminCustomers() {
   }, []);
 
   const handleCreateCustomer = async () => {
-    if (!fullName || !mobile) {
+    const normalizedName = fullName.trim();
+    const normalizedMobile = mobile.replace(/\D/g, '');
+    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedAge = age.trim() ? Number(age) : null;
+
+    if (!normalizedName || !normalizedMobile) {
       Alert.alert('Validation Error', 'Full Name and Mobile Number are required.');
+      return;
+    }
+    if (!/^\d{10}$/.test(normalizedMobile)) {
+      Alert.alert('Validation Error', 'Mobile Number must contain exactly 10 digits.');
+      return;
+    }
+    if (normalizedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      Alert.alert('Validation Error', 'Please enter a valid email address.');
+      return;
+    }
+    if (normalizedAge !== null && (!Number.isInteger(normalizedAge) || normalizedAge < 18 || normalizedAge > 120)) {
+      Alert.alert('Validation Error', 'Age must be a whole number between 18 and 120.');
       return;
     }
 
@@ -123,6 +167,10 @@ export default function AdminCustomers() {
         return;
       }
     }
+    if (customerType === 'Company' && gstin && !/^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/i.test(gstin.trim())) {
+      Alert.alert('Validation Error', 'Please enter a valid 15-character GSTIN.');
+      return;
+    }
     if (postalCode && !/^\d{6}$/.test(postalCode)) {
       Alert.alert('Validation Error', 'Postal Code must be exactly 6 digits.');
       return;
@@ -136,21 +184,21 @@ export default function AdminCustomers() {
     try {
       const { error } = await supabase.from('customers').insert([{
         customer_type: customerType,
-        full_name: fullName,
-        phone: mobile,
-        email: email || null,
-        age: age ? parseInt(age) : null,
+        full_name: normalizedName,
+        phone: normalizedMobile,
+        email: normalizedEmail || null,
+        age: normalizedAge,
         gender: customerType === 'Individual' ? gender : null,
-        gstin_number: customerType === 'Company' ? gstin : null,
-        address_line1: addressLine1 || null,
-        address_line2: addressLine2 || null,
-        city: city || null,
-        state: stateForm || null,
-        postal_code: postalCode || null,
-        aadhar_number: aadhaar || null,
-        pan_number: panNumber || null,
-        notes: notes || null,
-        kyc_status: 'verified' // Auto-verify for admin creation demo
+        gstin_number: customerType === 'Company' ? gstin.trim().toUpperCase() || null : null,
+        address_line1: addressLine1.trim() || null,
+        address_line2: addressLine2.trim() || null,
+        city: city.trim() || null,
+        state: stateForm.trim() || null,
+        postal_code: postalCode.trim() || null,
+        aadhar_number: aadhaar.trim() || null,
+        pan_number: panNumber.trim().toUpperCase() || null,
+        notes: notes.trim() || null,
+        kyc_status: 'pending',
       }]);
 
       if (error) throw error;
@@ -164,17 +212,23 @@ export default function AdminCustomers() {
       setPostalCode(''); setAadhaar(''); setPanNumber(''); setNotes('');
 
       fetchCustomers();
-      closeModal();
+      closeModal(true);
     } catch (err: any) {
-      Alert.alert('Error', err.message || 'Failed to create customer');
+      if (err?.code === '23505') {
+        Alert.alert('Customer Already Exists', 'A customer with this mobile number already exists.');
+      } else {
+        Alert.alert('Error', err.message || 'Failed to create customer');
+      }
     } finally {
       setLoading(false);
     }
   };
 
   const filteredCustomers = customers.filter(c => {
-    return c.full_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.customer_id?.toLowerCase().includes(searchQuery.toLowerCase());
+    const query = searchQuery.trim().toLowerCase();
+    return c.full_name?.toLowerCase().includes(query) ||
+      c.customer_id?.toLowerCase().includes(query) ||
+      c.phone?.replace(/\D/g, '').includes(query.replace(/\D/g, ''));
   });
 
   return (
@@ -185,14 +239,20 @@ export default function AdminCustomers() {
           <AppLogo size={36} />
           <Text style={styles.appBarTitle}>VSYK CHITS</Text>
         </View>
-        <TouchableOpacity style={styles.iconButton} onPress={() => Haptics.selectionAsync()}>
+        <View style={styles.iconButton} accessibilityElementsHidden>
           <Svg width={24} height={24} viewBox="0 0 24 24" fill="#00789E">
             <Path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2zm-2 1H8v-6c0-2.48 1.51-4.5 4-4.5s4 2.02 4 4.5v6z" />
           </Svg>
-        </TouchableOpacity>
+        </View>
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        ref={listRef}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        onScroll={(event) => { persistedCustomerScrollY = event.nativeEvent.contentOffset.y; }}
+        scrollEventThrottle={100}
+      >
 
         {/* Search & Filters */}
         <View style={styles.searchSection}>
@@ -202,10 +262,10 @@ export default function AdminCustomers() {
             </Svg>
             <TextInput
               style={styles.searchInput}
-              placeholder="Search customer name or ID..."
+              placeholder="Search by name, customer ID, or mobile number"
               placeholderTextColor="#94A3B8"
               value={searchQuery}
-              onChangeText={setSearchQuery}
+              onChangeText={(value) => { persistedCustomerSearch = value; setSearchQuery(value); }}
             />
           </View>
 
@@ -253,7 +313,12 @@ export default function AdminCustomers() {
                 key={i} 
                 style={styles.customerCard} 
                 activeOpacity={0.7}
-                onPress={() => router.push(`/(admin)/customers/${c.id}`)}
+                onPress={() => {
+                  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+                    window.history.pushState(window.history.state, '', window.location.href);
+                  }
+                  router.push(`/(admin)/customers/${c.id}`);
+                }}
               >
                 <View style={styles.customerInfo}>
                   <View style={styles.customerAvatar}>
@@ -272,16 +337,22 @@ export default function AdminCustomers() {
       </ScrollView>
 
       {/* FAB to open Add Customer */}
-      <TouchableOpacity style={styles.fab} onPress={openModal} activeOpacity={0.9}>
+      <TouchableOpacity
+        style={styles.fab}
+        onPress={openModal}
+        activeOpacity={0.9}
+        accessibilityRole="button"
+        accessibilityLabel="Add new customer"
+      >
         <Svg width={24} height={24} viewBox="0 0 24 24" fill="#FFFFFF">
           <Path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
         </Svg>
       </TouchableOpacity>
 
       {/* Add New Customer Modal */}
-      <Modal transparent visible={isModalVisible} animationType="fade">
+      <Modal transparent visible={isModalVisible} animationType="fade" onRequestClose={() => closeModal()}>
         <View style={styles.modalOverlay}>
-          <TouchableOpacity style={StyleSheet.absoluteFill} onPress={closeModal} activeOpacity={1} />
+          <TouchableOpacity style={StyleSheet.absoluteFill} onPress={() => closeModal()} activeOpacity={1} accessibilityLabel="Close customer form" />
 
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalContentWrapper}>
             <Animated.View style={[styles.modalSheet, { transform: [{ translateY: slideAnim }] }]}>
@@ -289,7 +360,7 @@ export default function AdminCustomers() {
 
               <View style={styles.modalHeader}>
                 <Text style={styles.modalTitle}>Add New Customer</Text>
-                <TouchableOpacity onPress={closeModal} style={styles.closeBtn}>
+                <TouchableOpacity onPress={() => closeModal()} style={styles.closeBtn} accessibilityRole="button" accessibilityLabel="Close customer form">
                   <Svg width={20} height={20} viewBox="0 0 24 24" fill="#64748B">
                     <Path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
                   </Svg>
@@ -317,8 +388,8 @@ export default function AdminCustomers() {
                 <Text style={styles.formSectionTitle}>Primary Information</Text>
 
                 <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>FULL NAME (AS PER PAN)</Text>
-                  <TextInput style={styles.input} placeholder="Enter name" value={fullName} onChangeText={setFullName} />
+                  <Text style={styles.inputLabel}>{customerType === 'Company' ? 'COMPANY NAME *' : 'FULL NAME (AS PER PAN) *'}</Text>
+                  <TextInput style={styles.input} placeholder="Enter customer name" value={fullName} onChangeText={setFullName} />
                 </View>
 
                 <View style={styles.rowInputs}>
@@ -326,31 +397,31 @@ export default function AdminCustomers() {
                     <Text style={styles.inputLabel}>MOBILE NUMBER</Text>
                     <View style={styles.phoneInputRow}>
                       <Text style={styles.phonePrefix}>+91</Text>
-                      <TextInput style={styles.phoneInput} placeholder="98765 43210" keyboardType="phone-pad" maxLength={10} value={mobile} onChangeText={setMobile} />
+                      <TextInput style={styles.phoneInput} placeholder="Enter 10-digit mobile number" keyboardType="phone-pad" maxLength={10} value={mobile} onChangeText={(value) => setMobile(value.replace(/\D/g, ''))} />
                     </View>
                   </View>
                 </View>
 
                 <View style={styles.inputGroup}>
                   <Text style={styles.inputLabel}>EMAIL ADDRESS</Text>
-                  <TextInput style={styles.input} placeholder="user@example.com" keyboardType="email-address" value={email} onChangeText={setEmail} autoCapitalize="none" />
+                  <TextInput style={styles.input} placeholder="Enter email address (optional)" keyboardType="email-address" value={email} onChangeText={setEmail} autoCapitalize="none" />
                 </View>
 
                 {customerType === 'Individual' ? (
                   <View style={styles.rowInputs}>
                     <View style={[styles.inputGroup, { flex: 1 }]}>
                       <Text style={styles.inputLabel}>AGE</Text>
-                      <TextInput style={styles.input} placeholder="Years" keyboardType="number-pad" maxLength={3} value={age} onChangeText={setAge} />
+                      <TextInput style={styles.input} placeholder="Enter age in years" keyboardType="number-pad" maxLength={3} value={age} onChangeText={(value) => setAge(value.replace(/\D/g, ''))} />
                     </View>
                     <View style={[styles.inputGroup, { flex: 1 }]}>
                       <Text style={styles.inputLabel}>GENDER</Text>
-                      <TextInput style={styles.input} placeholder="Male/Female/Other" value={gender} onChangeText={setGender} />
+                      <TextInput style={styles.input} placeholder="Enter gender" value={gender} onChangeText={setGender} />
                     </View>
                   </View>
                 ) : (
                   <View style={styles.inputGroup}>
                     <Text style={styles.inputLabel}>GSTIN NUMBER</Text>
-                    <TextInput style={[styles.input, { textTransform: 'uppercase' }]} placeholder="Enter GSTIN" maxLength={15} value={gstin} onChangeText={setGstin} />
+                    <TextInput style={[styles.input, { textTransform: 'uppercase' }]} placeholder="Enter 15-character GSTIN" maxLength={15} value={gstin} onChangeText={(value) => setGstin(value.toUpperCase())} autoCapitalize="characters" />
                   </View>
                 )}
 
@@ -360,11 +431,11 @@ export default function AdminCustomers() {
                 <View style={styles.rowInputs}>
                   <View style={[styles.inputGroup, { flex: 1 }]}>
                     <Text style={styles.inputLabel}>PAN NUMBER</Text>
-                    <TextInput style={[styles.input, { textTransform: 'uppercase' }]} placeholder="ABCDE1234F" maxLength={10} value={panNumber} onChangeText={setPanNumber} />
+                    <TextInput style={[styles.input, { textTransform: 'uppercase' }]} placeholder="Enter 10-character PAN" maxLength={10} value={panNumber} onChangeText={(value) => setPanNumber(value.toUpperCase())} autoCapitalize="characters" />
                   </View>
                   <View style={[styles.inputGroup, { flex: 1 }]}>
                     <Text style={styles.inputLabel}>AADHAAR</Text>
-                    <TextInput style={styles.input} placeholder="0000 0000 0000" keyboardType="number-pad" maxLength={12} value={aadhaar} onChangeText={setAadhaar} />
+                    <TextInput style={styles.input} placeholder="Enter 12-digit Aadhaar number" keyboardType="number-pad" maxLength={12} value={aadhaar} onChangeText={(value) => setAadhaar(value.replace(/\D/g, ''))} />
                   </View>
                 </View>
 
@@ -373,11 +444,11 @@ export default function AdminCustomers() {
 
                 <View style={styles.inputGroup}>
                   <Text style={styles.inputLabel}>ADDRESS LINE 1</Text>
-                  <TextInput style={styles.input} placeholder="Flat/House No, Building" value={addressLine1} onChangeText={setAddressLine1} />
+                  <TextInput style={styles.input} placeholder="Enter house number and building" value={addressLine1} onChangeText={setAddressLine1} />
                 </View>
                 <View style={styles.inputGroup}>
                   <Text style={styles.inputLabel}>ADDRESS LINE 2</Text>
-                  <TextInput style={styles.input} placeholder="Street, Area" value={addressLine2} onChangeText={setAddressLine2} />
+                  <TextInput style={styles.input} placeholder="Enter street and area (optional)" value={addressLine2} onChangeText={setAddressLine2} />
                 </View>
 
                 <View style={[styles.rowInputs, { zIndex: 100 }]}>
@@ -385,7 +456,7 @@ export default function AdminCustomers() {
                     <Text style={styles.inputLabel}>CITY *</Text>
                     <TextInput
                       style={styles.input}
-                      placeholder="Type a city..."
+                      placeholder="Enter city"
                       value={city}
                       onChangeText={(t) => { setCity(t); setShowCityDropdown(true); }}
                       onFocus={() => { setShowCityDropdown(true); setShowStateDropdown(false); }}
@@ -407,7 +478,7 @@ export default function AdminCustomers() {
                     <Text style={styles.inputLabel}>STATE *</Text>
                     <TextInput
                       style={styles.input}
-                      placeholder="Type a state..."
+                      placeholder="Enter state"
                       value={stateForm}
                       onChangeText={(t) => { setStateForm(t); setShowStateDropdown(true); }}
                       onFocus={() => { setShowStateDropdown(true); setShowCityDropdown(false); }}
@@ -428,7 +499,7 @@ export default function AdminCustomers() {
 
                 <View style={styles.inputGroup}>
                   <Text style={styles.inputLabel}>POSTAL CODE</Text>
-                  <TextInput style={styles.input} placeholder="000000" keyboardType="number-pad" maxLength={6} value={postalCode} onChangeText={setPostalCode} />
+                  <TextInput style={styles.input} placeholder="Enter 6-digit postal code" keyboardType="number-pad" maxLength={6} value={postalCode} onChangeText={(value) => setPostalCode(value.replace(/\D/g, ''))} />
                 </View>
 
                 {/* Additional */}
@@ -436,7 +507,7 @@ export default function AdminCustomers() {
 
                 <View style={styles.inputGroup}>
                   <Text style={styles.inputLabel}>NOTES</Text>
-                  <TextInput style={[styles.input, { minHeight: 80, textAlignVertical: 'top' }]} placeholder="Any additional notes..." multiline value={notes} onChangeText={setNotes} />
+                  <TextInput style={[styles.input, { minHeight: 80, textAlignVertical: 'top' }]} placeholder="Enter additional notes (optional)" multiline value={notes} onChangeText={setNotes} />
                 </View>
 
                 <TouchableOpacity style={styles.submitBtn} onPress={handleCreateCustomer} disabled={loading}>
@@ -500,6 +571,8 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: '#F1F5F9', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 2, elevation: 1,
   },
   filterBtnActive: { backgroundColor: '#01789E', borderColor: '#01789E' },
+  filterBtnText: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: '#64748B' },
+  filterBtnTextActive: { color: '#FFFFFF' },
   customerTypeBtnText: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: '#64748B' },
   customerTypeBtnTextActive: { color: '#01789E' },
   stateChip: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 100, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#E2E8F0' },

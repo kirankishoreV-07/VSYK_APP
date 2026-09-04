@@ -5,14 +5,19 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { AppLogo } from '../../../components/AppLogo';
 import Svg, { Path, Circle } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { supabase } from '../../../lib/supabase';
 import { apiPostAdmin } from '../../../lib/api';
 import { isAuctionConfiguredUpcoming } from '../../../lib/auctionUtils';
-import { applyAuctionSettlementToSchedules } from '../../../lib/chitPayments';
 
 export default function AdminLiveAuction() {
   const router = useRouter();
+  // The auction the caller navigated from. Without it this screen used to
+  // search the whole database for *any* live auction and fall back to *any*
+  // configured upcoming one, so it could display a different group's
+  // auto-generated placeholder than the auction the admin actually opened.
+  const { auctionId: routeAuctionId } = useLocalSearchParams<{ auctionId?: string }>();
+  const requestedAuctionId = typeof routeAuctionId === 'string' && routeAuctionId ? routeAuctionId : null;
   const [auction, setAuction] = useState<any | null>(null);
   const [bids, setBids] = useState<any[]>([]);
   const [feed, setFeed] = useState<any[]>([]);
@@ -98,13 +103,32 @@ export default function AdminLiveAuction() {
 
   const fetchLiveAuction = useCallback(async () => {
     try {
+      // Explicit target wins: load exactly the auction that was opened, whatever
+      // its status, so this screen can never disagree with the screen that
+      // linked here.
+      if (requestedAuctionId) {
+        const { data: requested, error: requestedError } = await supabase
+          .from('auctions')
+          .select('*, chit_groups(name, group_code, value, capacity, monthly_installment, agent_commission_rate)')
+          .eq('id', requestedAuctionId)
+          .maybeSingle();
+        if (requestedError) throw requestedError;
+        if (requested?.id) {
+          auctionIdRef.current = requested.id;
+          setAuction(requested);
+          fetchBids(requested.id);
+          startTimer(requested.closes_at, requested.scheduled_at);
+          return;
+        }
+      }
+
       const { data: liveAuction, error: liveError } = await supabase
         .from('auctions')
-        .select('*, chit_groups(name, group_code, value, capacity)')
+        .select('*, chit_groups(name, group_code, value, capacity, monthly_installment, agent_commission_rate)')
         .eq('status', 'live')
         .order('scheduled_at', { ascending: true })
         .limit(1)
-        .single();
+        .maybeSingle();
 
       if (liveError && liveError.code !== 'PGRST116') throw liveError;
 
@@ -119,7 +143,7 @@ export default function AdminLiveAuction() {
       // Fallback: next admin-configured upcoming only (never auto-generated placeholders)
       const { data: upcomingRows, error: upcomingError } = await supabase
         .from('auctions')
-        .select('*, chit_groups(name, group_code, value, capacity)')
+        .select('*, chit_groups(name, group_code, value, capacity, monthly_installment, agent_commission_rate)')
         .eq('status', 'upcoming')
         .gt('min_bid', 0)
         .not('scheduled_at', 'is', null)
@@ -135,7 +159,7 @@ export default function AdminLiveAuction() {
     } finally {
       setLoading(false);
     }
-  }, [fetchBids]);
+  }, [fetchBids, requestedAuctionId]);
 
   // Derived values used by handlers (hoisted for fresh closures in event handlers)
   const topBid = bids[0];
@@ -258,10 +282,11 @@ export default function AdminLiveAuction() {
     const groupValue = auction.chit_groups?.value || 0; // in paise
     const memberCount = auction.chit_groups?.capacity || 1;
     const discountPaise = topBid.bid_amount;               // what winner sacrifices
-    const commissionPaise = Math.round(groupValue * 0.05); // 5% foreman commission
+    const commissionRate = Math.min(Math.max(Number(auction.chit_groups?.agent_commission_rate ?? 5), 0), 100) / 100;
+    const commissionPaise = Math.round(groupValue * commissionRate);
     const dividendPoolPaise = Math.max(discountPaise - commissionPaise, 0);
     const dividendPerMemberPaise = Math.round(dividendPoolPaise / memberCount);
-    const installmentPaise = Math.round(groupValue / memberCount); // base EMI
+    const installmentPaise = Number(auction.chit_groups?.monthly_installment || 0) || Math.round(groupValue / memberCount);
     const finalDuePaise = Math.max(installmentPaise - dividendPerMemberPaise, 0);
     const prizePaise = Math.max(groupValue - discountPaise, 0);    // winner gets this
 
@@ -287,47 +312,21 @@ export default function AdminLiveAuction() {
                 winnerMemberId = memberRow?.id || null;
               }
 
-              // Single update with ALL settlement fields
-              const { error: auctionErr } = await supabase
-                .from('auctions')
-                .update({
-                  status: 'completed',
-                  winner_user_id: topBid.user_id || null,
-                  winner_member_id: winnerMemberId,
-                  winner_name: bidderName,
-                  current_bid: discountPaise,
-                  ended_at: new Date().toISOString(),
-                  discount_amount: discountPaise,
-                  installment_due: installmentPaise,
-                  dividend_amount: dividendPerMemberPaise,
-                  final_due_amount: finalDuePaise,
-                  winner_prize_amount: prizePaise,
-                })
-                .eq('id', auction.id);
-
-              if (auctionErr) throw auctionErr;
-
-              // Apply settlement to payment_schedules for ALL members (create rows if missing for this cycle).
-              // This ensures customer "payment due" amounts and admin collection views are correct immediately.
-              let scheduleSummary = '';
-              if (auction.auction_number != null) {
-                const applyRes = await applyAuctionSettlementToSchedules(
-                  supabase,
-                  auction.chit_group_id,
-                  auction.auction_number,
-                  finalDuePaise,
-                  dividendPerMemberPaise,
-                );
-                const parts: string[] = [];
-                if (applyRes.updated > 0) parts.push(`${applyRes.updated} updated`);
-                if (applyRes.inserted > 0) parts.push(`${applyRes.inserted} created`);
-                if (applyRes.skipped > 0) parts.push(`${applyRes.skipped} already correct`);
-                scheduleSummary = parts.length ? ` Dues: ${parts.join(', ')}.` : '';
-                if (applyRes.errors.length > 0) {
-                  console.warn('Some schedule apply issues (non-fatal):', applyRes.errors);
-                  scheduleSummary += ' (Some dues may need a refresh on group view.)';
-                }
-              }
+              const settlement = await apiPostAdmin<{ ok: boolean; updated: number }>(
+                '/api/auctions/apply-settlement',
+                {
+                  auctionId: auction.id,
+                  winnerMemberId,
+                  winnerName: bidderName,
+                  currentBid: discountPaise,
+                  installmentDue: installmentPaise,
+                  dividendAmount: dividendPerMemberPaise,
+                  discountAmount: discountPaise,
+                  finalDueAmount: finalDuePaise,
+                  winnerPrizeAmount: prizePaise,
+                },
+              );
+              const scheduleSummary = ` Dues updated for ${settlement.updated} member${settlement.updated === 1 ? '' : 's'}.`;
 
               // Push notifications — non-critical
               try {
@@ -370,7 +369,7 @@ export default function AdminLiveAuction() {
       return;
     }
     if (timerRef.current) clearInterval(timerRef.current);
-    router.back();
+    router.replace('/(admin)/auctions');
   };
 
   const handleCloseAuction = async () => {
@@ -393,49 +392,41 @@ export default function AdminLiveAuction() {
             const groupValue = auction.chit_groups?.value || 0;
             const memberCount = auction.chit_groups?.capacity || 1;
             const discountPaise = topBid?.bid_amount ?? 0;
-            const commissionPaise = Math.round(groupValue * 0.05);
+            const commissionRate = Math.min(Math.max(Number(auction.chit_groups?.agent_commission_rate ?? 5), 0), 100) / 100;
+            const commissionPaise = Math.round(groupValue * commissionRate);
             const dividendPoolPaise = Math.max(discountPaise - commissionPaise, 0);
             const dividendPerMemberPaise = Math.round(dividendPoolPaise / memberCount);
-            const installmentPaise = Math.round(groupValue / memberCount);
+            const installmentPaise = Number(auction.chit_groups?.monthly_installment || 0) || Math.round(groupValue / memberCount);
             const finalDuePaise = Math.max(installmentPaise - dividendPerMemberPaise, 0);
             const prizePaise = Math.max(groupValue - discountPaise, 0);
 
-            const { error } = await supabase
-              .from('auctions')
-              .update({
-                status: 'completed',
-                ended_at: new Date().toISOString(),
-                // Pre-fill settlement fields from highest bid so settlement modal auto-populates
-                ...(topBid ? {
-                  current_bid: discountPaise,
-                  discount_amount: discountPaise,
-                  installment_due: installmentPaise,
-                  dividend_amount: dividendPerMemberPaise,
-                  final_due_amount: finalDuePaise,
-                  winner_prize_amount: prizePaise,
-                  // winner_member_id and winner_name left for admin to confirm in settlement modal
-                } : {}),
-              })
-              .eq('id', auction.id);
-
-            if (error) { Alert.alert('Error', error.message); return; }
-
-            // IMPORTANT FIX: Apply dues to payment_schedules right here on STOP (create if missing).
-            // Prevents dues not being reflected in admin customer "payment due"/outstanding when admin
-            // stops bidding and clicks away without immediately using the settlement modal.
-            if (auction.auction_number != null) {
-              try {
-                const applyRes = await applyAuctionSettlementToSchedules(
-                  supabase,
-                  auction.chit_group_id,
-                  auction.auction_number,
-                  finalDuePaise,
-                  dividendPerMemberPaise,
-                );
-                if (applyRes.errors.length > 0) console.warn('STOP apply warnings:', applyRes.errors);
-              } catch (applyErr) {
-                console.warn('STOP schedule apply non-fatal error:', applyErr);
+            try {
+              let winnerMemberId: string | null = null;
+              if (topBid?.customer_id) {
+                const { data: memberRow, error: memberError } = await supabase
+                  .from('chit_members')
+                  .select('id')
+                  .eq('chit_group_id', auction.chit_group_id)
+                  .eq('customer_id', topBid.customer_id)
+                  .maybeSingle();
+                if (memberError) throw memberError;
+                winnerMemberId = memberRow?.id || null;
               }
+
+              await apiPostAdmin('/api/auctions/apply-settlement', {
+                auctionId: auction.id,
+                winnerMemberId,
+                winnerName: topBid?.customers?.full_name || null,
+                currentBid: discountPaise,
+                installmentDue: installmentPaise,
+                dividendAmount: dividendPerMemberPaise,
+                discountAmount: discountPaise,
+                finalDueAmount: finalDuePaise,
+                winnerPrizeAmount: topBid ? prizePaise : 0,
+              });
+            } catch (error: any) {
+              Alert.alert('Could Not Close Auction', error?.message || 'Settlement failed. No financial changes were saved.');
+              return;
             }
 
             if (timerRef.current) clearInterval(timerRef.current);
@@ -443,7 +434,7 @@ export default function AdminLiveAuction() {
             Alert.alert(
               'Auction Closed',
               topBid
-                ? `Bidding stopped. Dues for cycle #${auction.auction_number} applied to members (₹${Math.round(finalDuePaise / 100).toLocaleString('en-IN')} payable). Set winner name via group if needed.`
+                ? `Bidding stopped. Winner and dues for cycle #${auction.auction_number} were saved together (₹${Math.round(finalDuePaise / 100).toLocaleString('en-IN')} payable).`
                 : 'Auction closed (no bids).',
             );
             router.push(`/(admin)/groups/${auction.chit_group_id}`);
@@ -467,7 +458,8 @@ export default function AdminLiveAuction() {
   const currentDiscount = topBid ? topBid.bid_amount / 100 : (auction?.current_bid || 0) / 100;
 
   // Live settlement economics
-  const foremanCommission = groupValue * 0.05;
+  const commissionRate = Math.min(Math.max(Number(auction?.chit_groups?.agent_commission_rate ?? 5), 0), 100) / 100;
+  const foremanCommission = groupValue * commissionRate;
   const dividendPool = Math.max(0, currentDiscount - foremanCommission);
   const dividendPerMember = Math.floor(dividendPool / memberCount);
   const baseInstallment = Math.floor(groupValue / memberCount);
@@ -478,7 +470,12 @@ export default function AdminLiveAuction() {
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Dynamic Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={handleSafeBack} style={styles.backBtn}>
+        <TouchableOpacity
+          onPress={handleSafeBack}
+          style={styles.backBtn}
+          accessibilityRole="button"
+          accessibilityLabel="Back to auctions"
+        >
           <Svg width={24} height={24} viewBox="0 0 24 24" fill="#0B1C30">
             <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
           </Svg>

@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Platform, RefreshControl, Dimensions, Animated, LayoutAnimation, UIManager, TextInput } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Platform, RefreshControl, Dimensions, Animated, LayoutAnimation, UIManager, TextInput, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Path, Circle, Line, Defs, LinearGradient, Stop, Rect } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { supabase } from '../../lib/supabase';
 import { useRouter } from 'expo-router';
 import { formatPaise } from '../../lib/hooks/useDashboard';
+import { buildCsvDocument, paiseToCsvAmount, shareCsvFile } from '../../lib/csvExport';
+import { useAdminParentBack } from '../../lib/hooks/admin/useAdminParentBack';
 
 // Enable LayoutAnimation for Android
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -35,11 +37,13 @@ type GroupAnalytics = {
   totalCollected: number;
   totalDividends: number;
   progress: number;
+  enrolledShares: number;
   customers: CustomerAnalytics[];
 };
 
 export default function AdminReports() {
   const router = useRouter();
+  const handleBack = useAdminParentBack('/(admin)/settings');
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   
@@ -61,27 +65,41 @@ export default function AdminReports() {
 
   const fetchAnalytics = async () => {
     try {
-      // 1. Fetch all groups
-      const { data: groups } = await supabase.from('chit_groups').select('*');
-      
-      // 2. Fetch all completed transactions with deep relationships
-      const { data: transactions } = await supabase
-        .from('chit_member_transactions')
-        .select(`
-          id, amount, payment_type, transaction_date, status,
-          chit_members (
-            id, chit_group_id,
-            customers (id, full_name)
-          )
-        `)
-        .eq('status', 'completed')
-        .order('transaction_date', { ascending: true });
+      const [groupsResult, transactionsResult, cashResult] = await Promise.all([
+        supabase.from('chit_groups').select('*, chit_members(id, participation_share)'),
+        supabase
+          .from('chit_member_transactions')
+          .select(`
+            id, amount, payment_type, transaction_date, status,
+            chit_members (
+              id, chit_group_id,
+              customers (id, full_name)
+            )
+          `)
+          .eq('status', 'completed')
+          .order('transaction_date', { ascending: true }),
+        supabase
+          .from('cash_collections')
+          .select(`
+            id, amount, recorded_at,
+            chit_members (
+              id, chit_group_id,
+              customers (id, full_name)
+            )
+          `)
+          .order('recorded_at', { ascending: true }),
+      ]);
 
-      if (!groups) return;
+      if (groupsResult.error) throw groupsResult.error;
+      if (transactionsResult.error) throw transactionsResult.error;
+      if (cashResult.error) throw cashResult.error;
+      const groups = groupsResult.data || [];
+      const transactions = transactionsResult.data || [];
+      const cashCollections = cashResult.data || [];
 
       let globalCollections = 0;
       let globalDividends = 0;
-      const activeGroups = groups.filter(g => g.status === 'active' || g.status === 'upcoming').length;
+      const activeGroups = groups.filter(g => g.status === 'active').length;
 
       // Map to hold group analytics
       const groupAnalyticsMap = new Map<string, GroupAnalytics>();
@@ -95,6 +113,10 @@ export default function AdminReports() {
           totalCollected: 0,
           totalDividends: 0,
           progress: 0,
+          enrolledShares: (g.chit_members || []).reduce(
+            (total: number, member: any) => total + (Number(member.participation_share) || 1),
+            0,
+          ),
           customers: []
         });
       });
@@ -102,8 +124,7 @@ export default function AdminReports() {
       // Temporary map to aggregate customer data within groups: group_id -> customer_id -> CustomerAnalytics
       const groupCustomerMap = new Map<string, Map<string, CustomerAnalytics>>();
 
-      if (transactions) {
-        transactions.forEach((tx: any) => {
+      transactions.forEach((tx: any) => {
           const groupId = tx.chit_members?.chit_group_id;
           const customerId = tx.chit_members?.customers?.id;
           const customerName = tx.chit_members?.customers?.full_name || 'Unknown Member';
@@ -137,16 +158,36 @@ export default function AdminReports() {
           const cust = customersInGroup.get(customerId)!;
           if (tx.payment_type === 'installment') cust.totalPaid += tx.amount;
           if (tx.payment_type === 'dividend') cust.totalDividendsReceived += tx.amount;
-        });
-      }
+      });
+
+      cashCollections.forEach((collection: any) => {
+        const groupId = collection.chit_members?.chit_group_id;
+        const customerId = collection.chit_members?.customers?.id;
+        const customerName = collection.chit_members?.customers?.full_name || 'Unknown Member';
+        if (!groupId || !customerId) return;
+        const group = groupAnalyticsMap.get(groupId);
+        if (!group) return;
+
+        const amount = Number(collection.amount || 0);
+        globalCollections += amount;
+        group.totalCollected += amount;
+        if (!groupCustomerMap.has(groupId)) groupCustomerMap.set(groupId, new Map());
+        const customersInGroup = groupCustomerMap.get(groupId)!;
+        if (!customersInGroup.has(customerId)) {
+          customersInGroup.set(customerId, {
+            customerId, name: customerName, totalPaid: 0, totalDividendsReceived: 0,
+          });
+        }
+        customersInGroup.get(customerId)!.totalPaid += amount;
+      });
 
       // Finalize Group Analytics Array
       const finalGroupsArray: GroupAnalytics[] = [];
       groupAnalyticsMap.forEach((group, groupId) => {
-        // Calculate Progress based on collections vs group value (approximate health metric)
-        // Usually, total expected = value * members. We just use a relative metric for UI flair.
-        const maxValueExpected = group.value * 10; // rough guess for progress bar scale
-        group.progress = Math.min((group.totalCollected / (maxValueExpected || 1)) * 100, 100);
+        const totalExpected = group.value * group.enrolledShares;
+        group.progress = totalExpected > 0
+          ? Math.min((group.totalCollected / totalExpected) * 100, 100)
+          : 0;
         
         // Attach customer data
         if (groupCustomerMap.has(groupId)) {
@@ -180,15 +221,18 @@ export default function AdminReports() {
         });
       }
 
-      if (transactions) {
-        transactions.forEach((d: any) => {
+      transactions.forEach((d: any) => {
           if (d.payment_type === 'installment') {
             const date = new Date(d.transaction_date);
             const m = last6Months.find(m => m.month === date.getMonth() && m.year === date.getFullYear());
             if (m) m.amount += Number(d.amount || 0);
           }
-        });
-      }
+      });
+      cashCollections.forEach((collection: any) => {
+        const date = new Date(collection.recorded_at);
+        const month = last6Months.find(m => m.month === date.getMonth() && m.year === date.getFullYear());
+        if (month) month.amount += Number(collection.amount || 0);
+      });
 
       const maxAmount = Math.max(...last6Months.map(m => m.amount), 1); 
       const width = SCREEN_WIDTH - 80;
@@ -262,19 +306,56 @@ export default function AdminReports() {
     Haptics.selectionAsync();
   };
 
+  const handleExport = async () => {
+    try {
+      const rows = groupsData.flatMap((group) => {
+        if (group.customers.length === 0) {
+          return [[group.name, group.status, '', '', paiseToCsvAmount(group.totalCollected), paiseToCsvAmount(group.totalDividends)]];
+        }
+        return group.customers.map((customer) => [
+          group.name,
+          group.status,
+          customer.name,
+          paiseToCsvAmount(customer.totalPaid),
+          paiseToCsvAmount(group.totalCollected),
+          paiseToCsvAmount(customer.totalDividendsReceived),
+        ]);
+      });
+      const content = buildCsvDocument(
+        [['Generated at', new Date().toISOString()]],
+        ['Group', 'Status', 'Member', 'Member paid (INR)', 'Group collected (INR)', 'Member dividend (INR)'],
+        rows,
+        'Admin Collections Report',
+      );
+      await shareCsvFile({
+        filename: `vsyk-admin-report-${new Date().toISOString().slice(0, 10)}.csv`,
+        content,
+        dialogTitle: 'Export admin collections report',
+      });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (error: any) {
+      Alert.alert('Export Failed', error?.message || 'The report could not be exported.');
+    }
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Top App Bar */}
       <View style={styles.appBar}>
         <View style={styles.appBarLeft}>
-          <TouchableOpacity onPress={() => router.back()} style={{ marginRight: 12 }}>
+          <TouchableOpacity
+            onPress={handleBack}
+            style={{ marginRight: 12 }}
+            accessibilityRole="button"
+            accessibilityLabel="Back to settings"
+          >
             <Svg width={24} height={24} viewBox="0 0 24 24" fill="#01789E">
               <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
             </Svg>
           </TouchableOpacity>
           <Text style={styles.appBarTitle}>Reports & Analytics</Text>
         </View>
-        <TouchableOpacity style={styles.exportBtn} onPress={() => Haptics.selectionAsync()}>
+        <TouchableOpacity style={styles.exportBtn} onPress={handleExport} accessibilityRole="button" accessibilityLabel="Export collections report">
           <Svg width={16} height={16} viewBox="0 0 24 24" fill="#005E7D">
             <Path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
           </Svg>
@@ -379,7 +460,7 @@ export default function AdminReports() {
                   </View>
                 </View>
 
-                {/* Fake Progress bar for visual weight */}
+                {/* Actual collected amount divided by expected value for enrolled shares. */}
                 <View style={styles.progressTrack}>
                   <View style={[styles.progressFill, { width: `${group.progress}%` }]} />
                 </View>
@@ -403,7 +484,7 @@ export default function AdminReports() {
                     </Svg>
                     <TextInput
                       style={styles.searchInput}
-                      placeholder="Search member..."
+                      placeholder="Search by member name"
                       placeholderTextColor="#94A3B8"
                       value={searchQuery}
                       onChangeText={setSearchQuery}

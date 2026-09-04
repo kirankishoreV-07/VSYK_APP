@@ -145,8 +145,10 @@ export async function sendTemplateMessage(
   }
 
   const body = new URLSearchParams({
+    channel: 'whatsapp',
     source: config.sourcePhone,
     destination,
+    'src.name': config.appName,
     template: JSON.stringify({ id: templateId, params }),
   });
 
@@ -307,14 +309,19 @@ async function callGupshupApi(
       responseData = { raw: responseText };
     }
 
-    if (!response.ok) {
+    // Some Gupshup endpoints have historically returned HTTP 2xx with an
+    // application-level error payload. Treat that as a failure too; otherwise
+    // the OTP row says "sent" even though Gupshup rejected it.
+    const responseStatus = String(responseData?.status || '').toLowerCase();
+    const applicationError = responseStatus === 'error' || responseData?.error;
+    if (!response.ok || applicationError) {
       console.error(
         `[Gupshup] ${operationName} HTTP ${response.status}:`,
-        responseData?.message || responseText.slice(0, 200),
+        responseData?.message || responseData?.error || responseText.slice(0, 200),
       );
       return {
         success: false,
-        error: responseData?.message || `HTTP ${response.status}`,
+        error: responseData?.message || responseData?.error || `HTTP ${response.status}`,
         statusCode: response.status,
       };
     }

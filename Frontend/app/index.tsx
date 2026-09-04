@@ -5,6 +5,7 @@ import { useRouter } from 'expo-router';
 import { Image } from 'expo-image';
 import { Colors, Shadows } from '../lib/constants';
 import Svg, { Path } from 'react-native-svg';
+import { supabase } from '../lib/supabase';
 
 export default function SplashScreen() {
   const router = useRouter();
@@ -39,12 +40,36 @@ export default function SplashScreen() {
       }),
     ]).start();
 
-    // Navigate to onboarding after 3 seconds
-    const timer = setTimeout(() => {
-      router.replace('/(auth)/onboarding');
+    // Restore authenticated users to the correct role-specific home instead
+    // of sending every cold start back through onboarding.
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (cancelled) return;
+      if (!session) {
+        router.replace('/(auth)/onboarding');
+        return;
+      }
+
+      const customerId = (session.user.user_metadata as any)?.customer_id;
+      if (customerId) {
+        router.replace('/(tabs)');
+        return;
+      }
+
+      const { data: admin } = await supabase
+        .from('admin_users')
+        .select('id')
+        .eq('id', session.user.id)
+        .maybeSingle();
+      if (cancelled) return;
+      router.replace(admin ? '/(admin)/dashboard' : '/(auth)/login');
     }, 3000);
 
-    return () => clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, []);
 
   const spinInterpolation = spinAnim.interpolate({

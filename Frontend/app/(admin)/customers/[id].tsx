@@ -9,12 +9,18 @@ import { KPIStrip } from './_components/KPIStrip';
 import { OverviewTab } from './_components/OverviewTab';
 import { AdminColors } from './_components/adminStyles';
 import { computeCustomerUpcomingDues } from '../../../lib/memberGroupHistory';
+import { useAdminParentBack } from '../../../lib/hooks/admin/useAdminParentBack';
 
 function HubAppBar({ onBack }: { onBack: () => void }) {
     return (
         <View style={styles.appBar}>
             <View style={styles.appBarLeft}>
-                <TouchableOpacity onPress={onBack} style={styles.backButton}>
+                <TouchableOpacity
+                    onPress={onBack}
+                    style={styles.backButton}
+                    accessibilityRole="button"
+                    accessibilityLabel="Back to customers"
+                >
                     <Svg width={24} height={24} viewBox="0 0 24 24" fill={AdminColors.primary}>
                         <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
                     </Svg>
@@ -29,13 +35,14 @@ export default function CustomerDetailsScreen() {
     const { id } = useLocalSearchParams<{ id: string }>();
     const router = useRouter();
     const customerId = typeof id === 'string' ? id : '';
+    const handleBack = useAdminParentBack('/(admin)/customers');
 
     const { data, isLoading, error } = useCustomerDetailData(customerId);
 
     if (isLoading) {
         return (
             <SafeAreaView style={styles.container}>
-                <HubAppBar onBack={() => router.back()} />
+                <HubAppBar onBack={handleBack} />
                 <ActivityIndicator size="large" color={AdminColors.primaryContainer} style={{ marginTop: 100 }} />
             </SafeAreaView>
         );
@@ -44,7 +51,7 @@ export default function CustomerDetailsScreen() {
     if (error || !data) {
         return (
             <SafeAreaView style={styles.container}>
-                <HubAppBar onBack={() => router.back()} />
+                <HubAppBar onBack={handleBack} />
                 <View style={styles.errorContainer}>
                     <View style={styles.errorCard}>
                         <Text style={styles.errorTitle}>Unable to load customer</Text>
@@ -60,7 +67,7 @@ export default function CustomerDetailsScreen() {
     if (!customer) {
         return (
             <SafeAreaView style={styles.container}>
-                <HubAppBar onBack={() => router.back()} />
+                <HubAppBar onBack={handleBack} />
                 <View style={styles.errorContainer}>
                     <View style={styles.errorCard}>
                         <Text style={styles.errorTitle}>Customer not found</Text>
@@ -88,7 +95,7 @@ export default function CustomerDetailsScreen() {
 
     return (
         <SafeAreaView style={styles.container}>
-            <HubAppBar onBack={() => router.back()} />
+            <HubAppBar onBack={handleBack} />
 
             <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
                 <CustomerHeader
@@ -115,7 +122,6 @@ export default function CustomerDetailsScreen() {
                     schedules={schedules}
                     auctions={auctions}
                     cashCollections={cashCollections}
-                    prizeSettlements={data?.prizeSettlements || []}
                     onViewAllTransactions={() => router.push(`/(admin)/customers/${customerId}/payments`)}
                     onViewGroupPayments={() => router.push(`/(admin)/customers/${customerId}/groups`)}
                 />

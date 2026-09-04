@@ -40,35 +40,41 @@ export default function AdminDashboard() {
   const fetchDashboardData = async () => {
     try {
       // AUM (Value in paise, so divide by 100)
-      const { data: groups } = await supabase.from('chit_groups').select('value');
+      const { data: groups, error: groupsError } = await supabase.from('chit_groups').select('value');
+      if (groupsError) throw groupsError;
       const aum = groups ? groups.reduce((acc, g) => acc + Number(g.value || 0), 0) / 100 : 0;
 
       // Members
-      const { count: memberCount } = await supabase.from('customers').select('*', { count: 'exact', head: true });
+      const { count: memberCount, error: customersError } = await supabase.from('customers').select('*', { count: 'exact', head: true });
+      if (customersError) throw customersError;
 
-      const { data: deposits } = await supabase
+      const { data: deposits, error: depositsError } = await supabase
         .from('chit_member_transactions')
         .select('amount, transaction_date, payment_type, status')
         .eq('status', 'completed');
+      if (depositsError) throw depositsError;
 
-      const { data: cashCollections } = await supabase
+      const { data: cashCollections, error: cashCollectionsError } = await supabase
         .from('cash_collections')
         .select('amount, recorded_at');
+      if (cashCollectionsError) throw cashCollectionsError;
 
       const collection = sumCollectionAmounts(deposits || [], cashCollections || []);
 
-      const { data: auctionRows } = await supabase
+      const { data: auctionRows, error: auctionsError } = await supabase
         .from('auctions')
         .select('id, chit_group_id, auction_number, status, min_bid, max_bid, scheduled_at, closes_at');
+      if (auctionsError) throw auctionsError;
       const auctionCount = filterScheduledUpcomingForTab(auctionRows || []).length
         + (auctionRows || []).filter((a) => a.status === 'live').length;
 
       // Dividends (payment_type=dividend and status=completed)
-      const { data: dividendTx } = await supabase
+      const { data: dividendTx, error: dividendsError } = await supabase
         .from('chit_member_transactions')
         .select('amount')
         .eq('payment_type', 'dividend')
         .eq('status', 'completed');
+      if (dividendsError) throw dividendsError;
         
       const dividends = dividendTx ? dividendTx.reduce((acc, d) => acc + Number(d.amount || 0), 0) : 0;
 
@@ -173,11 +179,11 @@ export default function AdminDashboard() {
           <AppLogo size={36} />
           <Text style={styles.appBarTitle}>VSYK CHITS</Text>
         </View>
-        <TouchableOpacity style={styles.iconButton} onPress={() => Haptics.selectionAsync()}>
+        <View style={styles.iconButton} accessibilityElementsHidden>
           <Svg width={24} height={24} viewBox="0 0 24 24" fill="#64748B">
             <Path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2zm-2 1H8v-6c0-2.48 1.51-4.5 4-4.5s4 2.02 4 4.5v6z" />
           </Svg>
-        </TouchableOpacity>
+        </View>
       </View>
 
       <ScrollView
@@ -207,6 +213,17 @@ export default function AdminDashboard() {
           </TouchableOpacity>
         </View>
 
+        <TouchableOpacity
+          style={styles.followupsCard}
+          onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); router.push('/(admin)/collections/followups'); }}
+        >
+          <View style={{ flex: 1 }}>
+            <Text style={styles.followupsTitle}>Collections Follow-ups</Text>
+            <Text style={styles.followupsSub}>Today's overdue/pending customers, ready to call</Text>
+          </View>
+          <Text style={{ fontSize: 20, color: '#005E7D' }}>{'→'}</Text>
+        </TouchableOpacity>
+
         {/* Bento KPI Grid */}
         <View style={styles.bentoGrid}>
           {/* Total AUM */}
@@ -219,7 +236,7 @@ export default function AdminDashboard() {
                 </Svg>
               </View>
             </View>
-            <Text style={styles.headlineLg}>{formatRupees(metrics.totalAUM)}</Text>
+            <Text testID="dashboard-total-aum" style={styles.headlineLg}>{formatRupees(metrics.totalAUM)}</Text>
             <View style={styles.trendRow}>
               <Svg width={14} height={14} viewBox="0 0 24 24" fill="#006A65">
                 <Path d="M16 6l2.29 2.29-4.88 4.88-4-4L2 16.59 3.41 18l6-6 4 4 6.3-6.29L22 12V6z" />
@@ -230,8 +247,8 @@ export default function AdminDashboard() {
 
           {/* Active Members */}
           <View style={[styles.card, styles.cardHalf]}>
-            <Text style={styles.cardLabel}>MEMBERS</Text>
-            <Text style={styles.headlineMd}>{metrics.members.toLocaleString('en-IN')}</Text>
+            <Text style={styles.cardLabel}>CUSTOMERS</Text>
+            <Text testID="dashboard-customers" style={styles.headlineMd}>{metrics.members.toLocaleString('en-IN')}</Text>
             <View style={styles.progressBarBg}>
               <View style={[styles.progressBarFill, { width: '100%', backgroundColor: '#006A65' }]} />
             </View>
@@ -240,7 +257,7 @@ export default function AdminDashboard() {
           {/* Monthly Collection */}
           <View style={[styles.card, styles.cardHalf]}>
             <Text style={styles.cardLabel}>COLLECTION</Text>
-            <Text style={styles.headlineMd}>{formatPaise(metrics.collection)}</Text>
+            <Text testID="dashboard-collection" style={styles.headlineMd}>{formatPaise(metrics.collection)}</Text>
             <View style={styles.trendRow}>
               <Svg width={14} height={14} viewBox="0 0 24 24" fill="#005E7D">
                 <Path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
@@ -252,14 +269,14 @@ export default function AdminDashboard() {
           {/* Pending Auctions */}
           <View style={[styles.card, styles.cardHalf]}>
             <Text style={styles.cardLabel}>AUCTIONS</Text>
-            <Text style={styles.headlineMd}>{metrics.auctions}</Text>
+            <Text testID="dashboard-auctions" style={styles.headlineMd}>{metrics.auctions}</Text>
             <Text style={styles.subtitleItalic}>Active/Upcoming</Text>
           </View>
 
           {/* Dividend Payouts */}
           <View style={[styles.card, styles.cardHalf]}>
             <Text style={styles.cardLabel}>DIVIDENDS</Text>
-            <Text style={styles.headlineMd}>{formatPaise(metrics.dividends)}</Text>
+            <Text testID="dashboard-dividends" style={styles.headlineMd}>{formatPaise(metrics.dividends)}</Text>
             <View style={styles.trendRow}>
               <Svg width={14} height={14} viewBox="0 0 24 24" fill="#006A65">
                 <Path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z" />
@@ -455,6 +472,32 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#006A65',
     letterSpacing: 0.5,
+  },
+  followupsCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 32,
+    borderWidth: 1,
+    borderColor: '#F1F5F9',
+    shadowColor: '#01789E',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.05,
+    shadowRadius: 15,
+    elevation: 2,
+  },
+  followupsTitle: {
+    fontFamily: 'SpaceGrotesk_600SemiBold',
+    fontSize: 15,
+    color: '#0B1C30',
+  },
+  followupsSub: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 12,
+    color: '#64748B',
+    marginTop: 2,
   },
   bentoGrid: {
     flexDirection: 'row',

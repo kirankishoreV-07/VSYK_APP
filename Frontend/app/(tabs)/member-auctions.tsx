@@ -12,7 +12,7 @@ import { Colors, Shadows } from '../../lib/constants';
 import { formatPaise } from '../../lib/hooks/useDashboard';
 import { useMemberSession } from '../../lib/MemberSessionContext';
 
-// ─── Types ────────────────────────────────────────────────────
+// ─── Types ───────────────────────────────────────────────────
 type BidRow = {
   id: string;
   bid_amount: number;

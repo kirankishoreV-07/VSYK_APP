@@ -64,22 +64,22 @@ export async function apiPost<T>(path: string, payload: unknown): Promise<T> {
  * POST to an admin-only backend route with the current admin's real
  * Supabase Auth session attached as a Bearer token — the backend verifies
  * this JWT belongs to a row in admin_users (same check RLS uses) before
- * running the request. Falls back to the embedded shared secret only if no
- * session exists (kept as a non-interactive fallback, not the primary path).
+ * running the request. Admin credentials must never be embedded in the app.
  */
 export async function apiPostAdmin<T>(path: string, payload: unknown): Promise<T> {
     if (!API_BASE_URL) {
         throw new Error('API base URL is not configured.');
     }
     const { data: { session } } = await supabase.auth.getSession();
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (session?.access_token) {
-        headers.Authorization = `Bearer ${session.access_token}`;
-    } else {
-        headers['x-admin-secret'] = process.env.EXPO_PUBLIC_ADMIN_API_SECRET || '';
+    const token = session?.access_token;
+    if (!token) {
+        throw new Error('Your admin session has expired. Please log in again.');
     }
 
-    return postJson<T>(path, payload, headers);
+    return postJson<T>(path, payload, {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+    });
 }
 
 /**

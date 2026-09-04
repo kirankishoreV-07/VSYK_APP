@@ -27,7 +27,10 @@ import {
   sendPaymentOverdueReminder,
   sendPartialPaymentNotice,
   sendAuctionScheduledNotice,
+  sendAuctionReminderNotice,
 } from './templates';
+import { sendTextMessage } from './gupshup';
+import { normalizePhoneToGupshup } from './phoneUtils';
 import type { GupshupSendResult } from './types';
 
 let _sb: SupabaseClient | null = null;
@@ -133,7 +136,7 @@ interface DueRow {
   dividendAmount: number;
   memberName: string;
   phone: string;
-  optedOut: boolean;
+  lacksConsent: boolean;
   inactive: boolean;
   groupName: string;
 }
@@ -150,7 +153,7 @@ function mapDueRow(row: any): DueRow {
     dividendAmount: Number(row.dividend_amount || 0),
     memberName: (cust?.full_name || 'Member').split(' ')[0],
     phone: cust?.phone || '',
-    optedOut: !!cust?.whatsapp_opt_out_at,
+    lacksConsent: cust?.whatsapp_opt_in !== true,
     inactive: !ACTIVE_BID_STATUSES.includes(row.chit_members?.bid_status),
     groupName: row.chit_members?.chit_groups?.name || 'your chit group',
   };
@@ -158,7 +161,7 @@ function mapDueRow(row: any): DueRow {
 
 const DUE_SELECT = `
   id, chit_member_id, month_number, due_date, amount, paid_amount, dividend_amount,
-  chit_members ( bid_status, chit_groups ( name ), customers ( full_name, phone, whatsapp_opt_out_at ) )
+  chit_members ( bid_status, chit_groups ( name ), customers ( full_name, phone, whatsapp_opt_in, whatsapp_opt_out_at ) )
 `;
 
 // A claim (notification_log insert) is made BEFORE send() is attempted, and
@@ -237,12 +240,12 @@ export async function notifyInstallmentDueForAuction(auctionId: string): Promise
     const remaining = Math.max(0, r.amount - r.paid_amount);
     if (remaining <= 0) return 'skipped_nobalance';
     if (!r.phone) return 'skipped_nomember';
-    if (r.optedOut) return 'skipped_optout';
+    if (r.lacksConsent) return 'skipped_optout';
     if (r.inactive) return 'skipped_inactive';
 
     // amount/dividend_amount on payment_schedules already reflect the
     // settled, per-member (participation-share-adjusted) split written by
-    // applyAuctionSettlementToSchedules — reused as-is, never recomputed.
+    // apply_auction_settlement — reused as-is, never recomputed.
     const baseInstallment = r.amount + r.dividendAmount;
 
     return claimAndSend(
@@ -310,7 +313,7 @@ export async function runOverdueSweep(now: Date = new Date()): Promise<Record<Se
     const remaining = Math.max(0, r.amount - r.paid_amount);
     if (remaining <= 0) return 'skipped_nobalance';
     if (!r.phone) return 'skipped_nomember';
-    if (r.optedOut) return 'skipped_optout';
+    if (r.lacksConsent) return 'skipped_optout';
     if (r.inactive) return 'skipped_inactive';
 
     return claimAndSend(
@@ -358,13 +361,13 @@ export async function notifyAuctionScheduled(auctionId: string): Promise<Record<
 
   const { data: members } = await sb
     .from('chit_members')
-    .select('id, bid_status, customers ( full_name, phone, whatsapp_opt_out_at )')
+    .select('id, bid_status, customers ( full_name, phone, whatsapp_opt_in, whatsapp_opt_out_at )')
     .eq('chit_group_id', a.chit_group_id);
 
   const outcomes = await mapWithConcurrency(members || [], 10, async (m): Promise<SendOutcome> => {
     const cust = (m as any).customers;
     if (!cust?.phone) return 'skipped_nomember';
-    if (cust.whatsapp_opt_out_at) return 'skipped_optout';
+    if (cust.whatsapp_opt_in !== true) return 'skipped_optout';
     if (!ACTIVE_BID_STATUSES.includes((m as any).bid_status)) return 'skipped_inactive';
     const name = (cust.full_name || 'Member').split(' ')[0];
 
@@ -376,6 +379,158 @@ export async function notifyAuctionScheduled(auctionId: string): Promise<Record<
       `wa_auction_scheduled:${auctionId}:${(m as any).id}`,
       'wa_auction_scheduled',
       () => sendAuctionScheduledNotice(cust.phone, name, groupName, String(a.auction_number), dateStr, timeStr, chitValue),
+    );
+  });
+
+  for (const o of outcomes) tally[o]++;
+  return tally;
+}
+
+// ── E. Auction Reminder — personal, only for members who opted in ─────
+
+/**
+ * Notify only the members who explicitly set a reminder for THIS auction
+ * (auction_reminders row) that it is starting soon. This is what makes the
+ * member-facing reminder bell (Frontend/lib/hooks/useReminder.ts) actually
+ * do something — previously the "starting soon" push went to every group
+ * member regardless of who set a reminder, so the toggle had no effect.
+ * The group-wide "starting soon" push (server.ts) is unchanged; this is an
+ * additional, personal WhatsApp message layered on top for opted-in members.
+ * Deduped per (auction, member) so re-scanning the same auction on later
+ * ticks is a no-op, not a re-send.
+ */
+export async function notifyAuctionReminders(auctionId: string): Promise<Record<SendOutcome, number>> {
+  const tally: Record<SendOutcome, number> = { sent: 0, duplicate: 0, skipped_optout: 0, skipped_nobalance: 0, skipped_nomember: 0, skipped_inactive: 0, failed: 0 };
+  const sb = getSb();
+  if (!sb) return tally;
+
+  const { data: auction } = await sb
+    .from('auctions')
+    .select('id, chit_group_id, auction_number, scheduled_at, status, chit_groups ( name )')
+    .eq('id', auctionId)
+    .maybeSingle();
+  if (!auction) return tally;
+  const a = auction as any;
+  if (a.status !== 'upcoming' || !a.scheduled_at) return tally;
+
+  const groupName = a.chit_groups?.name || 'your chit group';
+  const minutesUntil = Math.max(0, Math.round((new Date(a.scheduled_at).getTime() - Date.now()) / 60000));
+
+  // auction_reminders.user_id is auth.uid() (a real Supabase Auth session),
+  // not customers.id — resolve to the customer via auth_user_id, matching
+  // the identity chain established by public.current_customer_id() (see
+  // 037_admin_auth_rework.sql).
+  const { data: reminders } = await sb
+    .from('auction_reminders')
+    .select('user_id')
+    .eq('auction_id', auctionId);
+  if (!reminders || reminders.length === 0) return tally;
+
+  const userIds = reminders.map((r: any) => r.user_id);
+  const { data: customers } = await sb
+    .from('customers')
+    .select('id, full_name, phone, whatsapp_opt_in, whatsapp_opt_out_at, auth_user_id')
+    .in('auth_user_id', userIds);
+
+  // Only remind members whose reminder-holding auth user still maps to an
+  // ACTIVE membership of this specific group (mirrors ACTIVE_BID_STATUSES
+  // gating used everywhere else in this file) — a member who left the
+  // group after setting a reminder should not still get pinged.
+  const { data: memberRows } = await sb
+    .from('chit_members')
+    .select('customer_id, bid_status')
+    .eq('chit_group_id', a.chit_group_id)
+    .in('customer_id', (customers || []).map((c: any) => c.id));
+  const activeCustomerIds = new Set(
+    (memberRows || []).filter((m: any) => ACTIVE_BID_STATUSES.includes(m.bid_status)).map((m: any) => m.customer_id),
+  );
+
+  const outcomes = await mapWithConcurrency(customers || [], 10, async (c: any): Promise<SendOutcome> => {
+    if (!c.phone) return 'skipped_nomember';
+    if (c.whatsapp_opt_in !== true) return 'skipped_optout';
+    if (!activeCustomerIds.has(c.id)) return 'skipped_inactive';
+    const name = (c.full_name || 'Member').split(' ')[0];
+
+    return claimAndSend(
+      sb,
+      `wa_auction_reminder:${auctionId}:${c.id}`,
+      'wa_auction_reminder',
+      () => sendAuctionReminderNotice(c.phone, name, groupName, String(a.auction_number), String(minutesUntil)),
+    );
+  });
+
+  for (const o of outcomes) tally[o]++;
+  return tally;
+}
+
+// ── F. Staff daily digest — collections follow-up worklist ────
+
+/**
+ * Send each active staff member with at least one assigned follow-up TODAY
+ * a single WhatsApp message listing their tasks. Called automatically at
+ * the end of Backend/src/collections/service.ts generateAndNotifyToday(),
+ * and available as a manual "Re-send digest" action for after the admin
+ * reassigns tasks later in the day (so reassignment doesn't spam a resend
+ * on every single change). Deduped per (staff, day) — re-running the same
+ * day's generation does not re-send.
+ *
+ * Uses the plain session text API (not a template) — this is an internal
+ * operational message to staff, not a customer-facing business-initiated
+ * message, so it is not registered as an approved WhatsApp template. Like
+ * any WhatsApp session message, the staff number must have an open 24-hour
+ * session with the business number (i.e. have messaged it at least once).
+ */
+export async function notifyStaffDailyDigest(now: Date = new Date()): Promise<Record<SendOutcome, number>> {
+  const tally: Record<SendOutcome, number> = { sent: 0, duplicate: 0, skipped_optout: 0, skipped_nobalance: 0, skipped_nomember: 0, skipped_inactive: 0, failed: 0 };
+  const sb = getSb();
+  if (!sb) return tally;
+
+  const today = now.toISOString().slice(0, 10);
+
+  const { data: rows } = await sb
+    .from('collection_followups')
+    .select(`
+      assigned_staff_id, amount_due, days_overdue,
+      chit_members ( customers ( full_name, phone ) )
+    `)
+    .eq('follow_up_date', today)
+    .eq('status', 'pending')
+    .not('assigned_staff_id', 'is', null);
+  if (!rows || rows.length === 0) return tally;
+
+  const byStaff = new Map<string, any[]>();
+  for (const r of rows as any[]) {
+    const list = byStaff.get(r.assigned_staff_id) || [];
+    list.push(r);
+    byStaff.set(r.assigned_staff_id, list);
+  }
+
+  const staffIds = Array.from(byStaff.keys());
+  const { data: staff } = await sb
+    .from('staff_members')
+    .select('id, full_name, phone, active')
+    .in('id', staffIds)
+    .eq('active', true);
+
+  const outcomes = await mapWithConcurrency(staff || [], 5, async (s: any): Promise<SendOutcome> => {
+    if (!s.phone) return 'skipped_nomember';
+    const tasks = byStaff.get(s.id) || [];
+    if (tasks.length === 0) return 'skipped_nobalance';
+
+    const lines = tasks.slice(0, 30).map((t: any, i: number) => {
+      const cust = t.chit_members?.customers;
+      const name = cust?.full_name || 'Customer';
+      const phone = cust?.phone || '';
+      const overdueLabel = t.days_overdue > 0 ? `${t.days_overdue}d overdue` : 'due today';
+      return `${i + 1}) ${name} — ₹${rupeesPlain(t.amount_due)} — ${overdueLabel} — ${phone}`;
+    });
+    const message = `Today's follow-ups (${tasks.length}):\n\n${lines.join('\n')}`;
+
+    return claimAndSend(
+      sb,
+      `staff_digest:${s.id}:${today}`,
+      'staff_digest',
+      () => sendTextMessage(normalizePhoneToGupshup(s.phone), message),
     );
   });
 
@@ -399,12 +554,12 @@ export async function notifyPartialPayment(input: PartialNotifyInput): Promise<S
 
   const { data: member } = await sb
     .from('chit_members')
-    .select('id, chit_groups ( name ), customers ( full_name, phone, whatsapp_opt_out_at )')
+    .select('id, chit_groups ( name ), customers ( full_name, phone, whatsapp_opt_in, whatsapp_opt_out_at )')
     .eq('id', input.chitMemberId)
     .maybeSingle();
   const cust = (member as any)?.customers;
   if (!cust?.phone) return 'skipped_nomember';
-  if (cust.whatsapp_opt_out_at) return 'skipped_optout';
+  if (cust.whatsapp_opt_in !== true) return 'skipped_optout';
 
   const name = (cust.full_name || 'Member').split(' ')[0];
   const groupName = (member as any)?.chit_groups?.name || 'your chit group';

@@ -6,7 +6,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
-import { supabase } from '../../../../lib/supabase';
+import { apiPostAdmin } from '../../../../lib/api';
 import { formatPaise } from './utils';
 import type { AuctionPrizeSettlement } from './types';
 
@@ -125,41 +125,20 @@ export function RecordPrizeSettlementModal({
 
         setSaving(true);
         try {
-            const payload: any = {
-                auction_id: auction.id,
-                chit_member_id: winner.id,
+            await apiPostAdmin('/api/payments/admin/prize-payout', {
+                auctionId: auction.id,
+                chitMemberId: winner.id,
                 amount: currentInput,
                 notes: notes.trim() || null,
-                denomination_500: isUnaccounted ? parseInt(denoms[500] || '0', 10) : 0,
-                denomination_200: isUnaccounted ? parseInt(denoms[200] || '0', 10) : 0,
-                denomination_100: isUnaccounted ? parseInt(denoms[100] || '0', 10) : 0,
-                denomination_50: isUnaccounted ? parseInt(denoms[50] || '0', 10) : 0,
-                denomination_20: isUnaccounted ? parseInt(denoms[20] || '0', 10) : 0,
-                denomination_10: isUnaccounted ? parseInt(denoms[10] || '0', 10) : 0,
-            };
-
-            const { error } = await supabase
-                .from('auction_prize_settlements')
-                .insert([payload]);
-
-            if (error) throw error;
-
-            // Also create a chit_member_transaction so the payout appears properly in
-            // the customer's Payment History, Ledger, and transaction lists.
-            // This fixes the "full credit shown even when only partial was paid" issue.
-            try {
-              await supabase.from('chit_member_transactions').insert([{
-                chit_member_id: winner.id,
-                auction_id: auction.id,
-                amount: currentInput,
-                payment_type: 'prize',
-                status: 'completed',
-                transaction_date: new Date().toISOString(),
-                notes: `Auction Prize Payout (Cycle ${auction.auction_number})${isFullThisTime ? ' (Full settlement)' : ' (Partial)'}`,
-              }]);
-            } catch (txErr: any) {
-              console.warn('Non-fatal: could not create prize transaction record:', txErr?.message);
-            }
+                denominations: {
+                    500: isUnaccounted ? parseInt(denoms[500] || '0', 10) : 0,
+                    200: isUnaccounted ? parseInt(denoms[200] || '0', 10) : 0,
+                    100: isUnaccounted ? parseInt(denoms[100] || '0', 10) : 0,
+                    50: isUnaccounted ? parseInt(denoms[50] || '0', 10) : 0,
+                    20: isUnaccounted ? parseInt(denoms[20] || '0', 10) : 0,
+                    10: isUnaccounted ? parseInt(denoms[10] || '0', 10) : 0,
+                },
+            });
 
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
@@ -248,7 +227,7 @@ export function RecordPrizeSettlementModal({
                     keyboardType="numeric"
                     value={amount}
                     onChangeText={setAmount}
-                    placeholder="0.00"
+                    placeholder="Enter payout amount"
                     placeholderTextColor="#94A3B8"
                 />
                 <Text style={styles.hint}>
@@ -268,6 +247,8 @@ export function RecordPrizeSettlementModal({
                                         keyboardType="numeric"
                                         value={denoms[value]}
                                         onChangeText={(v) => handleDenomChange(value, v)}
+                                        placeholder="Enter note count"
+                                        placeholderTextColor="#94A3B8"
                                     />
                                 </View>
                             ))}
@@ -285,7 +266,7 @@ export function RecordPrizeSettlementModal({
                     style={styles.notesInput}
                     value={notes}
                     onChangeText={setNotes}
-                    placeholder={isUnaccounted ? "Internal notes (cash handover details...)" : "Bank ref / UPI ID / Cheque no..."}
+                    placeholder={isUnaccounted ? "Enter cash handover reference (optional)" : "Enter bank, UPI, or cheque reference (optional)"}
                     placeholderTextColor="#94A3B8"
                     multiline
                 />

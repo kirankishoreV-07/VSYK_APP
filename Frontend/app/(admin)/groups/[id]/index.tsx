@@ -7,7 +7,7 @@ import * as Haptics from 'expo-haptics';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { supabase } from '../../../../lib/supabase';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { apiPost } from '../../../../lib/api';
+import { apiPostAdmin } from '../../../../lib/api';
 import { AuctionSettlementModal } from '../../customers/_components/AuctionSettlementModal';
 import { RecordPrizeSettlementModal } from '../../customers/_components/RecordPrizeSettlementModal';
 import { PrizeSettlementDetailsModal } from '../../customers/_components/PrizeSettlementDetailsModal';
@@ -15,7 +15,6 @@ import { getAuctionWinnerDisplayName } from '../../../../lib/auctionWinner';
 import {
   dedupeAuctionCycles,
   getMemberDueAfterAuction,
-  applyAuctionSettlementToSchedules,
   ensureBaseSchedulesForMember,
 } from '../../../../lib/chitPayments';
 import {
@@ -23,6 +22,7 @@ import {
   sanitizePlaceholderAuctionSchedules,
   getPlaceholderAuctionScheduleDate,
 } from '../../../../lib/auctionUtils';
+import { useAdminParentBack } from '../../../../lib/hooks/admin/useAdminParentBack';
 
 // ── Step3Review: extracted to avoid IIFE JSX parsing issues ──
 function Step3Review({
@@ -122,17 +122,24 @@ function Step3Review({
 export default function AdminGroupDetail() {
   const router = useRouter();
   const { id } = useLocalSearchParams();
+  const handleParentBack = useAdminParentBack('/(admin)/groups');
   const [group, setGroup] = useState<any>(null);
   const [members, setMembers] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const isGeneratingRef = React.useRef(false);
+  // Only ever pre-generate auctions from a list we actually managed to read.
+  // A failed/unauthenticated read returns [] and must never be mistaken for
+  // "this group has no auctions yet" — that turned a read failure into a
+  // bogus 20-row insert (rejected by RLS as 42501).
+  const auctionsLoadedRef = React.useRef(false);
 
   // Add Member Modal State
   const [showAddModal, setShowAddModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [adding, setAdding] = useState(false);
+  const [activating, setActivating] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null);
   const [participation, setParticipation] = useState<'full' | 'half'>('full');
 
@@ -189,6 +196,35 @@ export default function AdminGroupDetail() {
   const calculatedEmi = ((Number(group?.value) || 0) / (Number(group?.no_of_installments) || Number(group?.duration_months) || 1));
   const baseEmi = (Number(group?.emi_amount) || Number(group?.monthly_installment) || calculatedEmi) / 100;
   const displayEmi = participation === 'full' ? baseEmi : baseEmi / 2;
+
+  const handleActivateGroup = async () => {
+    if (!group?.id || group.status !== 'draft' || activating) return;
+    if (totalShares !== capacity) {
+      Alert.alert(
+        'Enrollment Incomplete',
+        `This group holds ${capacity} shares and ${totalShares} are filled — enrol ${capacity - totalShares} more before activating.`,
+      );
+      return;
+    }
+    setActivating(true);
+    try {
+      const { data, error } = await supabase
+        .from('chit_groups')
+        .update({ status: 'active', updated_at: new Date().toISOString() })
+        .eq('id', group.id)
+        .eq('status', 'draft')
+        .select('id, status')
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) throw new Error('Group status changed before activation. Refresh and try again.');
+      setGroup((current: any) => ({ ...current, status: 'active' }));
+      Alert.alert('Group Activated', 'The group is now visible to enrolled customers and auctions can begin.');
+    } catch (error: any) {
+      Alert.alert('Activation Failed', error?.message || 'The group could not be activated.');
+    } finally {
+      setActivating(false);
+    }
+  };
 
   const fetchGroup = useCallback(async () => {
     try {
@@ -254,11 +290,17 @@ export default function AdminGroupDetail() {
   const fetchAuctions = useCallback(async () => {
     if (!group?.id) return;
     try {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('auctions')
         .select('*')
         .eq('chit_group_id', group.id)
         .order('auction_number', { ascending: false });
+      if (error) {
+        auctionsLoadedRef.current = false;
+        console.error('Error fetching auctions:', error);
+        return;
+      }
+      auctionsLoadedRef.current = true;
       const rows = data || [];
       const sanitized = await sanitizePlaceholderAuctionSchedules(supabase, rows);
       let finalRows = rows;
@@ -278,22 +320,6 @@ export default function AdminGroupDetail() {
       // Always load prize settlements after auctions (for partial winner payouts)
       await fetchPrizeSettlements(finalRows);
 
-      // Auto-sync: for any completed auction, ensure payment_schedules reflects settlement.
-      // Uses the robust applier (creates rows for members added after the auction or missing schedules).
-      const completed = (data || []).filter(
-        (a: any) => a.status === 'completed' && a.auction_number != null
-      );
-      for (const ca of completed) {
-        const fd = Number(ca.final_due_amount ?? ca.installment_due ?? 0);
-        const dv = Number(ca.dividend_amount ?? 0);
-        if (fd > 0 || dv > 0) {
-          try {
-            await applyAuctionSettlementToSchedules(supabase, group.id, ca.auction_number, fd, dv);
-          } catch (syncErr) {
-            console.warn('Auto-sync settlement apply warning:', syncErr);
-          }
-        }
-      }
     } catch (err) {
       console.error('Error fetching auctions:', err);
     }
@@ -301,6 +327,11 @@ export default function AdminGroupDetail() {
 
   const ensureAuctionsExist = async (g: any, currentAuctions: any[]) => {
     if (!g?.id) return;
+    if (!auctionsLoadedRef.current) return;
+    // The Supabase session is restored asynchronously on a cold start; writing
+    // before it lands goes out unauthenticated and is refused by RLS.
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
     const totalNeeded = g.no_of_installments || g.duration_months || 0;
     if (totalNeeded <= 0) return;
 
@@ -328,8 +359,13 @@ export default function AdminGroupDetail() {
       console.log(`Pre-generating ${missing.length} missing auctions...`);
       const { error } = await supabase.from('auctions').insert(missing);
       isGeneratingRef.current = false;
-      if (error) console.error('Error pre-generating auctions:', error);
-      else fetchAuctions();
+      if (error) {
+        console.error('Error pre-generating auctions:', error);
+        Alert.alert(
+          'Auction Setup Failed',
+          'The auction schedule for this group could not be created. Please reopen the group, and contact support if it keeps happening.',
+        );
+      } else fetchAuctions();
     }
   };
 
@@ -456,6 +492,17 @@ export default function AdminGroupDetail() {
   const handleSaveSchedule = async (setLive = false) => {
     if (!selectedAuctionForSchedule || !group) return;
 
+    if (setLive && group.status !== 'active') {
+      const shortfall = capacity - totalShares;
+      Alert.alert(
+        'Activate Group First',
+        shortfall > 0
+          ? `This group is still a draft. Enrol ${shortfall} more of its ${capacity} shares, then press ACTIVATE GROUP before starting an auction.`
+          : 'This group is still a draft. Press ACTIVATE GROUP on this screen before starting an auction.',
+      );
+      return;
+    }
+
     const min = parseFloat(tempMinBid) || 0;
     const max = parseFloat(tempMaxBid) || 0;
     const chitValue = (group.value || 0) / 100;
@@ -528,7 +575,7 @@ export default function AdminGroupDetail() {
       setShowScheduleModal(false);
       fetchAuctions();
 
-      if (setLive) router.push('/(admin)/auctions/live');
+      if (setLive) router.push({ pathname: '/(admin)/auctions/live', params: { auctionId: selectedAuctionForSchedule.id } });
     } catch (err: any) {
       Alert.alert('Error', err.message);
     } finally {
@@ -606,15 +653,6 @@ export default function AdminGroupDetail() {
               duration_months: group.no_of_installments || group.duration_months,
             });
 
-            // 2. For any already completed auctions, apply the settled due/dividend to this new member's schedule row
-            const completedAuctions = (auctions || []).filter((a: any) => a.status === 'completed' && a.auction_number != null);
-            for (const ca of completedAuctions) {
-              const fd = Number(ca.final_due_amount || ca.installment_due || 0);
-              const dv = Number(ca.dividend_amount || 0);
-              if (fd > 0 || dv > 0) {
-                await applyAuctionSettlementToSchedules(supabase, group.id, ca.auction_number, fd, dv);
-              }
-            }
           }
         } catch (e) {
           console.warn('Post-add member schedule backfill non-fatal:', e);
@@ -803,7 +841,12 @@ export default function AdminGroupDetail() {
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Header */}
       <View style={styles.appBar}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+        <TouchableOpacity
+          style={styles.backBtn}
+          onPress={handleParentBack}
+          accessibilityRole="button"
+          accessibilityLabel="Back to chit groups"
+        >
           <Svg width={24} height={24} viewBox="0 0 24 24" fill="#0F172A">
             <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
           </Svg>
@@ -870,6 +913,17 @@ export default function AdminGroupDetail() {
             >
               <Text style={styles.executeBtnText}>{isAtCapacity ? 'GROUP FULL' : '+ ADD MEMBER'}</Text>
             </TouchableOpacity>
+            {group?.status === 'draft' && (
+              <TouchableOpacity
+                style={[styles.executeBtn, activating && { opacity: 0.5 }]}
+                onPress={handleActivateGroup}
+                disabled={activating}
+                accessibilityRole="button"
+                accessibilityLabel="Activate chit group"
+              >
+                <Text style={styles.executeBtnText}>{activating ? 'ACTIVATING…' : 'ACTIVATE GROUP'}</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
 
@@ -1093,7 +1147,7 @@ export default function AdminGroupDetail() {
                     {!isCompleted && (
                       <View style={styles.timelineActions}>
                         {isLive ? (
-                          <TouchableOpacity style={styles.timelineActionBtnLive} onPress={() => router.push('/(admin)/auctions/live')}>
+                          <TouchableOpacity style={styles.timelineActionBtnLive} onPress={() => router.push({ pathname: '/(admin)/auctions/live', params: { auctionId: auction.id } })}>
                             <Text style={styles.timelineActionBtnTextLive}>ENTER LIVE AUCTION →</Text>
                           </TouchableOpacity>
                         ) : (
@@ -1503,7 +1557,7 @@ export default function AdminGroupDetail() {
                             keyboardType="numeric"
                             value={tempMinBid}
                             onChangeText={setTempMinBid}
-                            placeholder="0"
+                            placeholder="Enter minimum discount"
                             placeholderTextColor="#CBD5E1"
                           />
                         </View>
@@ -1514,7 +1568,7 @@ export default function AdminGroupDetail() {
                             keyboardType="numeric"
                             value={tempMaxBid}
                             onChangeText={setTempMaxBid}
-                            placeholder={String(Math.round((group?.value || 0) / 100))}
+                            placeholder="Enter maximum discount"
                             placeholderTextColor="#CBD5E1"
                           />
                         </View>

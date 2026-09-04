@@ -74,6 +74,7 @@ type PaymentScheduleRow = {
 type TransactionRow = {
   id: string;
   chit_member_id?: string;
+  payment_schedule_id?: string | null;
   amount: number;
   auction_id: string | null;
   transaction_date: string;
@@ -92,7 +93,12 @@ type CashRow = {
 function resolveMonthFromTransaction(
   tx: TransactionRow,
   auctionsById: Map<string, AuctionCycleInfo>,
+  schedulesById: Map<string, number>,
 ): number | null {
+  if (tx.payment_schedule_id) {
+    const scheduleMonth = schedulesById.get(tx.payment_schedule_id);
+    if (scheduleMonth != null) return scheduleMonth;
+  }
   if (tx.auction_id) {
     const auction = auctionsById.get(tx.auction_id);
     if (auction?.auction_number != null) return auction.auction_number;
@@ -107,11 +113,12 @@ function resolveMonthFromTransaction(
 function groupTransactionsByMonth(
   transactions: TransactionRow[],
   auctionsById: Map<string, AuctionCycleInfo>,
+  schedulesById: Map<string, number>,
 ): Map<number, { amount: number; latestAt: string }> {
   const map = new Map<number, { amount: number; latestAt: string }>();
   for (const tx of transactions) {
     if (tx.payment_type !== 'installment') continue;
-    const month = resolveMonthFromTransaction(tx, auctionsById);
+    const month = resolveMonthFromTransaction(tx, auctionsById, schedulesById);
     if (month == null) continue;
     const existing = map.get(month) || { amount: 0, latestAt: tx.transaction_date };
     existing.amount += Number(tx.amount || 0);
@@ -202,7 +209,7 @@ export async function fetchGroupHistoryDetail(
     `)
     .eq('id', membershipId)
     .eq('customer_id', memberId)
-    .single();
+    .maybeSingle();
 
   if (memberError || !membership) throw new Error('Group membership not found');
 
@@ -223,7 +230,7 @@ export async function fetchGroupHistoryDetail(
       .order('month_number'),
     supabase
       .from('chit_member_transactions')
-      .select('id, amount, auction_id, transaction_date, notes, payment_type')
+      .select('id, amount, auction_id, payment_schedule_id, transaction_date, notes, payment_type')
       .eq('chit_member_id', membershipId)
       .eq('status', 'completed'),
     supabase
@@ -248,6 +255,7 @@ export async function fetchGroupHistoryDetail(
   const txByMonth = groupTransactionsByMonth(
     (transactions || []) as TransactionRow[],
     auctionsById,
+    new Map(((schedules || []) as PaymentScheduleRow[]).map((s) => [s.id, s.month_number])),
   );
 
   const cashByMonth = new Map<number, CashRow>();
@@ -499,7 +507,11 @@ export function buildMemberPaymentMonths(input: BuildMonthsInput): MonthPaymentR
       .map((a) => [a.auction_number!, a]),
   );
 
-  const txByMonth = groupTransactionsByMonth(transactions, auctionsById);
+  const txByMonth = groupTransactionsByMonth(
+    transactions,
+    auctionsById,
+    new Map(schedules.map((s) => [s.id, s.month_number])),
+  );
   const cashByMonth = new Map<number, CashRow>();
   cashRows.forEach((row) => cashByMonth.set(row.month_number, row));
 

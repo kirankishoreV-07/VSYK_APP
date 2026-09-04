@@ -18,6 +18,5 @@ ALTER COLUMN user_id DROP NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_auction_bids_customer_id ON public.auction_bids(customer_id);
 CREATE INDEX IF NOT EXISTS idx_auction_participants_customer_id ON public.auction_participants(customer_id);
 
-ALTER TABLE public.auction_participants
-ADD CONSTRAINT IF NOT EXISTS unique_auction_customer
-UNIQUE (auction_id, customer_id);
+CREATE UNIQUE INDEX IF NOT EXISTS unique_auction_customer
+ON public.auction_participants(auction_id, customer_id);

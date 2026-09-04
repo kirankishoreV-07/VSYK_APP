@@ -6,7 +6,7 @@ export type GroupStatus = 'active' | 'completed' | 'cancelled' | 'foreclosed';
 export type BidStatus = 'active' | 'bidding' | 'completed' | 'foreclosed';
 export type PaymentStatus = 'Full' | 'Partial' | 'Unpaid';
 export type TransactionStatus = 'completed' | 'success' | 'failed' | 'refunded' | 'pending';
-export type PaymentType = 'installment' | 'penalty' | 'registration' | 'refund';
+export type PaymentType = 'installment' | 'penalty' | 'registration' | 'dividend' | 'prize' | 'adjustment' | 'refund';
 export type AuctionStatus = 'upcoming' | 'live' | 'completed' | 'cancelled';
 export type AccountingType = 'accounted' | 'unaccounted';
 
@@ -58,8 +58,11 @@ export interface Transaction {
     id: string;
     chit_member_id: string;
     auction_id: string | null;
+    payment_schedule_id?: string | null;
     amount: number; // paise
     payment_type: PaymentType;
+    payment_method?: string | null;
+    external_payment_id?: string | null;
     status: TransactionStatus;
     transaction_date: string;
     notes: string | null;

@@ -497,7 +497,7 @@ export function RecordCashCollectionModal({
                         <Text style={styles.inputLabel}>MONTH NUMBER *</Text>
                         <TextInput
                             style={styles.input}
-                            placeholder="1"
+                            placeholder="Enter instalment month number"
                             keyboardType="number-pad"
                             value={monthNumber}
                             onChangeText={setMonthNumber}
@@ -510,7 +510,7 @@ export function RecordCashCollectionModal({
                     <Text style={styles.inputLabel}>AMOUNT (₹) *</Text>
                     <TextInput
                         style={styles.input}
-                        placeholder="0.00"
+                        placeholder="Enter collected amount"
                         keyboardType="decimal-pad"
                         value={amount}
                         onChangeText={setAmount}
@@ -556,7 +556,7 @@ export function RecordCashCollectionModal({
                                             <Text style={styles.denominationLabel}>{label} × </Text>
                                             <TextInput
                                                 style={styles.denominationInput}
-                                                placeholder="0"
+                                                placeholder="Enter note count"
                                                 keyboardType="number-pad"
                                                 value={val}
                                                 onChangeText={setVal}
@@ -618,7 +618,7 @@ export function RecordCashCollectionModal({
                                 <Text style={styles.inputLabel}>NOTES</Text>
                                 <TextInput
                                     style={[styles.input, { minHeight: 80, textAlignVertical: 'top' }]}
-                                    placeholder="Staff notes, collection context, etc. (not visible to customer)"
+                                    placeholder="Enter internal collection notes (not visible to customer)"
                                     multiline
                                     value={notes}
                                     onChangeText={setNotes}

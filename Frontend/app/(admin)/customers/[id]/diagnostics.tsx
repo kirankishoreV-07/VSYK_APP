@@ -7,11 +7,13 @@ import { Colors } from '../../../../lib/constants';
 import { useCustomerDetailData } from '../../../../lib/hooks/admin/useCustomerDetailData';
 import { DiagnosticsTab } from '../_components/DiagnosticsTab';
 import { Text } from 'react-native';
+import { useAdminParentBack } from '../../../../lib/hooks/admin/useAdminParentBack';
 
 export default function DiagnosticsScreen() {
     const { id } = useLocalSearchParams<{ id: string }>();
     const router = useRouter();
     const customerId = typeof id === 'string' ? id : '';
+    const handleBack = useAdminParentBack(`/(admin)/customers/${customerId}` as any);
 
     const { data, isLoading, error } = useCustomerDetailData(customerId);
 
@@ -19,7 +21,7 @@ export default function DiagnosticsScreen() {
         return (
             <SafeAreaView style={styles.container}>
                 <View style={styles.appBar}>
-                    <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+                    <TouchableOpacity onPress={handleBack} style={styles.backButton} accessibilityRole="button" accessibilityLabel="Back to customer details">
                         <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.primary}>
                             <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
                         </Svg>
@@ -35,7 +37,7 @@ export default function DiagnosticsScreen() {
         return (
             <SafeAreaView style={styles.container}>
                 <View style={styles.appBar}>
-                    <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+                    <TouchableOpacity onPress={handleBack} style={styles.backButton} accessibilityRole="button" accessibilityLabel="Back to customer details">
                         <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.primary}>
                             <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
                         </Svg>
@@ -55,13 +57,13 @@ export default function DiagnosticsScreen() {
         <SafeAreaView style={styles.container}>
             {/* App Bar */}
             <View style={styles.appBar}>
-                <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+                <TouchableOpacity onPress={handleBack} style={styles.backButton} accessibilityRole="button" accessibilityLabel="Back to customer details">
                     <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.primary}>
                         <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
                     </Svg>
                 </TouchableOpacity>
                 <Text style={styles.appBarTitle}>
-                    {customer?.name || 'Customer'} - Diagnostics
+                    {customer?.full_name || 'Customer'} - Diagnostics
                 </Text>
             </View>
 

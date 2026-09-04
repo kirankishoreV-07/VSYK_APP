@@ -9,14 +9,24 @@ import { createClient } from '@supabase/supabase-js';
 import { whatsappRouter } from './whatsapp';
 import { authRouter } from './auth/otp';
 import { paymentsRouter } from './payments/payments';
-import { notifyInstallmentDueForAuction, runOverdueSweep, notifyAuctionScheduled, sweepStaleNotificationClaims } from './whatsapp/proactiveNotifications';
+import { notifyInstallmentDueForAuction, runOverdueSweep, notifyAuctionScheduled, notifyAuctionReminders, sweepStaleNotificationClaims } from './whatsapp/proactiveNotifications';
 import { requireAdminAuth } from './middleware/adminAuth';
 import { accountRouter } from './account/deletion';
+import { collectionsRouter } from './collections/router';
+import { generateAndNotifyToday } from './collections/service';
 
 dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 5000;
+
+// Managed hosts (Railway, Render, Fly) terminate TLS at a proxy and pass the
+// caller's address in X-Forwarded-For. Without this, req.ip resolves to the
+// proxy for every request, so express-rate-limit counts the entire user base
+// as a single client and everyone shares one 300-per-15-minute bucket.
+// The value is the number of proxy hops to trust — 1 for a standard managed
+// host. Set TRUST_PROXY_HOPS=0 when running with no proxy in front.
+app.set('trust proxy', Number.parseInt(process.env.TRUST_PROXY_HOPS ?? '1', 10) || 0);
 
 const razorpayKeyId = process.env.RAZORPAY_KEY_ID || '';
 const razorpayKeySecret = process.env.RAZORPAY_KEY_SECRET || '';
@@ -72,7 +82,7 @@ app.use(cors({
 // hammering the API with many different phone numbers/requests.
 app.use(rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: 300,
+  limit: Math.max(1, Number.parseInt(process.env.API_RATE_LIMIT_MAX || '300', 10) || 300),
   standardHeaders: true,
   legacyHeaders: false,
 }));
@@ -81,7 +91,7 @@ app.use(rateLimit({
 // per-phone limits already enforced inside auth/otp.ts.
 const otpLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: 20,
+  limit: Math.max(1, Number.parseInt(process.env.AUTH_RATE_LIMIT_MAX || '20', 10) || 20),
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -90,6 +100,7 @@ app.use(express.json());
 app.use('/api/whatsapp', whatsappRouter);
 app.use('/api/auth', otpLimiter, authRouter);
 app.use('/api/account', accountRouter);
+app.use('/api/collections', collectionsRouter);
 
 app.get('/api/health', (req: Request, res: Response) => {
   res.json({ status: 'ok', message: 'VSYK Chits Backend is running!' });
@@ -206,6 +217,25 @@ async function runAuctionSchedulerInner() {
   const now = new Date();
   const nowIso = now.toISOString();
 
+  // ── 0. Collections follow-ups: generate once per calendar day ────────────
+  // Reuses the existing notification_log unique-key dedup pattern (same
+  // table every other "send exactly once" claim in this file already uses)
+  // instead of a new mechanism — the claim itself is the "already generated
+  // today" marker, no row insert into it beyond that.
+  const today = nowIso.slice(0, 10);
+  const { error: followupsClaimError } = await supabaseAdmin
+    .from('notification_log')
+    .insert({ notification_key: `followups_generated:${today}`, notification_type: 'followups_generated' });
+  if (!followupsClaimError) {
+    try {
+      await generateAndNotifyToday(now);
+    } catch (err) {
+      console.warn('[Scheduler] Collections follow-up generation failed:', err);
+    }
+  } else if ((followupsClaimError as any).code !== '23505') {
+    console.warn('[Scheduler] Follow-up generation claim failed:', followupsClaimError.message);
+  }
+
   // ── 1. "Starting soon" reminder: 10 minutes before scheduled_at ──────────
   // Notify members of upcoming auctions whose start is within the next 10 min.
   // sendOnce keyed by auction id guarantees a single reminder despite 60s ticks.
@@ -232,6 +262,16 @@ async function runAuctionSchedulerInner() {
       },
     );
     if (!res.skipped) reminded += 1;
+
+    // Personal WhatsApp reminder — ONLY for members who set the reminder
+    // bell on this specific auction (auction_reminders), on top of the
+    // group-wide push above. This is what makes that toggle actually do
+    // something (previously the push above went out regardless of it).
+    try {
+      await notifyAuctionReminders(auction.id);
+    } catch (err) {
+      console.warn('[Scheduler] WhatsApp auction-reminder notify failed for', auction.id, err);
+    }
   }
 
   // ── 2. Open auctions whose scheduled_at has passed → go live ─────────────
@@ -292,7 +332,7 @@ async function runAuctionSchedulerInner() {
 
   const { data: toClose } = await supabaseAdmin
     .from('auctions')
-    .select('id, chit_group_id, auction_number, chit_groups(name)')
+    .select('id, chit_group_id, auction_number, chit_groups(name, value, capacity, monthly_installment, agent_commission_rate)')
     .eq('status', 'live')
     .lte('closes_at', nowIso);
 
@@ -311,23 +351,50 @@ async function runAuctionSchedulerInner() {
       .limit(1)
       .maybeSingle();
 
-    let winnerMemberId: string | null = null;
-    if (highestBid?.customer_id) {
-      const { data: memberRow } = await supabaseAdmin
-        .from('chit_members')
-        .select('id')
-        .eq('chit_group_id', auction.chit_group_id)
-        .eq('customer_id', highestBid.customer_id)
-        .maybeSingle();
-      winnerMemberId = memberRow?.id ?? null;
+    const { data: groupMembers, error: membersError } = await supabaseAdmin
+      .from('chit_members')
+      .select('id, customer_id, participation_share, customers(full_name)')
+      .eq('chit_group_id', auction.chit_group_id);
+    if (membersError) {
+      console.error('[Scheduler] Could not load members for settlement:', membersError.message);
+      continue;
     }
 
-    await supabaseAdmin.from('auctions').update({
-      status: 'completed',
-      current_bid: highestBid?.bid_amount ?? 0,
-      winner_member_id: winnerMemberId,
-      ended_at: new Date().toISOString(),
-    }).eq('id', auction.id);
+    const winnerMember = (groupMembers || []).find((m: any) => m.customer_id === highestBid?.customer_id);
+    const winnerMemberId = (winnerMember as any)?.id ?? null;
+    const winnerName = (winnerMember as any)?.customers?.full_name ?? null;
+    const group: any = (auction as any).chit_groups || {};
+    const groupValue = Number(group.value || 0);
+    const totalShares = (groupMembers || []).reduce(
+      (sum: number, member: any) => sum + Number(member.participation_share || 1),
+      0,
+    ) || Number(group.capacity || 1);
+    const discountPaise = Number(highestBid?.bid_amount || 0);
+    const installmentPaise = Number(group.monthly_installment || 0)
+      || Math.round(groupValue / Math.max(totalShares, 1));
+    const commissionRate = Math.min(Math.max(Number(group.agent_commission_rate ?? 5), 0), 100) / 100;
+    const commissionPaise = Math.round(groupValue * commissionRate);
+    const dividendPerSharePaise = Math.round(
+      Math.max(discountPaise - commissionPaise, 0) / Math.max(totalShares, 1),
+    );
+    const finalDuePaise = Math.max(installmentPaise - dividendPerSharePaise, 0);
+    const prizePaise = highestBid ? Math.max(groupValue - discountPaise, 0) : 0;
+
+    const { error: settleError } = await supabaseAdmin.rpc('apply_auction_settlement', {
+      p_auction_id: auction.id,
+      p_winner_member_id: winnerMemberId,
+      p_winner_name: winnerName,
+      p_current_bid: discountPaise,
+      p_installment_due: installmentPaise,
+      p_dividend_amount: dividendPerSharePaise,
+      p_discount_amount: discountPaise,
+      p_final_due_amount: finalDuePaise,
+      p_winner_prize_amount: prizePaise,
+    });
+    if (settleError) {
+      console.error('[Scheduler] Atomic auction settlement failed:', settleError.message);
+      continue;
+    }
 
     await supabaseAdmin.from('auction_events').insert([{
       auction_id: auction.id,
@@ -335,42 +402,6 @@ async function runAuctionSchedulerInner() {
       performed_by: 'System',
       notes: 'Auction closed automatically',
     }]);
-
-    // Best-effort: apply settlement to payment_schedules so dues are correct even for auto-closed auctions.
-    // (Client-side applier on next group/admin view will ensure/create rows if the simple update misses any.)
-    // Capture the per-member payable so the completion push can state the amount.
-    let finalDuePaise = 0;
-    try {
-      const { data: autoAuction } = await supabaseAdmin
-        .from('auctions')
-        .select('auction_number, final_due_amount, dividend_amount, chit_group_id')
-        .eq('id', auction.id)
-        .maybeSingle();
-      if (autoAuction && autoAuction.auction_number != null) {
-        const fd = Number(autoAuction.final_due_amount || 0);
-        const dv = Number(autoAuction.dividend_amount || 0);
-        finalDuePaise = fd;
-        if (fd > 0 || dv > 0) {
-          const { data: gMembers } = await supabaseAdmin
-            .from('chit_members')
-            .select('id, participation_share')
-            .eq('chit_group_id', autoAuction.chit_group_id);
-          for (const gm of (gMembers || [])) {
-            const sh = Number((gm as any).participation_share || 1);
-            await supabaseAdmin
-              .from('payment_schedules')
-              .update({
-                amount: Math.round(fd * sh),
-                dividend_amount: Math.round(dv * sh),
-              })
-              .eq('chit_member_id', (gm as any).id)
-              .eq('month_number', autoAuction.auction_number);
-          }
-        }
-      }
-    } catch (autoSettleErr) {
-      console.warn('Auto scheduler schedule apply non-fatal:', autoSettleErr);
-    }
 
     const groupName = (auction as any).chit_groups?.name || 'Your group';
     const memberIds = await getGroupMemberCustomerIds(auction.chit_group_id);
@@ -548,8 +579,7 @@ app.use('/api/payments', paymentsRouter);
 // rewrites payment_schedules.amount/dividend_amount for a whole group) or
 // send real pushes. requireAdminAuth (src/middleware/adminAuth.ts) verifies
 // the caller's JWT resolves to a real row in admin_users — the same check
-// RLS's is_admin() uses — with the static ADMIN_API_SECRET as a fallback for
-// non-interactive callers.
+// RLS's is_admin() uses.
 app.post('/api/auctions/scheduler/run', requireAdminAuth, async (_req: Request, res: Response) => {
   try {
     const result = await runAuctionScheduler();
@@ -651,38 +681,106 @@ app.post('/api/auctions/notify-upcoming', requireAdminAuth, async (req: Request,
 app.post('/api/auctions/apply-settlement', requireAdminAuth, async (req: Request, res: Response) => {
   try {
     if (!supabaseAdmin) return res.status(500).json({ error: 'Supabase not configured.' });
-    const { auctionId } = req.body ?? {};
+    const {
+      auctionId, winnerMemberId, winnerName, currentBid, installmentDue,
+      dividendAmount, discountAmount, finalDueAmount, winnerPrizeAmount,
+    } = req.body ?? {};
     if (!auctionId) return res.status(400).json({ error: 'auctionId is required.' });
 
-    const { data: auction } = await supabaseAdmin
+    const { data: auction, error: auctionError } = await supabaseAdmin
       .from('auctions')
-      .select('id, chit_group_id, auction_number, final_due_amount, dividend_amount')
+      .select('id, status, chit_group_id, winner_member_id, winner_name, current_bid, installment_due, dividend_amount, discount_amount, final_due_amount, winner_prize_amount, chit_groups(value, capacity, monthly_installment, agent_commission_rate)')
       .eq('id', auctionId)
       .maybeSingle();
+    if (auctionError) return res.status(500).json({ error: 'Could not load auction.' });
     if (!auction) return res.status(404).json({ error: 'Auction not found.' });
 
-    const { data: members } = await supabaseAdmin
-      .from('chit_members')
-      .select('id, participation_share')
-      .eq('chit_group_id', auction.chit_group_id);
+    const amount = (value: unknown, fallback: unknown) => Math.round(Number(value ?? fallback ?? 0));
+    let resolvedWinnerMemberId = winnerMemberId === undefined ? auction.winner_member_id : winnerMemberId || null;
+    let resolvedWinnerName = winnerName === undefined ? auction.winner_name : winnerName || null;
+    let settlement = {
+      currentBid: amount(currentBid, auction.current_bid),
+      installmentDue: amount(installmentDue, auction.installment_due),
+      dividendAmount: amount(dividendAmount, auction.dividend_amount),
+      discountAmount: amount(discountAmount, auction.discount_amount),
+      finalDueAmount: amount(finalDueAmount, auction.final_due_amount),
+      winnerPrizeAmount: amount(winnerPrizeAmount, auction.winner_prize_amount),
+    };
 
-    const updates = (members || []).map(async (member: any) => {
-      const share = Number(member.participation_share || 1);
-      const amount = Math.round(Number(auction.final_due_amount || 0) * share);
-      const dividend = Math.round(Number(auction.dividend_amount || 0) * share);
+    // For an in-app live auction the database leaderboard is authoritative.
+    // Never accept winner or financial totals calculated by a client.
+    if (auction.status === 'live') {
+      const [{ data: topBid, error: bidError }, { data: groupMembers, error: membersError }] = await Promise.all([
+        supabaseAdmin
+          .from('auction_bids')
+          .select('customer_id, bid_amount, customers(full_name)')
+          .eq('auction_id', auctionId)
+          .eq('is_retracted', false)
+          .order('bid_amount', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        supabaseAdmin
+          .from('chit_members')
+          .select('id, customer_id, participation_share, customers(full_name)')
+          .eq('chit_group_id', auction.chit_group_id),
+      ]);
+      if (bidError || membersError) return res.status(500).json({ error: 'Could not resolve the auction result.' });
 
-      await supabaseAdmin
-        .from('payment_schedules')
-        .update({
-          amount,
-          dividend_amount: dividend,
-        })
-        .eq('chit_member_id', member.id)
-        .eq('month_number', auction.auction_number);
+      const members = groupMembers || [];
+      const winnerMember = members.find((member: any) => member.customer_id === (topBid as any)?.customer_id);
+      const group: any = (auction as any).chit_groups || {};
+      const groupValue = Number(group.value || 0);
+      const totalShares = members.reduce(
+        (sum: number, member: any) => sum + Number(member.participation_share || 1), 0,
+      ) || Number(group.capacity || 1);
+      const authoritativeBid = Number((topBid as any)?.bid_amount || 0);
+      const commissionRate = Math.min(Math.max(Number(group.agent_commission_rate ?? 5), 0), 100) / 100;
+      const commission = Math.round(groupValue * commissionRate);
+      const dividendPerShare = Math.round(Math.max(authoritativeBid - commission, 0) / Math.max(totalShares, 1));
+      const installment = Number(group.monthly_installment || 0) || Math.round(groupValue / Math.max(totalShares, 1));
+      settlement = {
+        currentBid: authoritativeBid,
+        installmentDue: installment,
+        dividendAmount: dividendPerShare,
+        discountAmount: authoritativeBid,
+        finalDueAmount: Math.max(installment - dividendPerShare, 0),
+        winnerPrizeAmount: topBid ? Math.max(groupValue - authoritativeBid, 0) : 0,
+      };
+      resolvedWinnerMemberId = (winnerMember as any)?.id || null;
+      resolvedWinnerName = (winnerMember as any)?.customers?.full_name || null;
+
+      const supplied = { currentBid, installmentDue, dividendAmount, discountAmount, finalDueAmount, winnerPrizeAmount };
+      for (const [key, value] of Object.entries(supplied)) {
+        if (value !== undefined && value !== null && amount(value, 0) !== settlement[key as keyof typeof settlement]) {
+          return res.status(400).json({ error: 'Settlement values do not match the authoritative auction result.' });
+        }
+      }
+      if (winnerMemberId !== undefined && (winnerMemberId || null) !== resolvedWinnerMemberId) {
+        return res.status(400).json({ error: 'Winner does not match the authoritative auction result.' });
+      }
+    }
+    if (Object.values(settlement).some((value) => !Number.isSafeInteger(value) || value < 0)) {
+      return res.status(400).json({ error: 'Settlement contains an invalid amount.' });
+    }
+
+    const { data, error } = await supabaseAdmin.rpc('apply_auction_settlement', {
+      p_auction_id: auctionId,
+      p_winner_member_id: resolvedWinnerMemberId,
+      p_winner_name: resolvedWinnerName,
+      p_current_bid: settlement.currentBid,
+      p_installment_due: settlement.installmentDue,
+      p_dividend_amount: settlement.dividendAmount,
+      p_discount_amount: settlement.discountAmount,
+      p_final_due_amount: settlement.finalDueAmount,
+      p_winner_prize_amount: settlement.winnerPrizeAmount,
     });
+    if (error) {
+      const message = error.message || 'Failed to apply settlement.';
+      return res.status(/invalid|negative|not found|does not belong|already paid|already finalized|only a live/i.test(message) ? 400 : 500).json({ error: message });
+    }
 
-    await Promise.all(updates);
-    return res.json({ ok: true, updated: (members || []).length });
+    const result: any = Array.isArray(data) ? data[0] : data;
+    return res.json({ ok: true, updated: Number(result?.updated_members || 0) });
   } catch (error: any) {
     return res.status(500).json({ error: error?.message || 'Failed to apply settlement.' });
   }

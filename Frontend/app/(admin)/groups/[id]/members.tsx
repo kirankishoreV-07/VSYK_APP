@@ -20,10 +20,12 @@ import {
   GroupMemberPaymentModal,
   type GroupMemberWithTicket,
 } from '../_components/GroupMemberPaymentModal';
+import { useAdminParentBack } from '../../../../lib/hooks/admin/useAdminParentBack';
 
 export default function GroupMembersPage() {
   const router = useRouter();
   const { id } = useLocalSearchParams();
+  const handleParentBack = useAdminParentBack(`/(admin)/groups/${String(id || '')}` as any);
   const [group, setGroup] = useState<any>(null);
   const [members, setMembers] = useState<any[]>([]);
   const [auctions, setAuctions] = useState<any[]>([]);
@@ -156,11 +158,7 @@ export default function GroupMembersPage() {
   };
 
   const handleBack = () => {
-    if (router.canGoBack()) {
-      router.back();
-    } else {
-      router.replace(`/(admin)/groups/${id}` as any);
-    }
+    handleParentBack();
   };
 
   if (loading && !group) {
@@ -174,7 +172,12 @@ export default function GroupMembersPage() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.appBar}>
-        <TouchableOpacity style={styles.backBtn} onPress={handleBack}>
+        <TouchableOpacity
+          style={styles.backBtn}
+          onPress={handleBack}
+          accessibilityRole="button"
+          accessibilityLabel="Back to group details"
+        >
           <Svg width={24} height={24} viewBox="0 0 24 24" fill="#0F172A">
             <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
           </Svg>

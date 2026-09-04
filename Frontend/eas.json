@@ -1,7 +1,7 @@
 {
   "cli": {
     "version": ">= 20.2.0",
-    "appVersionSource": "remote"
+    "appVersionSource": "local"
   },
   "build": {
     "development": {
@@ -9,7 +9,18 @@
       "distribution": "internal"
     },
     "preview": {
-      "distribution": "internal"
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "ios": {
+        "simulator": false
+      },
+      "env": {
+        "EXPO_PUBLIC_SUPABASE_URL": "https://rmbyjndeaqaupgndhotl.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_6iofTco4NnAzYShwOyzEvA_7wDbooCh",
+        "EXPO_PUBLIC_API_URL": "https://vsykbackend-production.up.railway.app"
+      }
     },
     "apk": {
       "android": {
@@ -17,7 +28,18 @@
       }
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "ios": {
+        "simulator": false
+      },
+      "env": {
+        "EXPO_PUBLIC_SUPABASE_URL": "https://rmbyjndeaqaupgndhotl.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_6iofTco4NnAzYShwOyzEvA_7wDbooCh",
+        "EXPO_PUBLIC_API_URL": "https://vsykbackend-production.up.railway.app"
+      }
     }
   },
   "submit": {
