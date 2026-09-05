@@ -6,7 +6,10 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://vsykapp-dep-production.up.railway.app"
+      }
     },
     "preview": {
       "distribution": "internal",
@@ -19,12 +22,15 @@
       "env": {
         "EXPO_PUBLIC_SUPABASE_URL": "https://rmbyjndeaqaupgndhotl.supabase.co",
         "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_6iofTco4NnAzYShwOyzEvA_7wDbooCh",
-        "EXPO_PUBLIC_API_URL": "https://vsykbackend-production.up.railway.app"
+        "EXPO_PUBLIC_API_URL": "https://vsykapp-dep-production.up.railway.app"
       }
     },
     "apk": {
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://vsykapp-dep-production.up.railway.app"
       }
     },
     "production": {
@@ -38,7 +44,7 @@
       "env": {
         "EXPO_PUBLIC_SUPABASE_URL": "https://rmbyjndeaqaupgndhotl.supabase.co",
         "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_6iofTco4NnAzYShwOyzEvA_7wDbooCh",
-        "EXPO_PUBLIC_API_URL": "https://vsykbackend-production.up.railway.app"
+        "EXPO_PUBLIC_API_URL": "https://vsykapp-dep-production.up.railway.app"
       }
     }
   },
