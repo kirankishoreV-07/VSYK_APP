@@ -309,12 +309,12 @@ export default function CollectionsFollowupsScreen() {
     }
   };
 
-  const handleResendDigest = async () => {
+  const handleNotifyStaff = async () => {
     try {
       await apiPostAdmin('/api/collections/followups/resend-digest', {});
-      Alert.alert('Sent', 'Digest re-sent to assigned staff.');
+      Alert.alert('Staff notified', 'Today\'s follow-up list was sent to assigned staff.');
     } catch (e: any) {
-      Alert.alert('Error', e.message || 'Could not resend digest.');
+      Alert.alert('Error', e.message || 'Could not notify assigned staff.');
     }
   };
 
@@ -404,11 +404,14 @@ export default function CollectionsFollowupsScreen() {
           contentContainerStyle={styles.listContent}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
-          stickySectionHeadersEnabled
+          // Android can incorrectly clip section rows that sit below a tall,
+          // dynamic ListHeaderComponent. Keep virtualization, but disable the
+          // clipping optimization so a populated queue never renders blank.
+          stickySectionHeadersEnabled={false}
           initialNumToRender={12}
           maxToRenderPerBatch={10}
           windowSize={7}
-          removeClippedSubviews={Platform.OS === 'android'}
+          removeClippedSubviews={false}
           refreshControl={(
             <RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={Colors.primary} />
           )}
@@ -426,8 +429,13 @@ export default function CollectionsFollowupsScreen() {
                       ? <ActivityIndicator color="#FFF" size="small" />
                       : <Text style={styles.primaryBtnText}>Refresh queue</Text>}
                   </TouchableOpacity>
-                  <TouchableOpacity style={styles.secondaryBtn} onPress={handleResendDigest}>
-                    <Text style={styles.secondaryBtnText}>Send digest</Text>
+                  <TouchableOpacity
+                    style={styles.secondaryBtn}
+                    onPress={handleNotifyStaff}
+                    accessibilityRole="button"
+                    accessibilityLabel="Notify assigned staff about today's follow-ups"
+                  >
+                    <Text style={styles.secondaryBtnText}>Notify staff</Text>
                   </TouchableOpacity>
                 </View>
               </View>
