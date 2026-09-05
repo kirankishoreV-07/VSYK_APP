@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Dimensions } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Dimensions, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import Svg, { Path } from 'react-native-svg';
@@ -50,7 +50,7 @@ function useNominees() {
 export default function NomineesScreen() {
   const router = useRouter();
   const handleBack = useParentBack('/(tabs)/profile');
-  const { data: nominees, isLoading } = useNominees();
+  const { data: nominees, isLoading, isRefetching, refetch } = useNominees();
   const queryClient = useQueryClient();
 
   const totalAllocation = nominees?.reduce((acc, curr) => acc + curr.allocation_percentage, 0) || 0;
@@ -83,7 +83,11 @@ export default function NomineesScreen() {
         <View style={{ width: 40 }} />
       </View>
 
-      <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={s.scroll}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={Colors.primary} />}
+      >
         <View style={s.header}>
           <Text style={s.headerTitle}>Legal Heirs & Beneficiaries</Text>
           <Text style={s.headerSub}>Ensure your financial assets are securely transferred in unforeseen circumstances. Total allocation must equal 100%.</Text>

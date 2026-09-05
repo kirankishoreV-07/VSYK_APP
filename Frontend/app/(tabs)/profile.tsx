@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  TextInput, Alert, ActivityIndicator, KeyboardAvoidingView, Platform,
+  TextInput, Alert, ActivityIndicator, KeyboardAvoidingView, Platform, RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -43,8 +43,8 @@ function InfoRow({ label, value, dimmed = false }: { label: string; value?: stri
 export default function ProfileScreen() {
   const router = useRouter();
   const { memberId, memberProfile, refreshProfile, logout } = useMemberSession();
-  const { data: chits } = useActiveChits(memberId);
-  const { data: stats } = useDashboardStats(memberId);
+  const { data: chits, isRefetching: chitsRefreshing, refetch: refetchChits } = useActiveChits(memberId);
+  const { data: stats, isRefetching: statsRefreshing, refetch: refetchStats } = useDashboardStats(memberId);
   const { t, i18n } = useTranslation();
 
   const isTamil = i18n.language === 'ta';
@@ -230,6 +230,13 @@ export default function ProfileScreen() {
           contentContainerStyle={s.scroll}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
+          refreshControl={
+            <RefreshControl
+              refreshing={chitsRefreshing || statsRefreshing}
+              onRefresh={() => { void Promise.all([refreshProfile(), refetchChits(), refetchStats()]); }}
+              tintColor={Colors.primary}
+            />
+          }
         >
           {/* Hero */}
           <View style={s.heroCard}>

@@ -8,6 +8,7 @@ import { useCustomerDetailData } from '../../../../lib/hooks/admin/useCustomerDe
 import { PaymentsTab } from '../../../../components/admin/customers/PaymentsTab';
 import { Text } from 'react-native';
 import { useAdminParentBack } from '../../../../lib/hooks/admin/useAdminParentBack';
+import { DataRefreshButton } from '../../../../components/DataRefreshButton';
 
 export default function PaymentsScreen() {
     const { id } = useLocalSearchParams<{ id: string }>();
@@ -15,7 +16,7 @@ export default function PaymentsScreen() {
     const customerId = typeof id === 'string' ? id : '';
     const handleBack = useAdminParentBack(`/(admin)/customers/${customerId}` as any);
 
-    const { data, isLoading, error } = useCustomerDetailData(customerId);
+    const { data, isLoading, error, isRefetching, refetch } = useCustomerDetailData(customerId);
 
     if (isLoading) {
         return (
@@ -65,6 +66,7 @@ export default function PaymentsScreen() {
                 <Text style={styles.appBarTitle}>
                     {customer?.full_name || 'Customer'} - Payments
                 </Text>
+                <DataRefreshButton refreshing={isRefetching} onPress={() => { void refetch(); }} />
             </View>
 
             {/* Payments Tab Content */}

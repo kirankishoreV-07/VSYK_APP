@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  ActivityIndicator, Alert,
+  ActivityIndicator, Alert, RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -491,7 +491,7 @@ export default function GroupHistoryDetailScreen() {
   const { memberId } = useMemberSession();
   const queryClient = useQueryClient();
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isRefetching, refetch } = useQuery({
     queryKey: ['group-history', id, memberId],
     queryFn: () => fetchGroupHistoryDetail(id!, memberId!),
     enabled: !!id && !!memberId,
@@ -556,7 +556,11 @@ export default function GroupHistoryDetailScreen() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={st.scroll} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={st.scroll}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={Colors.primary} />}
+      >
         <View style={[st.summaryCard, isUnaccounted && st.summaryCardUnaccounted]}>
           <View style={st.summaryTop}>
             <View style={{ flex: 1 }}>

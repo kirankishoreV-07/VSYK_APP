@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
-  StyleSheet, TextInput, Platform, Dimensions, ActivityIndicator,
+  StyleSheet, TextInput, Platform, Dimensions, ActivityIndicator, RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -179,7 +179,7 @@ export default function ChitsScreen() {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<FilterKey>('all');
 
-  const { data: chits, isLoading, refetch } = useActiveChits(memberId);
+  const { data: chits, isLoading, isRefetching, refetch } = useActiveChits(memberId);
 
   useEffect(() => {
     if (!memberId) return;
@@ -232,7 +232,11 @@ export default function ChitsScreen() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={Colors.primary} />}
+      >
         {/* Search */}
         <View style={styles.searchContainer}>
           <Svg width={20} height={20} viewBox="0 0 24 24" fill="#94A3B8" style={styles.searchIcon}>

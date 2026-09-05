@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, ScrollView, Alert } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, ScrollView, Alert, RefreshControl } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
@@ -38,7 +38,7 @@ export default function CustomerDetailsScreen() {
     const customerId = typeof id === 'string' ? id : '';
     const handleBack = useAdminParentBack('/(admin)/customers');
 
-    const { data, isLoading, error } = useCustomerDetailData(customerId);
+    const { data, isLoading, error, isRefetching, refetch } = useCustomerDetailData(customerId);
 
     if (isLoading) {
         return (
@@ -98,7 +98,11 @@ export default function CustomerDetailsScreen() {
         <SafeAreaView style={styles.container}>
             <HubAppBar onBack={handleBack} />
 
-            <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+            <ScrollView
+                style={styles.scrollView}
+                contentContainerStyle={styles.scrollContent}
+                refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={AdminColors.primaryContainer} />}
+            >
                 <CustomerHeader
                     customer={customer}
                     overdueCount={overdueCount}

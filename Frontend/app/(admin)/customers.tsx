@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, Modal, Animated, Platform, KeyboardAvoidingView, Alert, Switch } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, Modal, Animated, Platform, KeyboardAvoidingView, Alert, Switch, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AppLogo } from '../../components/AppLogo';
 import Svg, { Path } from 'react-native-svg';
@@ -39,6 +39,7 @@ export default function AdminCustomers() {
   const [isModalVisible, setModalVisible] = useState(false);
   const [customers, setCustomers] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const slideAnim = React.useRef(new Animated.Value(400)).current;
   const listRef = React.useRef<ScrollView>(null);
 
@@ -257,6 +258,17 @@ export default function AdminCustomers() {
         ref={listRef}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={async () => {
+              setRefreshing(true);
+              await fetchCustomers();
+              setRefreshing(false);
+            }}
+            tintColor={Colors.primary}
+          />
+        }
         onScroll={(event) => { persistedCustomerScrollY = event.nativeEvent.contentOffset.y; }}
         scrollEventThrottle={100}
       >

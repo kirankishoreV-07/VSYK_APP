@@ -229,8 +229,9 @@ export function RecordCashCollectionModal({
 
     const amountInRupees = parseFloat(amount) || 0;
     const amountInPaise = Math.round(amountInRupees * 100);
-    const denominationMatches = denominationTotal === amountInRupees;
-    const isValid = monthNumber && expectedDuePaise != null && amountInPaise > 0 && denominationMatches;
+    const denominationMatches = (denominationTotal * 100) === amountInPaise;
+    const doesNotExceedDue = expectedDuePaise != null && amountInPaise <= expectedDuePaise;
+    const isValid = monthNumber && expectedDuePaise != null && amountInPaise > 0 && denominationMatches && doesNotExceedDue;
 
     const paymentStatus = useMemo(() => {
         if (expectedDuePaise == null) return 'Unpaid';
@@ -241,7 +242,12 @@ export function RecordCashCollectionModal({
 
     const handleSave = async () => {
         if (!isValid) {
-            Alert.alert('Validation Error', 'Please fill all required fields and ensure denomination matches amount.');
+            Alert.alert(
+                'Validation Error',
+                !doesNotExceedDue
+                    ? 'The collected amount cannot exceed the payable installment.'
+                    : 'Please fill all required fields and ensure denomination matches the collected amount.',
+            );
             return;
         }
 
@@ -606,8 +612,24 @@ export function RecordCashCollectionModal({
                             </View>
 
                             {!denominationMatches && amount && denominationTotal > 0 && (
+                                <View style={styles.cashMismatchHelp}>
+                                    <Text style={styles.validationError}>
+                                        Denominations represent the cash actually received. Use the counted total to record a partial payment; the exact remaining rupees/paise will stay due.
+                                    </Text>
+                                    <TouchableOpacity
+                                        style={styles.useCountedTotalBtn}
+                                        onPress={() => setAmount(denominationTotal.toFixed(2))}
+                                    >
+                                        <Text style={styles.useCountedTotalText}>
+                                            Use ₹{denominationTotal.toLocaleString('en-IN')} as collected amount
+                                        </Text>
+                                    </TouchableOpacity>
+                                </View>
+                            )}
+
+                            {!doesNotExceedDue && expectedDuePaise != null && (
                                 <Text style={styles.validationError}>
-                                    ⚠️ Denomination total must exactly match the amount entered
+                                    Collected amount cannot exceed {formatPaise(expectedDuePaise)}.
                                 </Text>
                             )}
 
@@ -847,6 +869,16 @@ const styles = StyleSheet.create({
     validationValueSuccess: { color: '#16A34A' },
     validationValueError: { color: '#DC2626' },
     validationError: { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: '#DC2626', textAlign: 'center' },
+    cashMismatchHelp: { gap: 10, alignItems: 'center' },
+    useCountedTotalBtn: {
+        borderWidth: 1,
+        borderColor: '#01789E',
+        borderRadius: 10,
+        paddingHorizontal: 14,
+        paddingVertical: 10,
+        backgroundColor: '#F0F9FF',
+    },
+    useCountedTotalText: { fontFamily: 'Inter_700Bold', fontSize: 13, color: '#01789E', textAlign: 'center' },
 
     submitBtn: {
         backgroundColor: '#01789E',

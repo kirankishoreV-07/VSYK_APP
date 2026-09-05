@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -101,7 +101,7 @@ export default function JoinChitScreen() {
   const handleBack = useParentBack('/(tabs)/chits');
   const [filter, setFilter] = useState<FilterKey>('short');
   const queryClient = useQueryClient();
-  const { data: chits, isLoading } = useAvailableChits();
+  const { data: chits, isLoading, isRefetching, refetch } = useAvailableChits();
   const { mutate: joinChit, isPending } = useJoinChit();
 
   useEffect(() => {
@@ -146,7 +146,11 @@ export default function JoinChitScreen() {
         <View style={{ width: 40 }} />
       </View>
 
-      <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={s.scroll}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={Colors.primary} />}
+      >
         {/* Header */}
         <View style={s.aiHeader}>
           <View style={s.aiIconRow}>

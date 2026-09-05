@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  ActivityIndicator, TextInput,
+  ActivityIndicator, TextInput, RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -98,7 +98,7 @@ export default function WalletScreen() {
   const router = useRouter();
   const { memberId } = useMemberSession();
   const queryClient = useQueryClient();
-  const { data: groups, isLoading } = useMemberGroups(memberId);
+  const { data: groups, isLoading, isRefetching, refetch } = useMemberGroups(memberId);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [filter, setFilter] = useState<'all' | 'active' | 'completed'>('all');
@@ -167,7 +167,11 @@ export default function WalletScreen() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={s.scroll}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={Colors.primary} />}
+      >
         <Text style={s.headerSub}>Your participating chit groups and payment history</Text>
 
         <View style={s.filterRow}>

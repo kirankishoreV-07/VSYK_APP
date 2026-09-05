@@ -1,19 +1,20 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert, ActivityIndicator, BackHandler, Platform } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert, ActivityIndicator, BackHandler, Platform, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AppLogo } from '../../../components/AppLogo';
 import Svg, { Path, Circle } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
-import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter, type Href } from 'expo-router';
+import { usePreventRemove } from '@react-navigation/native';
 import { supabase } from '../../../lib/supabase';
 import { apiPostAdmin } from '../../../lib/api';
 import { isAuctionConfiguredUpcoming } from '../../../lib/auctionUtils';
 
 export default function AdminLiveAuction() {
   const router = useRouter();
-  const navigation = useNavigation();
-  const allowNavigation = useRef(false);
+  const [allowNavigation, setAllowNavigation] = useState(false);
+  const pendingDestination = useRef<Href | null>(null);
   const backAttemptRef = useRef<() => void>(() => undefined);
   // The auction the caller navigated from. Without it this screen used to
   // search the whole database for *any* live auction and fall back to *any*
@@ -26,6 +27,7 @@ export default function AdminLiveAuction() {
   const [feed, setFeed] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [declaring, setDeclaring] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [timeLeft, setTimeLeft] = useState('--:--');
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const auctionIdRef = useRef<string | null>(null);
@@ -36,8 +38,24 @@ export default function AdminLiveAuction() {
   // errors — log them quietly instead of as console.error noise.
   const isTransientRealtimeError = (err: any) => {
     const msg = String(err?.message || err || '');
-    return /socket closed|stream end|1001|1006|timed out|CHANNEL_ERROR/i.test(msg);
+    return /socket closed|stream end|transport failure|channel error|websocket|network request failed|connection.*(?:lost|closed)|1001|1006|timed out|CHANNEL_ERROR/i.test(msg);
   };
+
+  const leaveScreen = useCallback((destination: Href) => {
+    pendingDestination.current = destination;
+    setAllowNavigation(true);
+  }, []);
+
+  usePreventRemove(!allowNavigation, () => {
+    backAttemptRef.current();
+  });
+
+  useEffect(() => {
+    if (!allowNavigation || !pendingDestination.current) return;
+    const destination = pendingDestination.current;
+    pendingDestination.current = null;
+    router.replace(destination);
+  }, [allowNavigation, router]);
 
   const fetchBids = useCallback(async (auctionId: string) => {
     try {
@@ -346,8 +364,7 @@ export default function AdminLiveAuction() {
                 'Success',
                 `${bidderName} declared as winner.${scheduleSummary} EMI set to ₹${Math.round(finalDuePaise / 100).toLocaleString('en-IN')} for the cycle.`,
               );
-              allowNavigation.current = true;
-              router.replace(`/(admin)/groups/${auction.chit_group_id}`);
+              leaveScreen(`/(admin)/groups/${auction.chit_group_id}`);
             } catch (err: any) {
               console.error(err);
               Alert.alert('Error', err?.message || 'Failed to settle auction.');
@@ -373,8 +390,7 @@ export default function AdminLiveAuction() {
       return;
     }
     if (timerRef.current) clearInterval(timerRef.current);
-    allowNavigation.current = true;
-    router.replace('/(admin)/auctions');
+    leaveScreen('/(admin)/auctions');
   };
 
   const handleCloseAuction = async () => {
@@ -442,8 +458,7 @@ export default function AdminLiveAuction() {
                 ? `Bidding stopped. Winner and dues for cycle #${auction.auction_number} were saved together (₹${Math.round(finalDuePaise / 100).toLocaleString('en-IN')} payable).`
                 : 'Auction closed (no bids).',
             );
-            allowNavigation.current = true;
-            router.replace(`/(admin)/groups/${auction.chit_group_id}`);
+            leaveScreen(`/(admin)/groups/${auction.chit_group_id}`);
           }
         }
       ]
@@ -455,22 +470,15 @@ export default function AdminLiveAuction() {
   // bypass the warning or fall back to login.
   backAttemptRef.current = handleSafeBack;
   useEffect(() => {
-    const unsubscribeNavigation = navigation.addListener('beforeRemove', (event: any) => {
-      if (allowNavigation.current) return;
-      event.preventDefault();
-      backAttemptRef.current();
-    });
-
-    if (Platform.OS === 'web') return unsubscribeNavigation;
+    if (Platform.OS === 'web') return;
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
       backAttemptRef.current();
       return true;
     });
     return () => {
-      unsubscribeNavigation();
       subscription.remove();
     };
-  }, [navigation]);
+  }, []);
 
   if (loading) {
     return (
@@ -519,7 +527,20 @@ export default function AdminLiveAuction() {
         </View>
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={async () => {
+              setRefreshing(true);
+              await fetchLiveAuction();
+              setRefreshing(false);
+            }}
+            tintColor="#005E7D"
+          />
+        }
+      >
         {/* Main Bidding Panel */}
         <View style={styles.biddingCard}>
           <View style={styles.timerRow}>

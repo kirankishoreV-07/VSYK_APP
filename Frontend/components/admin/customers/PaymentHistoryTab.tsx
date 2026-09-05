@@ -553,7 +553,7 @@ export function PaymentHistoryTab({
                                                 {row.dueKnown ? formatPaise(row.schedule.amount) : '—'}
                                             </Text>
                                             {row.isWonMonth && row.dueKnown && (
-                                                <Text style={styles.prizeAdjusted}>Prize Adjusted</Text>
+                                                <Text style={styles.prizeAdjusted}>After dividend</Text>
                                             )}
                                         </View>
                                         <View style={styles.cycleField}>

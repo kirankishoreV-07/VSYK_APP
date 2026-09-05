@@ -76,9 +76,9 @@ function rupeesPlain(paise: number): string {
 
 /** Plain, rule-based suggestion text — never claims to be AI-generated.
  * Any history-based escalation is spelled out as the real fact it's based
- * on, not just a raised priority badge. Only ever called for daysOverdue
- * >= 0 — generateTodaysFollowups excludes anything still inside the
- * post-settlement grace period, so there is no "not yet due" case here. */
+ * on, not just a raised priority badge. A completed auction can be inside
+ * its grace period, so negative daysOverdue is described as "due in" rather
+ * than being presented as overdue. */
 function buildSuggestedAction(remainingPaise: number, daysOverdue: number, signals: MemberRiskSignals): string {
   const amount = `₹${rupeesPlain(remainingPaise)}`;
 
@@ -99,6 +99,10 @@ function buildSuggestedAction(remainingPaise: number, daysOverdue: number, signa
   }
   if (daysOverdue >= 1) {
     return `${amount} overdue by ${daysOverdue} day${daysOverdue === 1 ? '' : 's'}${historyNote} — quick follow-up call.`;
+  }
+  if (daysOverdue < 0) {
+    const daysUntilDue = Math.abs(daysOverdue);
+    return `${amount} due in ${daysUntilDue} day${daysUntilDue === 1 ? '' : 's'}${historyNote} — schedule a reminder.`;
   }
   return `${amount} due today${historyNote} — reminder call recommended.`;
 }
@@ -170,15 +174,19 @@ export async function generateTodaysFollowups(now: Date = new Date()): Promise<G
 
   const today = toDay(now);
 
-  // Unpaid, amount-bearing schedules — same base filter as
-  // proactiveNotifications.ts DUE_SELECT.
+  // Load amount-bearing schedules, then determine the paid balance from the
+  // correct ledger below. Filtering payment_schedules.paid here would drop
+  // valid unaccounted rows whose source of truth is cash_collections.
   const { data: rows, error: rowsErr } = await sb
     .from('payment_schedules')
     .select(`
       id, chit_member_id, month_number, due_date, amount, paid_amount,
-      chit_members ( chit_group_id, bid_status, customers ( full_name ) )
+      chit_members (
+        chit_group_id, bid_status,
+        customers ( full_name ),
+        chit_groups ( accounting_type )
+      )
     `)
-    .eq('paid', false)
     .gt('amount', 0);
   if (rowsErr || !rows || rows.length === 0) return { generated: 0, skippedExisting: 0, eligible: 0 };
 
@@ -196,20 +204,49 @@ export async function generateTodaysFollowups(now: Date = new Date()): Promise<G
 
   const ACTIVE_BID_STATUSES = ['active', 'bidding'];
 
-  // This is a collections worklist, not a reminder feed — it must only ever
-  // contain amounts actually due today or overdue. apply_auction_settlement
-  // gives every member a 7-day grace period after settlement (due_date =
-  // settlement date + 7), so a schedule can be finalized (completed auction)
-  // and still not be due yet. Excluding those here — not just clamping the
-  // displayed days-overdue — is what keeps "not yet due" out of the list
-  // entirely instead of showing up as a false "due soon" entry.
+  // Accounted groups use payment_schedules.paid_amount. Unaccounted groups
+  // deliberately keep their cash ledger in cash_collections, so using the
+  // schedule flag for both types makes paid cash cycles reappear as unpaid.
+  const unaccountedMemberIds = Array.from(new Set(
+    rows
+      .filter((r: any) => r.chit_members?.chit_groups?.accounting_type === 'unaccounted')
+      .map((r: any) => r.chit_member_id),
+  ));
+  const cashPaidByCycle = new Map<string, number>();
+  if (unaccountedMemberIds.length > 0) {
+    const { data: cashRows, error: cashErr } = await sb
+      .from('cash_collections')
+      .select('chit_member_id, month_number, amount')
+      .in('chit_member_id', unaccountedMemberIds);
+    if (cashErr) {
+      console.error('[Collections] cash collection lookup failed:', cashErr.message);
+      return { generated: 0, skippedExisting: 0, eligible: 0 };
+    }
+    for (const cash of cashRows || []) {
+      const key = `${(cash as any).chit_member_id}:${(cash as any).month_number}`;
+      cashPaidByCycle.set(key, (cashPaidByCycle.get(key) || 0) + Number((cash as any).amount || 0));
+    }
+  }
+
+  const paidFor = (row: any): number => {
+    if (row.chit_members?.chit_groups?.accounting_type === 'unaccounted') {
+      return cashPaidByCycle.get(`${row.chit_member_id}:${row.month_number}`) || 0;
+    }
+    return Number(row.paid_amount || 0);
+  };
+
+  // A completed auction finalizes the installment. Staff need it in the
+  // worklist immediately, including during the post-settlement grace period.
+  // Upcoming items keep days_overdue at zero and the action text states the
+  // real number of days remaining, so they are visible without being called
+  // overdue.
   const eligible = rows.filter((r: any) => {
     const gid = r.chit_members?.chit_group_id;
     if (!gid || !completed.has(`${gid}:${r.month_number}`)) return false;
     if (!ACTIVE_BID_STATUSES.includes(r.chit_members?.bid_status)) return false;
-    const remaining = Number(r.amount || 0) - Number(r.paid_amount || 0);
+    const remaining = Number(r.amount || 0) - paidFor(r);
     if (remaining <= 0) return false;
-    return daysBetween(r.due_date, now) >= 0;
+    return true;
   });
 
   // Note: do NOT early-return when nothing is eligible. Today's stale
@@ -228,7 +265,7 @@ export async function generateTodaysFollowups(now: Date = new Date()): Promise<G
   ]);
 
   const inserts = eligible.map((r: any) => {
-    const remaining = Number(r.amount || 0) - Number(r.paid_amount || 0);
+    const remaining = Number(r.amount || 0) - paidFor(r);
     const daysOverdue = daysBetween(r.due_date, now);
 
     const schedules = (scheduleHistoryMap.get(r.chit_member_id)?.schedules || [])

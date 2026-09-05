@@ -108,7 +108,7 @@ export default function RootLayout() {
         <MemberSessionProvider>
           <StatusBar style="light" />
           <NotificationRouter />
-          <Stack screenOptions={{ headerShown: false }}>
+          <Stack screenOptions={{ headerShown: false, headerBackButtonMenuEnabled: false }}>
             <Stack.Screen name="index" options={{ headerShown: false }} />
             <Stack.Screen name="(auth)" options={{ headerShown: false }} />
             <Stack.Screen name="(tabs)" options={{ headerShown: false }} />

@@ -7,6 +7,7 @@ import { useCustomerDetailData } from '../../../../lib/hooks/admin/useCustomerDe
 import { GroupsTab } from '../../../../components/admin/customers/GroupsTab';
 import { AdminColors } from '../../../../components/admin/customers/adminStyles';
 import { useAdminParentBack } from '../../../../lib/hooks/admin/useAdminParentBack';
+import { DataRefreshButton } from '../../../../components/DataRefreshButton';
 
 export default function GroupsScreen() {
     const { id } = useLocalSearchParams<{ id: string }>();
@@ -14,7 +15,7 @@ export default function GroupsScreen() {
     const customerId = typeof id === 'string' ? id : '';
     const handleBack = useAdminParentBack(`/(admin)/customers/${customerId}` as any);
 
-    const { data, isLoading, error } = useCustomerDetailData(customerId);
+    const { data, isLoading, error, isRefetching, refetch } = useCustomerDetailData(customerId);
 
     if (isLoading) {
         return (
@@ -70,6 +71,7 @@ export default function GroupsScreen() {
                     </View>
                     <Text style={styles.appBarTitle}>{customer?.full_name || 'Customer'}</Text>
                 </View>
+                <DataRefreshButton refreshing={isRefetching} onPress={() => { void refetch(); }} />
             </View>
 
             <View style={styles.body}>

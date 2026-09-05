@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { AppLogo } from '../../components/AppLogo';
@@ -11,22 +11,24 @@ import { Colors, Shadows } from '../../lib/constants';
 export default function AdminSettings() {
   const router = useRouter();
   const [adminName, setAdminName] = useState('Administrator');
+  const [refreshing, setRefreshing] = useState(false);
+
+  const loadAdminIdentity = useCallback(async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+    const { data } = await supabase
+      .from('admin_users')
+      .select('full_name')
+      .eq('id', user.id)
+      .maybeSingle();
+    if (data?.full_name) setAdminName(data.full_name);
+  }, []);
 
   useEffect(() => {
     let active = true;
-    const loadAdminIdentity = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-      const { data } = await supabase
-        .from('admin_users')
-        .select('full_name')
-        .eq('id', user.id)
-        .maybeSingle();
-      if (active && data?.full_name) setAdminName(data.full_name);
-    };
-    loadAdminIdentity();
+    if (active) void loadAdminIdentity();
     return () => { active = false; };
-  }, []);
+  }, [loadAdminIdentity]);
 
   const handleLogout = async () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
@@ -56,7 +58,20 @@ export default function AdminSettings() {
         </View>
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={async () => {
+              setRefreshing(true);
+              await loadAdminIdentity();
+              setRefreshing(false);
+            }}
+            tintColor={Colors.primary}
+          />
+        }
+      >
         
         {/* Profile / Admin Info */}
         <View style={styles.profileSection}>

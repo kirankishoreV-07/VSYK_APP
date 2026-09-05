@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, TextInput,
-  StyleSheet, Alert, Animated,
+  StyleSheet, Alert, Animated, RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -380,10 +380,11 @@ function AuctionCard({ auction }: { auction: AuctionDetail }) {
           </Text>
           <TextInput
             style={s.bidInput}
-            keyboardType="numeric"
+            keyboardType="decimal-pad"
+            inputMode="decimal"
             placeholder={currentHighest > 0
-              ? `Above ₹${(currentHighest / 100).toLocaleString('en-IN')}`
-              : `e.g. ₹${((minBid || 10000) / 100).toLocaleString('en-IN')}`}
+              ? 'Enter an amount above the current bid'
+              : 'Enter discount amount'}
             placeholderTextColor="#94A3B8"
             value={bidAmount}
             onChangeText={setBidAmount}
@@ -462,7 +463,7 @@ function AuctionCard({ auction }: { auction: AuctionDetail }) {
 // ─── Main Screen ──────────────────────────────────────────────
 export default function AuctionsScreen() {
   const { memberId, isLoading: sessionLoading } = useMemberSession();
-  const { data: auctions, isLoading } = useAuctionsList(memberId);
+  const { data: auctions, isLoading, isRefetching, refetch } = useAuctionsList(memberId);
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -485,7 +486,11 @@ export default function AuctionsScreen() {
         </View>
       </View>
 
-      <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={s.scroll}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={Colors.primary} />}
+      >
         {sessionLoading || isLoading ? (
           <View style={{ alignItems: 'center', paddingVertical: 80 }}>
             <Text style={{ fontSize: 32 }}>⚡</Text>
@@ -558,7 +563,7 @@ const s = StyleSheet.create({
 
   bidInputCard: { backgroundColor: '#FFFFFF', borderRadius: 18, padding: 16, gap: 12, borderWidth: 1, borderColor: '#F1F5F9' },
   bidInputLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#64748B', letterSpacing: 0.4 },
-  bidInput: { backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, fontFamily: 'Inter_400Regular', fontSize: 16, color: '#0B1C30' },
+  bidInput: { backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16, letterSpacing: 0, color: '#0B1C30' },
   placeBidBtn: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: Colors.secondary, borderRadius: 14, paddingHorizontal: 20, height: 56 },
   placeBidLeft: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 16, color: Colors.primary },
   placeBidRight: { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.primary },

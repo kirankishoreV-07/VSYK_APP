@@ -8,6 +8,7 @@ import {
   Platform,
   Dimensions,
   ActivityIndicator,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -213,9 +214,9 @@ export default function HomeScreen() {
   const { memberId, memberProfile } = useMemberSession();
   const queryClient = useQueryClient();
 
-  const { data: stats, isLoading: statsLoading } = useDashboardStats(memberId);
-  const { data: chits, isLoading: chitsLoading, error: chitsError } = useActiveChits(memberId);
-  const { data: auctions, isLoading: auctionsLoading } = useUpcomingAuctions(memberId);
+  const { data: stats, isLoading: statsLoading, isRefetching: statsRefreshing, refetch: refetchStats } = useDashboardStats(memberId);
+  const { data: chits, isLoading: chitsLoading, isRefetching: chitsRefreshing, error: chitsError, refetch: refetchChits } = useActiveChits(memberId);
+  const { data: auctions, isLoading: auctionsLoading, isRefetching: auctionsRefreshing, refetch: refetchAuctions } = useUpcomingAuctions(memberId);
 
   const fallbackTotalValue = (chits ?? []).reduce((sum, chit) => sum + (chit.chit_group?.value ?? 0), 0);
   const totalPortfolioValue = stats?.total_portfolio_value ?? 0;
@@ -271,7 +272,17 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={statsRefreshing || chitsRefreshing || auctionsRefreshing}
+            onRefresh={() => { void Promise.all([refetchStats(), refetchChits(), refetchAuctions()]); }}
+            tintColor={Colors.primary}
+          />
+        }
+      >
 
         {/* ── Bento Grid: Health + Stats ── */}
         <View style={styles.bentoGrid}>

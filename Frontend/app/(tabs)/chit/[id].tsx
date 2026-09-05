@@ -4,7 +4,7 @@ import { supabase } from '../../../lib/supabase';
 import { formatPaise, formatShortDate } from '../../../lib/hooks/useDashboard';
 import {
   View, Text, ScrollView, TouchableOpacity,
-  StyleSheet, Alert, ActivityIndicator, Platform, Modal, TextInput, KeyboardAvoidingView,
+  StyleSheet, Alert, ActivityIndicator, Platform, Modal, TextInput, KeyboardAvoidingView, RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -475,11 +475,11 @@ export default function ChitDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const queryClient = useQueryClient();
   const { memberId, memberProfile } = useMemberSession();
-  const { data, isLoading } = useChitDetail(id ?? '', memberId);
-  const { data: auctions = [] } = useGroupAuctions(data?.chit_group?.id);
-  const { data: partialPaymentTotals = {} } = usePartialPayments(id, auctions);
+  const { data, isLoading, isRefetching: detailRefreshing, refetch: refetchDetail } = useChitDetail(id ?? '', memberId);
+  const { data: auctions = [], isRefetching: auctionsRefreshing, refetch: refetchAuctions } = useGroupAuctions(data?.chit_group?.id);
+  const { data: partialPaymentTotals = {}, isRefetching: paymentsRefreshing, refetch: refetchPayments } = usePartialPayments(id, auctions);
   const isUnaccounted = data?.chit_group?.accounting_type === 'unaccounted';
-  const { data: cashByMonth = {} } = useCashCollections(id, isUnaccounted);
+  const { data: cashByMonth = {}, isRefetching: cashRefreshing, refetch: refetchCash } = useCashCollections(id, isUnaccounted);
 
   // Load prize settlements (the actual money paid out to this member as auction winner, supporting partials)
   // This powers the "Received X · Pending Y" / "Fully settled" text for the winning month.
@@ -804,7 +804,17 @@ export default function ChitDetailScreen() {
         <View style={{ width: 40 }} />
       </View>
 
-      <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={s.scroll}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={detailRefreshing || auctionsRefreshing || paymentsRefreshing || cashRefreshing}
+            onRefresh={() => { void Promise.all([refetchDetail(), refetchAuctions(), refetchPayments(), refetchCash()]); }}
+            tintColor={Colors.primary}
+          />
+        }
+      >
 
         {/* Hero Stats */}
         <View style={s.heroCard}>
