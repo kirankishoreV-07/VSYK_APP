@@ -16,6 +16,7 @@ function parentPathForNestedAdminRoute(pathname: string): string | null {
   if (pathname === '/auctions/live') return '/auctions';
   if (pathname === '/reports') return '/settings';
   if (pathname === '/collections/followups') return '/dashboard';
+  if (pathname === '/collections/group') return '/collections/followups';
   return null;
 }
 
@@ -196,6 +197,10 @@ export default function AdminLayout() {
       <Tabs.Screen
         name="reports"
         options={{ href: null, title: 'Reports' }}
+      />
+      <Tabs.Screen
+        name="collections/group"
+        options={{ href: null, title: 'Group Follow-ups' }}
       />
       <Tabs.Screen
         name="collections/followups"

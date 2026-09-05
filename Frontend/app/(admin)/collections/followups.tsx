@@ -1,10 +1,10 @@
 import React, { useMemo, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, Linking, Modal, TextInput,
-  LayoutAnimation, Platform, UIManager, KeyboardAvoidingView, SectionList, RefreshControl,
+  KeyboardAvoidingView, SectionList, RefreshControl, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as Haptics from 'expo-haptics';
 import { supabase } from '../../../lib/supabase';
@@ -13,13 +13,9 @@ import { formatPaise } from '../../../lib/hooks/useDashboard';
 import { apiPostAdmin } from '../../../lib/api';
 import { useAdminParentBack } from '../../../lib/hooks/admin/useAdminParentBack';
 
-if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
-  UIManager.setLayoutAnimationEnabledExperimental(true);
-}
-
 type Priority = 'high' | 'medium' | 'low';
 type Status = 'pending' | 'contacted' | 'promised' | 'collected' | 'no_response';
-type QueueFilter = 'open' | 'high' | 'promised' | 'unassigned' | 'all';
+type QueueFilter = 'open' | 'high' | 'promised' | 'unassigned' | 'no_response' | 'collected' | 'all';
 
 type FollowupRow = {
   id: string;
@@ -58,14 +54,13 @@ function todayStr(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function animate() {
-  LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-}
-
 function useTodaysFollowups() {
   return useQuery<FollowupRow[]>({
     queryKey: ['admin', 'collection-followups', todayStr()],
     queryFn: async () => {
+      const result: FollowupRow[] = [];
+      const pageSize = 500;
+      for (let offset = 0; ; offset += pageSize) {
       const { data, error } = await supabase
         .from('collection_followups')
         .select(`
@@ -74,10 +69,13 @@ function useTodaysFollowups() {
           chit_members ( customer_id, customers ( full_name, phone ), chit_groups ( id, name ) )
         `)
         .eq('follow_up_date', todayStr())
-        .order('priority', { ascending: false })
-        .order('days_overdue', { ascending: false });
+        .order('id', { ascending: true })
+        .range(offset, offset + pageSize - 1);
       if (error) throw error;
-      return (data ?? []) as unknown as FollowupRow[];
+      const page = (data ?? []) as unknown as FollowupRow[];
+      result.push(...page);
+      if (page.length < pageSize) return result;
+      }
     },
   });
 }
@@ -124,7 +122,7 @@ function useAnalytics(rows: FollowupRow[]) {
       statusCounts[r.status] += 1;
       priorityCounts[r.priority] += 1;
       totalDue += r.amount_due;
-      const isOpen = r.status !== 'collected' && r.status !== 'no_response';
+      const isOpen = r.status !== 'collected';
       if (isOpen) outstandingDue += r.amount_due;
 
       const group = r.chit_members?.chit_groups;
@@ -137,10 +135,10 @@ function useAnalytics(rows: FollowupRow[]) {
       }
       const bucket = groupsMap.get(gid)!;
       bucket.rows.push(r);
-      bucket.totalDue += r.amount_due;
+      if (isOpen) bucket.totalDue += r.amount_due;
       if (r.status === 'pending') bucket.pendingCount += 1;
-      if (r.status === 'collected' || r.status === 'no_response') bucket.completedCount += 1;
-      if (r.priority === 'high') bucket.highCount += 1;
+      if (r.status === 'collected') bucket.completedCount += 1;
+      if (r.priority === 'high' && isOpen) bucket.highCount += 1;
     }
 
     const groups = Array.from(groupsMap.values()).sort((a, b) => {
@@ -150,7 +148,7 @@ function useAnalytics(rows: FollowupRow[]) {
     });
 
     const total = rows.length;
-    const completed = statusCounts.collected + statusCounts.no_response;
+    const completed = statusCounts.collected;
     const completionRate = total > 0 ? completed / total : 0;
 
     return { statusCounts, priorityCounts, totalDue, outstandingDue, groups, total, completed, completionRate };
@@ -171,13 +169,14 @@ function QueueSummary({
   const metrics = [
     { label: 'ACTIVE', value: String(activeCount), helper: completionText, tone: '#005E7D' },
     { label: 'OUTSTANDING', value: formatPaise(analytics.outstandingDue), helper: 'Actionable balance', tone: '#B91C1C' },
-    { label: 'HIGH PRIORITY', value: String(analytics.priorityCounts.high), helper: 'Needs attention', tone: '#B45309' },
+    { label: 'HIGH PRIORITY', value: String(analytics.groups.reduce((sum, group) => sum + group.highCount, 0)), helper: 'Needs attention', tone: '#B45309' },
     { label: 'UNASSIGNED', value: String(unassignedCount), helper: 'Allocate staff', tone: '#475569' },
   ];
 
   return (
     <ScrollView
       horizontal
+      style={{ flexGrow: 0 }}
       showsHorizontalScrollIndicator={false}
       contentContainerStyle={styles.summaryStrip}
     >
@@ -203,19 +202,23 @@ function QueueSummary({
 
 export default function CollectionsFollowupsScreen() {
   const router = useRouter();
-  const handleBack = useAdminParentBack('/(admin)/dashboard');
+  const { groupId } = useLocalSearchParams<{ groupId?: string }>();
+  const handleBack = useAdminParentBack(groupId ? '/(admin)/collections/followups' : '/(admin)/dashboard');
   const qc = useQueryClient();
   const { data: rows, isLoading, isError, error, refetch, isRefetching } = useTodaysFollowups();
   const { data: staff } = useStaffMembers();
   const [filter, setFilter] = useState<QueueFilter>('open');
   const [staffModalVisible, setStaffModalVisible] = useState(false);
   const [generating, setGenerating] = useState(false);
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
+  const [staffFilter, setStaffFilter] = useState('all');
+  const [sort, setSort] = useState<'priority' | 'amount' | 'overdue' | 'name'>('priority');
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [assignTarget, setAssignTarget] = useState<FollowupRow | null>(null);
 
-  const allRows = rows ?? [];
+  const allRows = useMemo(() => (rows ?? []).filter(row => !groupId || (row.chit_members?.chit_groups?.id ?? 'unassigned') === groupId), [rows, groupId]);
   const analytics = useAnalytics(allRows);
+  const groupName = analytics.groups[0]?.groupName ?? 'Group follow-ups';
 
   const filteredGroups = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -223,12 +226,14 @@ export default function CollectionsFollowupsScreen() {
       .map((g) => {
         let visible = g.rows;
         if (filter === 'open') {
-          visible = visible.filter((r) => r.status !== 'collected' && r.status !== 'no_response');
+          visible = visible.filter((r) => r.status !== 'collected');
         }
         if (filter === 'high') {
           visible = visible.filter((r) => r.priority === 'high' && r.status !== 'collected');
         }
         if (filter === 'promised') visible = visible.filter((r) => r.status === 'promised');
+        if (filter === 'no_response' || filter === 'collected') visible = visible.filter(r => r.status === filter);
+        if (staffFilter !== 'all') visible = visible.filter(r => r.assigned_staff_id === staffFilter);
         if (filter === 'unassigned') {
           visible = visible.filter((r) => !r.assigned_staff_id && r.status !== 'collected');
         }
@@ -236,10 +241,15 @@ export default function CollectionsFollowupsScreen() {
           const digits = q.replace(/\D/g, '');
           visible = visible.filter((r) => {
             const customer = r.chit_members?.customers;
-            return (customer?.full_name ?? '').toLowerCase().includes(q)
+            return (!groupId && g.groupName.toLowerCase().includes(q)) || (customer?.full_name ?? '').toLowerCase().includes(q)
               || (digits.length > 0 && (customer?.phone ?? '').replace(/\D/g, '').includes(digits));
           });
         }
+        const rank = { high: 0, medium: 1, low: 2 };
+        visible = [...visible].sort((a, b) => sort === 'amount' ? b.amount_due - a.amount_due
+          : sort === 'overdue' ? b.days_overdue - a.days_overdue
+          : sort === 'name' ? (a.chit_members?.customers?.full_name ?? '').localeCompare(b.chit_members?.customers?.full_name ?? '')
+          : rank[a.priority] - rank[b.priority] || b.days_overdue - a.days_overdue);
         // Split so staff scan urgent cases first without hunting through the
         // rest — a separate section per group, not just a badge.
         const highRows = visible.filter((r) => r.priority === 'high');
@@ -247,7 +257,7 @@ export default function CollectionsFollowupsScreen() {
         return { ...g, visibleRows: visible, highRows, otherRows };
       })
       .filter((g) => g.visibleRows.length > 0);
-  }, [analytics.groups, filter, search]);
+  }, [analytics.groups, filter, search, staffFilter, sort, groupId]);
 
   const unassignedCount = useMemo(
     () => allRows.filter((row) => !row.assigned_staff_id && row.status !== 'collected').length,
@@ -258,7 +268,7 @@ export default function CollectionsFollowupsScreen() {
     {
       key: 'open' as const,
       label: 'Open',
-      count: allRows.filter((row) => row.status !== 'collected' && row.status !== 'no_response').length,
+      count: allRows.filter((row) => row.status !== 'collected').length,
     },
     {
       key: 'high' as const,
@@ -271,15 +281,17 @@ export default function CollectionsFollowupsScreen() {
       count: analytics.statusCounts.promised,
     },
     { key: 'unassigned' as const, label: 'Unassigned', count: unassignedCount },
+    { key: 'no_response' as const, label: 'No response', count: analytics.statusCounts.no_response },
+    { key: 'collected' as const, label: 'Collected', count: analytics.statusCounts.collected },
     { key: 'all' as const, label: 'All', count: analytics.total },
-  ]), [allRows, analytics.statusCounts.promised, analytics.total, unassignedCount]);
+  ]), [allRows, analytics.statusCounts, analytics.total, unassignedCount]);
 
   const sections = useMemo(
     () => filteredGroups.map((group) => ({
       ...group,
-      data: collapsed.has(group.groupId) && search.trim().length === 0 ? [] : group.visibleRows,
+      data: groupId ? group.visibleRows : [],
     })),
-    [collapsed, filteredGroups, search],
+    [groupId, filteredGroups],
   );
 
   const visibleCount = useMemo(
@@ -337,31 +349,6 @@ export default function CollectionsFollowupsScreen() {
     );
   };
 
-  const toggleGroup = (groupId: string) => {
-    animate();
-    Haptics.selectionAsync();
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(groupId)) next.delete(groupId); else next.add(groupId);
-      return next;
-    });
-  };
-
-  const expandAll = () => {
-    animate();
-    Haptics.selectionAsync();
-    setCollapsed(new Set());
-  };
-
-  const collapseAll = () => {
-    animate();
-    Haptics.selectionAsync();
-    setCollapsed(new Set(filteredGroups.map((g) => g.groupId)));
-  };
-
-  const allGroupsCollapsed = filteredGroups.length > 0
-    && filteredGroups.every((group) => collapsed.has(group.groupId));
-
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.appBar}>
@@ -369,11 +356,11 @@ export default function CollectionsFollowupsScreen() {
           onPress={() => { Haptics.selectionAsync(); handleBack(); }}
           style={styles.backBtn}
           accessibilityRole="button"
-          accessibilityLabel="Back to dashboard"
+          accessibilityLabel={groupId ? 'Back to collection groups' : 'Back to dashboard'}
         >
           <Text style={{ fontSize: 20, color: Colors.primary }}>{'←'}</Text>
         </TouchableOpacity>
-        <Text style={styles.appBarTitle}>Collections Follow-ups</Text>
+        <Text style={[styles.appBarTitle, { flex: 1 }]} numberOfLines={1}>{groupId ? groupName : 'Collections Follow-ups'}</Text>
         <TouchableOpacity
           onPress={() => setStaffModalVisible(true)}
           style={styles.staffHeaderBtn}
@@ -399,6 +386,7 @@ export default function CollectionsFollowupsScreen() {
         </View>
       ) : (
         <SectionList
+          key={groupId ?? 'groups'}
           sections={sections}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.listContent}
@@ -417,11 +405,11 @@ export default function CollectionsFollowupsScreen() {
           )}
           ListHeaderComponent={(
             <View>
-              <View style={styles.operationsCard}>
+              {!groupId && <View style={styles.operationsCard}>
                 <View style={styles.operationsCopy}>
                   <Text style={styles.operationsEyebrow}>TODAY’S WORKLIST</Text>
-                  <Text style={styles.operationsTitle}>Collect with a clear priority</Text>
-                  <Text style={styles.operationsSub}>Generate dues, assign ownership and close each follow-up.</Text>
+                  <Text style={styles.operationsTitle}>Collections by group</Text>
+                  <Text style={styles.operationsSub}>Choose a group to review customers and manage follow-ups.</Text>
                 </View>
                 <View style={styles.actionsRow}>
                   <TouchableOpacity style={styles.primaryBtn} onPress={handleGenerate} disabled={generating}>
@@ -438,30 +426,32 @@ export default function CollectionsFollowupsScreen() {
                     <Text style={styles.secondaryBtnText}>Notify staff</Text>
                   </TouchableOpacity>
                 </View>
-              </View>
+              </View>}
 
               <QueueSummary analytics={analytics} unassignedCount={unassignedCount} />
 
               <View style={styles.queueHeadingRow}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.queueTitle}>Follow-up queue</Text>
-                  <Text style={styles.queueSubtitle}>{visibleCount} customers · {filteredGroups.length} groups</Text>
+                  <Text style={styles.queueTitle}>{groupId ? 'Customer follow-ups' : 'Chit groups'}</Text>
+                  <Text style={styles.queueSubtitle}>{groupId ? `${new Set(filteredGroups.flatMap(g => g.visibleRows.map(r => r.chit_members?.customer_id ?? r.chit_member_id))).size} customers · ${visibleCount} follow-ups` : `${filteredGroups.length} groups with matching follow-ups`}</Text>
                 </View>
-                {filteredGroups.length > 0 && search.trim().length === 0 && (
+                {(search || staffFilter !== 'all' || filter !== 'open' || sort !== 'priority') && (
                   <TouchableOpacity
                     style={styles.collapseToggle}
-                    onPress={allGroupsCollapsed ? expandAll : collapseAll}
+                    onPress={() => { setSearch(''); setStaffFilter('all'); setFilter('open'); setSort('priority'); }}
                   >
-                    <Text style={styles.collapseToggleText}>{allGroupsCollapsed ? 'Expand all' : 'Collapse all'}</Text>
+                    <Text style={styles.collapseToggleText}>Reset filters</Text>
                   </TouchableOpacity>
                 )}
               </View>
 
+              <Text style={styles.fieldLabel}>{groupId ? 'Find a customer' : 'Find a group or customer'}</Text>
               <View style={styles.searchBox}>
                 <Text style={styles.searchIcon}>{'⌕'}</Text>
                 <TextInput
                   style={styles.searchInput}
-                  placeholder="Search customer name or mobile number"
+                  accessibilityLabel={groupId ? 'Search customers' : 'Search groups or customers'}
+                  placeholder={groupId ? 'Enter name or mobile number' : 'Enter group or customer name'}
                   placeholderTextColor="#94A3B8"
                   value={search}
                   onChangeText={setSearch}
@@ -475,10 +465,13 @@ export default function CollectionsFollowupsScreen() {
                 )}
               </View>
 
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+              <Text style={styles.fieldLabel}>Follow-up status · counts are follow-ups</Text>
+              <ScrollView horizontal style={{ flexGrow: 0 }} showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
                 {filterOptions.map((option) => (
                   <TouchableOpacity
                     key={option.key}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: filter === option.key }}
                     style={[styles.chip, filter === option.key && styles.chipActive]}
                     onPress={() => { Haptics.selectionAsync(); setFilter(option.key); }}
                   >
@@ -491,20 +484,45 @@ export default function CollectionsFollowupsScreen() {
                   </TouchableOpacity>
                 ))}
               </ScrollView>
+              {groupId && <TouchableOpacity style={styles.advancedToggle} accessibilityRole="button" accessibilityState={{ expanded: showAdvancedFilters }} onPress={() => setShowAdvancedFilters(value => !value)}>
+                <Text style={styles.collapseToggleText}>{showAdvancedFilters ? 'Hide staff & sorting' : 'Staff & sorting'}{staffFilter !== 'all' || sort !== 'priority' ? ' · Applied' : ''} {showAdvancedFilters ? '−' : '+'}</Text>
+              </TouchableOpacity>}
+              {groupId && showAdvancedFilters && <>
+                <Text style={styles.fieldLabel}>Assigned staff</Text>
+                <ScrollView horizontal style={{ flexGrow: 0 }} showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+                  {[{ id: 'all', full_name: 'All staff' }, ...(staff ?? [])].map(person => (
+                    <TouchableOpacity key={person.id} accessibilityRole="button" accessibilityState={{ selected: staffFilter === person.id }}
+                      style={[styles.chip, staffFilter === person.id && styles.chipActive]} onPress={() => setStaffFilter(person.id)}>
+                      <Text style={[styles.chipText, staffFilter === person.id && styles.chipTextActive]}>{person.full_name}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+                <Text style={styles.fieldLabel}>Sort follow-ups</Text>
+                <ScrollView horizontal style={{ flexGrow: 0 }} showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+                  {([{ key: 'priority', label: 'Priority' }, { key: 'amount', label: 'Highest due' }, { key: 'overdue', label: 'Most overdue' }, { key: 'name', label: 'Customer A–Z' }] as const).map(option => (
+                    <TouchableOpacity key={option.key} accessibilityRole="button" accessibilityState={{ selected: sort === option.key }}
+                      style={[styles.chip, sort === option.key && styles.chipActive]} onPress={() => setSort(option.key)}>
+                      <Text style={[styles.chipText, sort === option.key && styles.chipTextActive]}>{option.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </>}
             </View>
           )}
           renderSectionHeader={({ section }) => {
-            const isCollapsed = collapsed.has(section.groupId) && search.trim().length === 0;
+            if (groupId) return null;
             return (
               <TouchableOpacity
-                style={styles.groupHeader}
-                onPress={() => toggleGroup(section.groupId)}
+                style={[styles.groupHeader, styles.groupEntry]}
+                accessibilityRole="button"
+                accessibilityLabel={`Open ${section.groupName} follow-ups`}
+                onPress={() => router.push({ pathname: '/(admin)/collections/group', params: { groupId: section.groupId } })}
                 activeOpacity={0.85}
               >
                 <View style={styles.groupAccent} />
                 <View style={{ flex: 1, minWidth: 0 }}>
                   <View style={styles.groupHeaderTitleRow}>
-                    <Text style={styles.groupHeaderName} numberOfLines={1}>{section.groupName}</Text>
+                    <Text style={styles.groupHeaderName} numberOfLines={2}>{section.groupName}</Text>
                     {section.highRows.length > 0 && (
                       <View style={styles.groupHeaderHighBadge}>
                         <Text style={styles.groupHeaderHighBadgeText}>{section.highRows.length} high</Text>
@@ -512,10 +530,12 @@ export default function CollectionsFollowupsScreen() {
                     )}
                   </View>
                   <Text style={styles.groupHeaderMeta} numberOfLines={1}>
-                    {section.visibleRows.length} customers · {formatPaise(section.totalDue)} due
+                    {new Set(section.rows.map(r => r.chit_members?.customer_id ?? r.chit_member_id)).size} customers · {section.rows.length} follow-ups
                   </Text>
+                  <Text style={styles.groupDue}>{formatPaise(section.totalDue)} outstanding</Text>
+                  <Text style={styles.groupHeaderMeta}>{section.visibleRows.length} match filters · View customers →</Text>
                 </View>
-                <Text style={styles.chevron}>{isCollapsed ? '＋' : '−'}</Text>
+                <Text style={styles.chevron}>›</Text>
               </TouchableOpacity>
             );
           }}
@@ -535,10 +555,10 @@ export default function CollectionsFollowupsScreen() {
           ListEmptyComponent={filteredGroups.length === 0 ? (
             <View style={styles.empty}>
               <View style={styles.emptyIcon}><Text style={styles.emptyIconText}>✓</Text></View>
-              <Text style={styles.emptyTitle}>{analytics.total === 0 ? 'Queue not generated yet' : 'No matching follow-ups'}</Text>
+              <Text style={styles.emptyTitle}>{analytics.total === 0 ? 'No follow-ups available' : 'No matching follow-ups'}</Text>
               <Text style={styles.emptySub}>
                 {analytics.total === 0
-                  ? 'Refresh the queue to create today’s worklist from unpaid schedules.'
+                  ? 'Return to the group list and refresh the queue to check for unpaid completed-auction dues.'
                   : 'Try another filter or clear the search.'}
               </Text>
             </View>
@@ -618,8 +638,8 @@ function FollowupCard({
           <Text style={styles.amountValue}>{formatPaise(row.amount_due)}</Text>
         </View>
         <View style={styles.overdueBlock}>
-          <Text style={styles.overdueValue}>{row.days_overdue}</Text>
-          <Text style={styles.overdueLabel}>days overdue</Text>
+          <Text style={styles.overdueValue}>{Math.abs(row.days_overdue)}</Text>
+          <Text style={styles.overdueLabel}>{row.days_overdue < 0 ? 'days until due' : row.days_overdue === 0 ? 'due today' : 'days overdue'}</Text>
         </View>
       </View>
 
@@ -852,6 +872,10 @@ const styles = StyleSheet.create({
   staffHeaderBtn: { height: 36, minWidth: 54, paddingHorizontal: 12, borderRadius: 18, alignItems: 'center', justifyContent: 'center', backgroundColor: '#E8F5FA' },
   staffHeaderBtnText: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: Colors.primary },
   listContent: { paddingBottom: 20 },
+  advancedToggle: { alignSelf: 'flex-start', marginHorizontal: 16, marginBottom: 12, padding: 10, borderRadius: 8, backgroundColor: '#E8F5FA' },
+  fieldLabel: { marginHorizontal: 16, marginBottom: 6, fontSize: 12, fontWeight: '600', color: '#526477' },
+  groupEntry: { backgroundColor: '#FFFFFF', paddingVertical: 20, marginBottom: 12, borderRadius: 16, ...Shadows.subtle },
+  groupDue: { fontSize: 18, fontWeight: '700', color: Colors.primary, marginVertical: 8 },
   loadingState: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
   loadingText: { fontFamily: 'Inter_500Medium', fontSize: 13, color: '#64748B' },
   errorState: { margin: 20, padding: 24, borderRadius: 18, alignItems: 'center', backgroundColor: '#FFF', borderWidth: 1, borderColor: '#FECACA', gap: 8 },
