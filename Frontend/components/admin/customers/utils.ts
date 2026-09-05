@@ -1,6 +1,6 @@
 // Utility functions for Admin Customer Detail Page
 
-import { buildCsvDocument, paiseToCsvAmount } from '../../../../lib/csvExport';
+import { buildCsvDocument, paiseToCsvAmount } from '../../../lib/csvExport';
 
 /**
  * Convert paise (integer) to formatted rupee string
@@ -300,4 +300,4 @@ export {
     getMemberDueAfterAuction,
     getUnaccountedCycleDueAmount,
     isCycleCollectible,
-} from '../../../../lib/chitPayments';
+} from '../../../lib/chitPayments';

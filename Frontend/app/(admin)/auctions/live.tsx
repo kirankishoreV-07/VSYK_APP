@@ -1,17 +1,20 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert, ActivityIndicator, BackHandler, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AppLogo } from '../../../components/AppLogo';
 import Svg, { Path, Circle } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { supabase } from '../../../lib/supabase';
 import { apiPostAdmin } from '../../../lib/api';
 import { isAuctionConfiguredUpcoming } from '../../../lib/auctionUtils';
 
 export default function AdminLiveAuction() {
   const router = useRouter();
+  const navigation = useNavigation();
+  const allowNavigation = useRef(false);
+  const backAttemptRef = useRef<() => void>(() => undefined);
   // The auction the caller navigated from. Without it this screen used to
   // search the whole database for *any* live auction and fall back to *any*
   // configured upcoming one, so it could display a different group's
@@ -343,7 +346,8 @@ export default function AdminLiveAuction() {
                 'Success',
                 `${bidderName} declared as winner.${scheduleSummary} EMI set to ₹${Math.round(finalDuePaise / 100).toLocaleString('en-IN')} for the cycle.`,
               );
-              router.push(`/(admin)/groups/${auction.chit_group_id}`);
+              allowNavigation.current = true;
+              router.replace(`/(admin)/groups/${auction.chit_group_id}`);
             } catch (err: any) {
               console.error(err);
               Alert.alert('Error', err?.message || 'Failed to settle auction.');
@@ -369,6 +373,7 @@ export default function AdminLiveAuction() {
       return;
     }
     if (timerRef.current) clearInterval(timerRef.current);
+    allowNavigation.current = true;
     router.replace('/(admin)/auctions');
   };
 
@@ -437,12 +442,35 @@ export default function AdminLiveAuction() {
                 ? `Bidding stopped. Winner and dues for cycle #${auction.auction_number} were saved together (₹${Math.round(finalDuePaise / 100).toLocaleString('en-IN')} payable).`
                 : 'Auction closed (no bids).',
             );
-            router.push(`/(admin)/groups/${auction.chit_group_id}`);
+            allowNavigation.current = true;
+            router.replace(`/(admin)/groups/${auction.chit_group_id}`);
           }
         }
       ]
     );
   };
+
+  // The visible button, browser Back and Android hardware Back all execute
+  // the same live-auction safety check. A direct/deep link therefore cannot
+  // bypass the warning or fall back to login.
+  backAttemptRef.current = handleSafeBack;
+  useEffect(() => {
+    const unsubscribeNavigation = navigation.addListener('beforeRemove', (event: any) => {
+      if (allowNavigation.current) return;
+      event.preventDefault();
+      backAttemptRef.current();
+    });
+
+    if (Platform.OS === 'web') return unsubscribeNavigation;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      backAttemptRef.current();
+      return true;
+    });
+    return () => {
+      unsubscribeNavigation();
+      subscription.remove();
+    };
+  }, [navigation]);
 
   if (loading) {
     return (

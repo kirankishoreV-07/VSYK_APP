@@ -4,8 +4,8 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 import { useCustomerDetailData } from '../../../../lib/hooks/admin/useCustomerDetailData';
-import { GroupsTab } from '../_components/GroupsTab';
-import { AdminColors } from '../_components/adminStyles';
+import { GroupsTab } from '../../../../components/admin/customers/GroupsTab';
+import { AdminColors } from '../../../../components/admin/customers/adminStyles';
 import { useAdminParentBack } from '../../../../lib/hooks/admin/useAdminParentBack';
 
 export default function GroupsScreen() {

@@ -1,23 +1,46 @@
-import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { Platform } from 'react-native';
 import { supabase } from './supabase';
 
-// Show notifications even when the app is in the foreground (banner + sound).
-// Without this, push messages received while the app is open are silently
-// dropped, so members never see auction/payment alerts while using the app.
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-  }),
-});
+type NotificationsModule = typeof import('expo-notifications');
+export type NotificationResponse = import('expo-notifications').NotificationResponse;
+
+const isExpoGo = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
+let notificationsPromise: Promise<NotificationsModule | null> | null = null;
+let handlerConfigured = false;
+
+// Importing expo-notifications itself produces an SDK 53+ runtime error in
+// Expo Go because remote push support was removed from the store client. Keep
+// the native module lazy so Expo Go can still exercise the rest of the app;
+// development, preview and production builds continue to load it normally.
+function getNotifications(): Promise<NotificationsModule | null> {
+  if (isExpoGo) return Promise.resolve(null);
+  if (!notificationsPromise) notificationsPromise = import('expo-notifications');
+  return notificationsPromise;
+}
+
+async function configureNotificationHandler() {
+  const Notifications = await getNotifications();
+  if (!Notifications || handlerConfigured) return Notifications;
+
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowBanner: true,
+      shouldShowList: true,
+      shouldPlaySound: true,
+      shouldSetBadge: false,
+    }),
+  });
+  handlerConfigured = true;
+  return Notifications;
+}
 
 // Android requires an explicit channel for heads-up notifications.
 export async function ensureAndroidNotificationChannel() {
   if (Platform.OS !== 'android') return;
+  const Notifications = await configureNotificationHandler();
+  if (!Notifications) return;
   await Notifications.setNotificationChannelAsync('default', {
     name: 'VSYK Alerts',
     importance: Notifications.AndroidImportance.HIGH,
@@ -28,6 +51,9 @@ export async function ensureAndroidNotificationChannel() {
 
 export async function registerForPushNotificationsAsync(customerId: string) {
     if (!Device.isDevice) return;
+
+    const Notifications = await configureNotificationHandler();
+    if (!Notifications) return;
 
     const { status: existingStatus } = await Notifications.getPermissionsAsync();
     let finalStatus = existingStatus;
@@ -51,6 +77,21 @@ export async function registerForPushNotificationsAsync(customerId: string) {
         platform: Platform.OS,
         updated_at: new Date().toISOString(),
     });
+}
+
+/**
+ * Route notification taps in native development/preview/production builds.
+ * Expo Go returns a harmless no-op unsubscribe function.
+ */
+export async function subscribeToNotificationResponses(
+  listener: (response: NotificationResponse | null) => void,
+): Promise<() => void> {
+  const Notifications = await configureNotificationHandler();
+  if (!Notifications) return () => {};
+
+  Notifications.getLastNotificationResponseAsync().then(listener).catch(() => {});
+  const subscription = Notifications.addNotificationResponseReceivedListener(listener);
+  return () => subscription.remove();
 }
 
 // Map a notification's data payload to an in-app destination. Auction-related

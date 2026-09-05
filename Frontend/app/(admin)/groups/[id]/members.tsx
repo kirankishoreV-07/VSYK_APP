@@ -15,11 +15,11 @@ import Svg, { Path } from 'react-native-svg';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { supabase } from '../../../../lib/supabase';
 import { dedupeAuctionCycles } from '../../../../lib/chitPayments';
-import { AuctionSettlementModal } from '../../customers/_components/AuctionSettlementModal';
+import { AuctionSettlementModal } from '../../../../components/admin/customers/AuctionSettlementModal';
 import {
   GroupMemberPaymentModal,
   type GroupMemberWithTicket,
-} from '../_components/GroupMemberPaymentModal';
+} from '../../../../components/admin/groups/GroupMemberPaymentModal';
 import { useAdminParentBack } from '../../../../lib/hooks/admin/useAdminParentBack';
 
 export default function GroupMembersPage() {

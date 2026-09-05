@@ -1,13 +1,12 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, Linking, Modal, TextInput,
-  LayoutAnimation, Platform, UIManager, KeyboardAvoidingView,
+  LayoutAnimation, Platform, UIManager, KeyboardAvoidingView, SectionList, RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as Haptics from 'expo-haptics';
-import Svg, { Circle, G } from 'react-native-svg';
 import { supabase } from '../../../lib/supabase';
 import { Colors, Shadows } from '../../../lib/constants';
 import { formatPaise } from '../../../lib/hooks/useDashboard';
@@ -20,6 +19,7 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
 
 type Priority = 'high' | 'medium' | 'low';
 type Status = 'pending' | 'contacted' | 'promised' | 'collected' | 'no_response';
+type QueueFilter = 'open' | 'high' | 'promised' | 'unassigned' | 'all';
 
 type FollowupRow = {
   id: string;
@@ -157,129 +157,45 @@ function useAnalytics(rows: FollowupRow[]) {
   }, [rows]);
 }
 
-// ── Donut chart (plain react-native-svg, no external chart lib) ──
-
-function DonutChart({
-  segments, size = 108, strokeWidth = 16,
-}: { segments: { value: number; color: string }[]; size?: number; strokeWidth?: number }) {
-  const radius = (size - strokeWidth) / 2;
-  const circumference = 2 * Math.PI * radius;
-  const cx = size / 2;
-  const cy = size / 2;
-  const total = segments.reduce((s, seg) => s + seg.value, 0);
-
-  let cumulative = 0;
-  return (
-    <Svg width={size} height={size}>
-      <G rotation="-90" origin={`${cx}, ${cy}`}>
-        <Circle cx={cx} cy={cy} r={radius} stroke="#EEF2F6" strokeWidth={strokeWidth} fill="none" />
-        {total > 0 && segments.filter((s) => s.value > 0).map((seg, i) => {
-          const fraction = seg.value / total;
-          const dash = fraction * circumference;
-          const dashOffset = -cumulative;
-          cumulative += dash;
-          return (
-            <Circle
-              key={i}
-              cx={cx}
-              cy={cy}
-              r={radius}
-              stroke={seg.color}
-              strokeWidth={strokeWidth}
-              strokeDasharray={`${dash} ${circumference - dash}`}
-              strokeDashoffset={dashOffset}
-              strokeLinecap="butt"
-              fill="none"
-            />
-          );
-        })}
-      </G>
-    </Svg>
-  );
-}
-
-function AnalyticsOverview({ analytics }: { analytics: ReturnType<typeof useAnalytics> }) {
-  const { statusCounts, priorityCounts, totalDue, outstandingDue, total, completed, completionRate, groups } = analytics;
-  const pctText = `${Math.round(completionRate * 100)}%`;
-  const statusSegments = (Object.keys(STATUS_META) as Status[]).map((k) => ({
-    value: statusCounts[k], color: STATUS_META[k].color, key: k,
-  }));
-  const maxPriority = Math.max(1, priorityCounts.high, priorityCounts.medium, priorityCounts.low);
+function QueueSummary({
+  analytics,
+  unassignedCount,
+}: {
+  analytics: ReturnType<typeof useAnalytics>;
+  unassignedCount: number;
+}) {
+  const activeCount = analytics.total - analytics.completed;
+  const completionText = analytics.total > 0
+    ? `${Math.round(analytics.completionRate * 100)}% complete`
+    : 'No queue yet';
+  const metrics = [
+    { label: 'ACTIVE', value: String(activeCount), helper: completionText, tone: '#005E7D' },
+    { label: 'OUTSTANDING', value: formatPaise(analytics.outstandingDue), helper: 'Actionable balance', tone: '#B91C1C' },
+    { label: 'HIGH PRIORITY', value: String(analytics.priorityCounts.high), helper: 'Needs attention', tone: '#B45309' },
+    { label: 'UNASSIGNED', value: String(unassignedCount), helper: 'Allocate staff', tone: '#475569' },
+  ];
 
   return (
-    <View style={styles.analyticsCard}>
-      <Text style={styles.analyticsTitle}>Today's Overview</Text>
-
-      <View style={styles.statTilesRow}>
-        <View style={styles.statTile}>
-          <Text style={styles.statTileValue}>{total}</Text>
-          <Text style={styles.statTileLabel}>Follow-ups</Text>
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={styles.summaryStrip}
+    >
+      {metrics.map((metric) => (
+        <View key={metric.label} style={styles.summaryCard}>
+          <Text style={styles.summaryLabel}>{metric.label}</Text>
+          <Text
+            style={[styles.summaryValue, { color: metric.tone }]}
+            numberOfLines={1}
+            adjustsFontSizeToFit
+            minimumFontScale={0.7}
+          >
+            {metric.value}
+          </Text>
+          <Text style={styles.summaryHelper} numberOfLines={1}>{metric.helper}</Text>
         </View>
-        <View style={styles.statTile}>
-          <Text style={[styles.statTileValue, { color: '#16A34A' }]}>{completed}</Text>
-          <Text style={styles.statTileLabel}>Completed</Text>
-        </View>
-        <View style={styles.statTile}>
-          <Text style={[styles.statTileValue, { color: '#B91C1C' }]}>{formatPaise(outstandingDue)}</Text>
-          <Text style={styles.statTileLabel}>Outstanding</Text>
-        </View>
-      </View>
-
-      <View style={styles.donutRow}>
-        <View style={{ width: 108, height: 108 }}>
-          <DonutChart segments={statusSegments} />
-          <View style={styles.donutCenterLabel}>
-            <Text style={styles.donutCenterPct}>{pctText}</Text>
-            <Text style={styles.donutCenterSub}>done</Text>
-          </View>
-        </View>
-        <View style={styles.legendCol}>
-          {statusSegments.filter((s) => s.value > 0).map((s) => (
-            <View key={s.key} style={styles.legendRow}>
-              <View style={[styles.legendDot, { backgroundColor: s.color }]} />
-              <Text style={styles.legendLabel}>{STATUS_META[s.key].label}</Text>
-              <Text style={styles.legendValue}>{s.value}</Text>
-            </View>
-          ))}
-          {total === 0 && <Text style={styles.legendEmpty}>No follow-ups generated yet today.</Text>}
-        </View>
-      </View>
-
-      <View style={styles.priorityBlock}>
-        <Text style={styles.priorityBlockTitle}>By priority</Text>
-        {(['high', 'medium', 'low'] as Priority[]).map((p) => {
-          const count = priorityCounts[p];
-          const meta = PRIORITY_META[p];
-          const width = `${Math.round((count / maxPriority) * 100)}%`;
-          return (
-            <View key={p} style={styles.priorityRow}>
-              <Text style={styles.priorityRowLabel}>{meta.label}</Text>
-              <View style={styles.priorityTrack}>
-                <View style={[styles.priorityFill, { width: width as any, backgroundColor: meta.color }]} />
-              </View>
-              <Text style={styles.priorityRowCount}>{count}</Text>
-            </View>
-          );
-        })}
-      </View>
-
-      {groups.length > 1 && (
-        <View style={styles.groupRankBlock}>
-          <Text style={styles.priorityBlockTitle}>Groups needing attention</Text>
-          {groups.slice(0, 4).map((g) => (
-            <View key={g.groupId} style={styles.groupRankRow}>
-              <Text style={styles.groupRankName} numberOfLines={1}>{g.groupName}</Text>
-              {g.highCount > 0 && (
-                <View style={styles.groupRankBadge}>
-                  <Text style={styles.groupRankBadgeText}>{g.highCount} high</Text>
-                </View>
-              )}
-              <Text style={styles.groupRankDue}>{formatPaise(g.totalDue)}</Text>
-            </View>
-          ))}
-        </View>
-      )}
-    </View>
+      ))}
+    </ScrollView>
   );
 }
 
@@ -289,9 +205,9 @@ export default function CollectionsFollowupsScreen() {
   const router = useRouter();
   const handleBack = useAdminParentBack('/(admin)/dashboard');
   const qc = useQueryClient();
-  const { data: rows, isLoading, refetch, isRefetching } = useTodaysFollowups();
+  const { data: rows, isLoading, isError, error, refetch, isRefetching } = useTodaysFollowups();
   const { data: staff } = useStaffMembers();
-  const [filter, setFilter] = useState<'all' | 'pending' | 'high'>('pending');
+  const [filter, setFilter] = useState<QueueFilter>('open');
   const [staffModalVisible, setStaffModalVisible] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -301,24 +217,21 @@ export default function CollectionsFollowupsScreen() {
   const allRows = rows ?? [];
   const analytics = useAnalytics(allRows);
 
-  // With many groups, showing every one fully expanded is unusable — default
-  // to collapsing groups with nothing urgent so staff land on what actually
-  // needs attention first. Only runs once per data load, so a staff member's
-  // manual expand/collapse choices aren't reset on every refetch.
-  const didInitCollapse = useRef(false);
-  useEffect(() => {
-    if (didInitCollapse.current || analytics.groups.length === 0) return;
-    didInitCollapse.current = true;
-    setCollapsed(new Set(analytics.groups.filter((g) => g.highCount === 0).map((g) => g.groupId)));
-  }, [analytics.groups]);
-
   const filteredGroups = useMemo(() => {
     const q = search.trim().toLowerCase();
     return analytics.groups
       .map((g) => {
         let visible = g.rows;
-        if (filter === 'pending') visible = visible.filter((r) => r.status === 'pending');
-        if (filter === 'high') visible = visible.filter((r) => r.priority === 'high');
+        if (filter === 'open') {
+          visible = visible.filter((r) => r.status !== 'collected' && r.status !== 'no_response');
+        }
+        if (filter === 'high') {
+          visible = visible.filter((r) => r.priority === 'high' && r.status !== 'collected');
+        }
+        if (filter === 'promised') visible = visible.filter((r) => r.status === 'promised');
+        if (filter === 'unassigned') {
+          visible = visible.filter((r) => !r.assigned_staff_id && r.status !== 'collected');
+        }
         if (q) {
           const digits = q.replace(/\D/g, '');
           visible = visible.filter((r) => {
@@ -335,6 +248,44 @@ export default function CollectionsFollowupsScreen() {
       })
       .filter((g) => g.visibleRows.length > 0);
   }, [analytics.groups, filter, search]);
+
+  const unassignedCount = useMemo(
+    () => allRows.filter((row) => !row.assigned_staff_id && row.status !== 'collected').length,
+    [allRows],
+  );
+
+  const filterOptions = useMemo(() => ([
+    {
+      key: 'open' as const,
+      label: 'Open',
+      count: allRows.filter((row) => row.status !== 'collected' && row.status !== 'no_response').length,
+    },
+    {
+      key: 'high' as const,
+      label: 'High priority',
+      count: allRows.filter((row) => row.priority === 'high' && row.status !== 'collected').length,
+    },
+    {
+      key: 'promised' as const,
+      label: 'Promised',
+      count: analytics.statusCounts.promised,
+    },
+    { key: 'unassigned' as const, label: 'Unassigned', count: unassignedCount },
+    { key: 'all' as const, label: 'All', count: analytics.total },
+  ]), [allRows, analytics.statusCounts.promised, analytics.total, unassignedCount]);
+
+  const sections = useMemo(
+    () => filteredGroups.map((group) => ({
+      ...group,
+      data: collapsed.has(group.groupId) && search.trim().length === 0 ? [] : group.visibleRows,
+    })),
+    [collapsed, filteredGroups, search],
+  );
+
+  const visibleCount = useMemo(
+    () => filteredGroups.reduce((sum, group) => sum + group.visibleRows.length, 0),
+    [filteredGroups],
+  );
 
   const updateFollowup = useMutation({
     mutationFn: async (vars: { id: string; patch: Partial<Pick<FollowupRow, 'status' | 'assigned_staff_id'>> }) => {
@@ -408,6 +359,9 @@ export default function CollectionsFollowupsScreen() {
     setCollapsed(new Set(filteredGroups.map((g) => g.groupId)));
   };
 
+  const allGroupsCollapsed = filteredGroups.length > 0
+    && filteredGroups.every((group) => collapsed.has(group.groupId));
+
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.appBar}>
@@ -420,152 +374,170 @@ export default function CollectionsFollowupsScreen() {
           <Text style={{ fontSize: 20, color: Colors.primary }}>{'←'}</Text>
         </TouchableOpacity>
         <Text style={styles.appBarTitle}>Collections Follow-ups</Text>
-        <TouchableOpacity onPress={() => setStaffModalVisible(true)} style={styles.backBtn}>
-          <Text style={{ fontSize: 18 }}>{'👥'}</Text>
+        <TouchableOpacity
+          onPress={() => setStaffModalVisible(true)}
+          style={styles.staffHeaderBtn}
+          accessibilityRole="button"
+          accessibilityLabel="Manage collection staff"
+        >
+          <Text style={styles.staffHeaderBtnText}>Staff</Text>
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollBody}>
-        <View style={styles.actionsRow}>
-          <TouchableOpacity style={styles.primaryBtn} onPress={handleGenerate} disabled={generating}>
-            {generating ? <ActivityIndicator color="#FFF" size="small" /> : <Text style={styles.primaryBtnText}>Generate Today's List</Text>}
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.secondaryBtn} onPress={handleResendDigest}>
-            <Text style={styles.secondaryBtnText}>Re-send Digest</Text>
+      {isLoading ? (
+        <View style={styles.loadingState}>
+          <ActivityIndicator color={Colors.primary} />
+          <Text style={styles.loadingText}>Loading today’s collection queue…</Text>
+        </View>
+      ) : isError ? (
+        <View style={styles.errorState}>
+          <Text style={styles.errorTitle}>Couldn’t load follow-ups</Text>
+          <Text style={styles.errorText}>{error instanceof Error ? error.message : 'Please check your connection and try again.'}</Text>
+          <TouchableOpacity style={styles.retryBtn} onPress={() => refetch()}>
+            <Text style={styles.retryBtnText}>Try again</Text>
           </TouchableOpacity>
         </View>
+      ) : (
+        <SectionList
+          sections={sections}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={styles.listContent}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          stickySectionHeadersEnabled
+          initialNumToRender={12}
+          maxToRenderPerBatch={10}
+          windowSize={7}
+          removeClippedSubviews={Platform.OS === 'android'}
+          refreshControl={(
+            <RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={Colors.primary} />
+          )}
+          ListHeaderComponent={(
+            <View>
+              <View style={styles.operationsCard}>
+                <View style={styles.operationsCopy}>
+                  <Text style={styles.operationsEyebrow}>TODAY’S WORKLIST</Text>
+                  <Text style={styles.operationsTitle}>Collect with a clear priority</Text>
+                  <Text style={styles.operationsSub}>Generate dues, assign ownership and close each follow-up.</Text>
+                </View>
+                <View style={styles.actionsRow}>
+                  <TouchableOpacity style={styles.primaryBtn} onPress={handleGenerate} disabled={generating}>
+                    {generating
+                      ? <ActivityIndicator color="#FFF" size="small" />
+                      : <Text style={styles.primaryBtnText}>Refresh queue</Text>}
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.secondaryBtn} onPress={handleResendDigest}>
+                    <Text style={styles.secondaryBtnText}>Send digest</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
 
-        {isLoading || isRefetching ? (
-          <ActivityIndicator style={{ marginTop: 40 }} color={Colors.primary} />
-        ) : (
-          <>
-            <AnalyticsOverview analytics={analytics} />
+              <QueueSummary analytics={analytics} unassignedCount={unassignedCount} />
 
-            <View style={styles.toolbarRow}>
+              <View style={styles.queueHeadingRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.queueTitle}>Follow-up queue</Text>
+                  <Text style={styles.queueSubtitle}>{visibleCount} customers · {filteredGroups.length} groups</Text>
+                </View>
+                {filteredGroups.length > 0 && search.trim().length === 0 && (
+                  <TouchableOpacity
+                    style={styles.collapseToggle}
+                    onPress={allGroupsCollapsed ? expandAll : collapseAll}
+                  >
+                    <Text style={styles.collapseToggleText}>{allGroupsCollapsed ? 'Expand all' : 'Collapse all'}</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+
               <View style={styles.searchBox}>
-                <Text style={styles.searchIcon}>{'🔍'}</Text>
+                <Text style={styles.searchIcon}>{'⌕'}</Text>
                 <TextInput
                   style={styles.searchInput}
-                  placeholder="Search by customer name or mobile number"
+                  placeholder="Search customer name or mobile number"
                   placeholderTextColor="#94A3B8"
                   value={search}
                   onChangeText={setSearch}
                   autoCorrect={false}
+                  returnKeyType="search"
                 />
                 {search.length > 0 && (
-                  <TouchableOpacity onPress={() => setSearch('')} hitSlop={8}>
+                  <TouchableOpacity onPress={() => setSearch('')} hitSlop={8} accessibilityLabel="Clear search">
                     <Text style={styles.searchClear}>{'✕'}</Text>
                   </TouchableOpacity>
                 )}
               </View>
-              <TouchableOpacity style={styles.toolbarBtn} onPress={expandAll}>
-                <Text style={styles.toolbarBtnText}>Expand all</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.toolbarBtn} onPress={collapseAll}>
-                <Text style={styles.toolbarBtnText}>Collapse all</Text>
-              </TouchableOpacity>
+
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+                {filterOptions.map((option) => (
+                  <TouchableOpacity
+                    key={option.key}
+                    style={[styles.chip, filter === option.key && styles.chipActive]}
+                    onPress={() => { Haptics.selectionAsync(); setFilter(option.key); }}
+                  >
+                    <Text style={[styles.chipText, filter === option.key && styles.chipTextActive]}>
+                      {option.label}
+                    </Text>
+                    <View style={[styles.chipCount, filter === option.key && styles.chipCountActive]}>
+                      <Text style={[styles.chipCountText, filter === option.key && styles.chipCountTextActive]}>{option.count}</Text>
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
             </View>
-
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
-              {(['pending', 'high', 'all'] as const).map((f) => (
-                <TouchableOpacity
-                  key={f}
-                  style={[styles.chip, filter === f && styles.chipActive]}
-                  onPress={() => { Haptics.selectionAsync(); setFilter(f); }}
-                >
-                  <Text style={[styles.chipText, filter === f && styles.chipTextActive]}>
-                    {f === 'all' ? 'All' : f === 'pending' ? 'Pending' : 'High Priority'}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-
-            <View style={styles.list}>
-              {filteredGroups.length === 0 ? (
-                <View style={styles.empty}>
-                  <Text style={styles.emptyTitle}>Nothing to show</Text>
-                  <Text style={styles.emptySub}>
-                    {analytics.total === 0 ? 'Tap "Generate Today\'s List" to build today’s follow-ups from real unpaid dues.' : 'No follow-ups match this filter.'}
+          )}
+          renderSectionHeader={({ section }) => {
+            const isCollapsed = collapsed.has(section.groupId) && search.trim().length === 0;
+            return (
+              <TouchableOpacity
+                style={styles.groupHeader}
+                onPress={() => toggleGroup(section.groupId)}
+                activeOpacity={0.85}
+              >
+                <View style={styles.groupAccent} />
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <View style={styles.groupHeaderTitleRow}>
+                    <Text style={styles.groupHeaderName} numberOfLines={1}>{section.groupName}</Text>
+                    {section.highRows.length > 0 && (
+                      <View style={styles.groupHeaderHighBadge}>
+                        <Text style={styles.groupHeaderHighBadgeText}>{section.highRows.length} high</Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.groupHeaderMeta} numberOfLines={1}>
+                    {section.visibleRows.length} customers · {formatPaise(section.totalDue)} due
                   </Text>
                 </View>
-              ) : (
-                filteredGroups.map((g) => {
-                  const isCollapsed = collapsed.has(g.groupId);
-                  const groupCompletion = g.rows.length > 0 ? g.completedCount / g.rows.length : 0;
-                  return (
-                    <View key={g.groupId} style={styles.groupSection}>
-                      <TouchableOpacity style={styles.groupHeader} onPress={() => toggleGroup(g.groupId)} activeOpacity={0.7}>
-                        <View style={{ flex: 1 }}>
-                          <View style={styles.groupHeaderTitleRow}>
-                            <Text style={styles.groupHeaderName} numberOfLines={1}>{g.groupName}</Text>
-                            {g.highCount > 0 && (
-                              <View style={styles.groupHeaderHighBadge}>
-                                <Text style={styles.groupHeaderHighBadgeText}>{g.highCount} high</Text>
-                              </View>
-                            )}
-                          </View>
-                          <Text style={styles.groupHeaderMeta}>
-                            {g.visibleRows.length} of {g.rows.length} shown · {formatPaise(g.totalDue)} due
-                          </Text>
-                          <View style={styles.groupProgressTrack}>
-                            <View style={[styles.groupProgressFill, { width: `${Math.round(groupCompletion * 100)}%` }]} />
-                          </View>
-                        </View>
-                        <Text style={styles.chevron}>{isCollapsed ? '▾' : '▴'}</Text>
-                      </TouchableOpacity>
-
-                      {!isCollapsed && (
-                        <View style={styles.groupBody}>
-                          {g.highRows.length > 0 && (
-                            <View style={styles.sectionBlock}>
-                              <View style={styles.sectionHeaderRow}>
-                                <View style={styles.sectionHeaderDotHigh} />
-                                <Text style={styles.sectionHeaderText}>High Priority</Text>
-                                <Text style={styles.sectionHeaderCount}>{g.highRows.length}</Text>
-                              </View>
-                              {g.highRows.map((row) => (
-                                <FollowupCard
-                                  key={row.id}
-                                  row={row}
-                                  staff={staff ?? []}
-                                  onUpdate={(patch) => updateFollowup.mutate({ id: row.id, patch })}
-                                  onMarkCollected={() => markCollected(row)}
-                                  onAssignPress={() => setAssignTarget(row)}
-                                />
-                              ))}
-                            </View>
-                          )}
-
-                          {g.otherRows.length > 0 && (
-                            <View style={styles.sectionBlock}>
-                              <View style={styles.sectionHeaderRow}>
-                                <View style={styles.sectionHeaderDotOther} />
-                                <Text style={styles.sectionHeaderText}>Other Follow-ups</Text>
-                                <Text style={styles.sectionHeaderCount}>{g.otherRows.length}</Text>
-                              </View>
-                              {g.otherRows.map((row) => (
-                                <FollowupCard
-                                  key={row.id}
-                                  row={row}
-                                  staff={staff ?? []}
-                                  onUpdate={(patch) => updateFollowup.mutate({ id: row.id, patch })}
-                                  onMarkCollected={() => markCollected(row)}
-                                  onAssignPress={() => setAssignTarget(row)}
-                                />
-                              ))}
-                            </View>
-                          )}
-                        </View>
-                      )}
-                    </View>
-                  );
-                })
-              )}
+                <Text style={styles.chevron}>{isCollapsed ? '＋' : '−'}</Text>
+              </TouchableOpacity>
+            );
+          }}
+          renderItem={({ item }) => (
+            <FollowupCard
+              row={item}
+              staff={staff ?? []}
+              onOpenCustomer={() => {
+                const customerId = item.chit_members?.customer_id;
+                if (customerId) router.push(`/(admin)/customers/${customerId}`);
+              }}
+              onUpdate={(patch) => updateFollowup.mutate({ id: item.id, patch })}
+              onMarkCollected={() => markCollected(item)}
+              onAssignPress={() => setAssignTarget(item)}
+            />
+          )}
+          ListEmptyComponent={filteredGroups.length === 0 ? (
+            <View style={styles.empty}>
+              <View style={styles.emptyIcon}><Text style={styles.emptyIconText}>✓</Text></View>
+              <Text style={styles.emptyTitle}>{analytics.total === 0 ? 'Queue not generated yet' : 'No matching follow-ups'}</Text>
+              <Text style={styles.emptySub}>
+                {analytics.total === 0
+                  ? 'Refresh the queue to create today’s worklist from unpaid schedules.'
+                  : 'Try another filter or clear the search.'}
+              </Text>
             </View>
-          </>
-        )}
-        <View style={{ height: 60 }} />
-      </ScrollView>
+          ) : null}
+          ListFooterComponent={<View style={{ height: 88 }} />}
+        />
+      )}
 
       <StaffManagerModal visible={staffModalVisible} onClose={() => setStaffModalVisible(false)} staff={staff ?? []} />
       <AssignStaffModal
@@ -583,59 +555,102 @@ export default function CollectionsFollowupsScreen() {
 }
 
 function FollowupCard({
-  row, staff, onUpdate, onMarkCollected, onAssignPress,
+  row, staff, onOpenCustomer, onUpdate, onMarkCollected, onAssignPress,
 }: {
   row: FollowupRow;
   staff: StaffMember[];
+  onOpenCustomer: () => void;
   onUpdate: (patch: Partial<Pick<FollowupRow, 'status' | 'assigned_staff_id'>>) => void;
   onMarkCollected: () => void;
   onAssignPress: () => void;
 }) {
   const cust = row.chit_members?.customers;
   const pc = PRIORITY_META[row.priority];
+  const statusMeta = STATUS_META[row.status];
   const assignedStaff = staff.find((s) => s.id === row.assigned_staff_id);
+  const initials = (cust?.full_name ?? 'Customer')
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join('');
+
+  const openStatusMenu = () => {
+    Alert.alert(
+      'Update follow-up status',
+      `Choose the latest outcome for ${cust?.full_name ?? 'this customer'}.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'No response', onPress: () => onUpdate({ status: 'no_response' }) },
+        { text: 'Promised to pay', onPress: () => onUpdate({ status: 'promised' }) },
+      ],
+    );
+  };
 
   return (
     <View style={styles.card}>
       <View style={styles.cardHeaderRow}>
-        <Text style={styles.custName} numberOfLines={1}>{cust?.full_name ?? 'Customer'}</Text>
+        <TouchableOpacity style={styles.customerIdentity} onPress={onOpenCustomer} activeOpacity={0.75}>
+          <View style={styles.customerAvatar}>
+            <Text style={styles.customerAvatarText}>{initials || 'C'}</Text>
+          </View>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.custName} numberOfLines={1}>{cust?.full_name ?? 'Customer'}</Text>
+            <Text style={styles.customerPhone} numberOfLines={1}>{cust?.phone ?? 'Mobile number unavailable'}</Text>
+          </View>
+        </TouchableOpacity>
         <View style={[styles.badge, { backgroundColor: pc.bg }]}>
-          <Text style={[styles.badgeText, { color: pc.color }]}>{pc.label.toUpperCase()}</Text>
+          <Text style={[styles.badgeText, { color: pc.color }]}>{pc.label}</Text>
         </View>
       </View>
-      <Text style={styles.groupLine}>{formatPaise(row.amount_due)} due</Text>
-      <Text style={styles.suggestion}>{row.suggested_action}</Text>
 
-      <View style={styles.rowBetween}>
-        <TouchableOpacity
-          onPress={() => cust?.phone && Linking.openURL(`tel:${cust.phone}`)}
-          style={styles.callBtn}
-        >
-          <Text style={styles.callBtnText}>{'📞'} {cust?.phone ?? '—'}</Text>
+      <View style={styles.amountRow}>
+        <View>
+          <Text style={styles.amountLabel}>AMOUNT DUE</Text>
+          <Text style={styles.amountValue}>{formatPaise(row.amount_due)}</Text>
+        </View>
+        <View style={styles.overdueBlock}>
+          <Text style={styles.overdueValue}>{row.days_overdue}</Text>
+          <Text style={styles.overdueLabel}>days overdue</Text>
+        </View>
+      </View>
+
+      {row.suggested_action ? (
+        <Text style={styles.suggestion} numberOfLines={2}>{row.suggested_action}</Text>
+      ) : null}
+
+      <View style={styles.metaRow}>
+        <TouchableOpacity style={[styles.statusPill, { borderColor: statusMeta.color }]} onPress={openStatusMenu}>
+          <View style={[styles.statusDot, { backgroundColor: statusMeta.color }]} />
+          <Text style={[styles.statusPillText, { color: statusMeta.color }]}>{statusMeta.label} ▾</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.assignBtn} onPress={onAssignPress}>
           <Text style={styles.assignBtnText} numberOfLines={1}>
-            {assignedStaff ? `👤 ${assignedStaff.full_name}` : 'Assign staff'}
+            {assignedStaff ? assignedStaff.full_name : 'Assign staff'}
           </Text>
         </TouchableOpacity>
       </View>
 
-      <View style={styles.rowBetween}>
-        <Text style={styles.statusLabel}>Status: {row.status.replace('_', ' ')}</Text>
-        <View style={{ flexDirection: 'row', gap: 8 }}>
-          <TouchableOpacity
-            style={styles.smallBtn}
-            onPress={() => onUpdate({ status: 'contacted' })}
-          >
-            <Text style={styles.smallBtnText}>Mark Contacted</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.smallBtn, styles.collectBtn]}
-            onPress={onMarkCollected}
-          >
-            <Text style={[styles.smallBtnText, { color: '#FFF' }]}>Mark Collected</Text>
-          </TouchableOpacity>
-        </View>
+      <View style={styles.cardActions}>
+        <TouchableOpacity
+          onPress={() => cust?.phone && Linking.openURL(`tel:${cust.phone}`)}
+          style={[styles.cardActionBtn, !cust?.phone && styles.cardActionDisabled]}
+          disabled={!cust?.phone}
+        >
+          <Text style={styles.cardActionText}>Call</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.cardActionBtn, row.status === 'contacted' && styles.cardActionSelected]}
+          onPress={() => onUpdate({ status: 'contacted' })}
+          disabled={row.status === 'contacted'}
+        >
+          <Text style={[styles.cardActionText, row.status === 'contacted' && styles.cardActionSelectedText]}>
+            {row.status === 'contacted' ? 'Contacted' : 'Mark contacted'}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.paymentBtn} onPress={onMarkCollected}>
+          <Text style={styles.paymentBtnText}>Record payment</Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -826,97 +841,98 @@ const styles = StyleSheet.create({
   appBar: { height: 56, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, backgroundColor: '#FFF', borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
   backBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
   appBarTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 16, color: '#0B1C30' },
-  scrollBody: { paddingBottom: 20 },
-  actionsRow: { flexDirection: 'row', gap: 10, paddingHorizontal: 20, paddingTop: 14 },
+  staffHeaderBtn: { height: 36, minWidth: 54, paddingHorizontal: 12, borderRadius: 18, alignItems: 'center', justifyContent: 'center', backgroundColor: '#E8F5FA' },
+  staffHeaderBtnText: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: Colors.primary },
+  listContent: { paddingBottom: 20 },
+  loadingState: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
+  loadingText: { fontFamily: 'Inter_500Medium', fontSize: 13, color: '#64748B' },
+  errorState: { margin: 20, padding: 24, borderRadius: 18, alignItems: 'center', backgroundColor: '#FFF', borderWidth: 1, borderColor: '#FECACA', gap: 8 },
+  errorTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 17, color: '#991B1B' },
+  errorText: { fontFamily: 'Inter_400Regular', fontSize: 13, lineHeight: 19, color: '#64748B', textAlign: 'center' },
+  retryBtn: { marginTop: 6, backgroundColor: Colors.primary, paddingHorizontal: 20, paddingVertical: 10, borderRadius: 10 },
+  retryBtnText: { fontFamily: 'Inter_600SemiBold', color: '#FFF', fontSize: 13 },
+
+  operationsCard: { marginHorizontal: 16, marginTop: 16, padding: 16, borderRadius: 18, backgroundColor: '#EAF7FB', borderWidth: 1, borderColor: '#D3EDF5' },
+  operationsCopy: { marginBottom: 14 },
+  operationsEyebrow: { fontFamily: 'Inter_700Bold', fontSize: 9, color: '#007A8A', letterSpacing: 1.1, marginBottom: 5 },
+  operationsTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 19, color: '#0B1C30' },
+  operationsSub: { fontFamily: 'Inter_400Regular', fontSize: 12.5, lineHeight: 18, color: '#526477', marginTop: 3 },
+  actionsRow: { flexDirection: 'row', gap: 10 },
   primaryBtn: { flex: 1, backgroundColor: Colors.primary, paddingVertical: 12, borderRadius: 12, alignItems: 'center' },
   primaryBtnText: { fontFamily: 'Inter_600SemiBold', color: '#FFF', fontSize: 13 },
-  secondaryBtn: { flex: 1, borderWidth: 1, borderColor: Colors.primary, paddingVertical: 12, borderRadius: 12, alignItems: 'center' },
+  secondaryBtn: { flex: 1, borderWidth: 1, borderColor: Colors.primary, paddingVertical: 12, borderRadius: 12, alignItems: 'center', backgroundColor: '#FFF' },
   secondaryBtnText: { fontFamily: 'Inter_600SemiBold', color: Colors.primary, fontSize: 13 },
 
-  // Analytics
-  analyticsCard: { marginHorizontal: 20, marginTop: 16, backgroundColor: '#FFF', borderRadius: 20, padding: 18, gap: 14, borderWidth: 1, borderColor: '#F1F5F9', ...Shadows.subtle },
-  analyticsTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 15, color: '#0B1C30' },
-  statTilesRow: { flexDirection: 'row', gap: 10 },
-  statTile: { flex: 1, backgroundColor: '#F8FAFC', borderRadius: 14, paddingVertical: 12, alignItems: 'center', gap: 2 },
-  statTileValue: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 16, color: '#0B1C30' },
-  statTileLabel: { fontFamily: 'Inter_500Medium', fontSize: 10.5, color: '#64748B' },
-  donutRow: { flexDirection: 'row', alignItems: 'center', gap: 18 },
-  donutCenterLabel: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
-  donutCenterPct: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 18, color: '#0B1C30' },
-  donutCenterSub: { fontFamily: 'Inter_500Medium', fontSize: 10, color: '#94A3B8' },
-  legendCol: { flex: 1, gap: 7 },
-  legendRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  legendDot: { width: 9, height: 9, borderRadius: 5 },
-  legendLabel: { flex: 1, fontFamily: 'Inter_500Medium', fontSize: 12.5, color: '#334155' },
-  legendValue: { fontFamily: 'Inter_700Bold', fontSize: 12.5, color: '#0B1C30' },
-  legendEmpty: { fontFamily: 'Inter_400Regular', fontSize: 12, color: '#94A3B8' },
-  priorityBlock: { gap: 8, paddingTop: 4, borderTopWidth: 1, borderTopColor: '#F1F5F9' },
-  priorityBlockTitle: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#64748B', marginBottom: 2 },
-  priorityRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  priorityRowLabel: { width: 56, fontFamily: 'Inter_500Medium', fontSize: 12, color: '#334155' },
-  priorityTrack: { flex: 1, height: 8, borderRadius: 4, backgroundColor: '#F1F5F9', overflow: 'hidden' },
-  priorityFill: { height: '100%', borderRadius: 4 },
-  priorityRowCount: { width: 22, textAlign: 'right', fontFamily: 'Inter_700Bold', fontSize: 12, color: '#0B1C30' },
-  groupRankBlock: { gap: 6, paddingTop: 4, borderTopWidth: 1, borderTopColor: '#F1F5F9' },
-  groupRankRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 3 },
-  groupRankName: { flex: 1, fontFamily: 'Inter_500Medium', fontSize: 12.5, color: '#334155' },
-  groupRankBadge: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 100, backgroundColor: '#FEE2E2' },
-  groupRankBadgeText: { fontFamily: 'Inter_700Bold', fontSize: 9.5, color: '#B91C1C' },
-  groupRankDue: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#0B1C30' },
-
-  toolbarRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 20, paddingTop: 16 },
-  searchBox: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#FFF', borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 12, paddingHorizontal: 12, height: 40 },
-  searchIcon: { fontSize: 13 },
+  summaryStrip: { gap: 10, paddingHorizontal: 16, paddingVertical: 14 },
+  summaryCard: { width: 136, minHeight: 88, padding: 13, borderRadius: 15, backgroundColor: '#FFF', borderWidth: 1, borderColor: '#E7EDF3', ...Shadows.subtle },
+  summaryLabel: { fontFamily: 'Inter_700Bold', fontSize: 8.5, letterSpacing: 0.8, color: '#7A899A' },
+  summaryValue: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 21, marginTop: 5 },
+  summaryHelper: { fontFamily: 'Inter_400Regular', fontSize: 10.5, color: '#8390A0', marginTop: 2 },
+  queueHeadingRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: 6, paddingBottom: 10 },
+  queueTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 18, color: '#0B1C30' },
+  queueSubtitle: { fontFamily: 'Inter_400Regular', fontSize: 11.5, color: '#7A899A', marginTop: 2 },
+  collapseToggle: { paddingHorizontal: 11, paddingVertical: 7, borderRadius: 9, backgroundColor: '#E8F5FA' },
+  collapseToggleText: { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: Colors.primary },
+  searchBox: { marginHorizontal: 16, flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: '#FFF', borderWidth: 1, borderColor: '#D8E2EA', borderRadius: 13, paddingHorizontal: 13, height: 46 },
+  searchIcon: { fontSize: 20, color: '#64748B', transform: [{ rotate: '-20deg' }] },
   searchInput: { flex: 1, fontFamily: 'Inter_400Regular', fontSize: 13, color: '#0B1C30', height: '100%' },
   searchClear: { fontSize: 13, color: '#94A3B8', paddingHorizontal: 2 },
-  toolbarBtn: { paddingHorizontal: 10, height: 40, borderRadius: 12, backgroundColor: '#FFF', borderWidth: 1, borderColor: '#E2E8F0', alignItems: 'center', justifyContent: 'center' },
-  toolbarBtnText: { fontFamily: 'Inter_600SemiBold', fontSize: 11.5, color: '#334155' },
-  filterRow: { gap: 8, paddingHorizontal: 20, paddingVertical: 14 },
-  chip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 100, backgroundColor: '#FFF', borderWidth: 1, borderColor: '#E2E8F0' },
+  filterRow: { gap: 8, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 14 },
+  chip: { minHeight: 36, flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 100, backgroundColor: '#FFF', borderWidth: 1, borderColor: '#E2E8F0' },
   chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   chipText: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#64748B' },
   chipTextActive: { color: '#FFF' },
+  chipCount: { minWidth: 21, height: 21, paddingHorizontal: 5, borderRadius: 11, alignItems: 'center', justifyContent: 'center', backgroundColor: '#EEF2F6' },
+  chipCountActive: { backgroundColor: 'rgba(255,255,255,0.2)' },
+  chipCountText: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#526477' },
+  chipCountTextActive: { color: '#FFF' },
 
-  list: { paddingHorizontal: 20, gap: 18 },
-  empty: { alignItems: 'center', paddingVertical: 60, gap: 6 },
+  empty: { alignItems: 'center', paddingVertical: 58, paddingHorizontal: 28, gap: 6 },
+  emptyIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#DCFCE7', alignItems: 'center', justifyContent: 'center', marginBottom: 4 },
+  emptyIconText: { fontFamily: 'Inter_700Bold', fontSize: 20, color: '#16A34A' },
   emptyTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 16, color: '#0B1C30' },
-  emptySub: { fontFamily: 'Inter_400Regular', fontSize: 13, color: '#94A3B8', textAlign: 'center', paddingHorizontal: 30 },
+  emptySub: { fontFamily: 'Inter_400Regular', fontSize: 13, lineHeight: 19, color: '#94A3B8', textAlign: 'center' },
 
-  // Group section (accordion)
-  groupSection: { backgroundColor: '#FFF', borderRadius: 18, borderWidth: 1, borderColor: '#F1F5F9', overflow: 'hidden', ...Shadows.subtle },
-  groupHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 16 },
+  // Virtualized group section headers
+  groupHeader: { marginHorizontal: 16, marginTop: 10, flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 11, paddingHorizontal: 12, borderRadius: 13, backgroundColor: '#EFF7FA', borderWidth: 1, borderColor: '#DCECF2' },
+  groupAccent: { width: 4, height: 34, borderRadius: 2, backgroundColor: Colors.primary },
   groupHeaderTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   groupHeaderName: { flex: 1, fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 14.5, color: '#0B1C30' },
   groupHeaderHighBadge: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 100, backgroundColor: '#FEE2E2' },
   groupHeaderHighBadgeText: { fontFamily: 'Inter_700Bold', fontSize: 9.5, color: '#B91C1C' },
-  groupHeaderMeta: { fontFamily: 'Inter_500Medium', fontSize: 11.5, color: '#64748B', marginTop: 2 },
-  groupProgressTrack: { height: 5, borderRadius: 3, backgroundColor: '#EEF2F6', overflow: 'hidden', marginTop: 6 },
-  groupProgressFill: { height: '100%', backgroundColor: '#16A34A', borderRadius: 3 },
-  chevron: { fontSize: 14, color: '#94A3B8', paddingLeft: 4 },
-  groupBody: { paddingHorizontal: 12, paddingBottom: 12, gap: 14, borderTopWidth: 1, borderTopColor: '#F1F5F9', paddingTop: 12 },
-  sectionBlock: { gap: 10 },
-  sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 2 },
-  sectionHeaderDotHigh: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#B91C1C' },
-  sectionHeaderDotOther: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#94A3B8' },
-  sectionHeaderText: { flex: 1, fontFamily: 'Inter_700Bold', fontSize: 11.5, color: '#64748B', textTransform: 'uppercase', letterSpacing: 0.4 },
-  sectionHeaderCount: { fontFamily: 'Inter_700Bold', fontSize: 11.5, color: '#94A3B8' },
+  groupHeaderMeta: { fontFamily: 'Inter_500Medium', fontSize: 11, color: '#64748B', marginTop: 2 },
+  chevron: { width: 26, height: 26, borderRadius: 13, backgroundColor: '#FFF', textAlign: 'center', lineHeight: 25, fontSize: 16, color: Colors.primary, overflow: 'hidden' },
 
-  card: { backgroundColor: '#F8FAFC', borderRadius: 14, padding: 16, gap: 9, borderWidth: 1, borderColor: '#F1F5F9' },
+  card: { marginHorizontal: 16, marginTop: 8, backgroundColor: '#FFF', borderRadius: 16, padding: 14, gap: 11, borderWidth: 1, borderColor: '#E8EDF2', ...Shadows.subtle },
   cardHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  customerIdentity: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 10, marginRight: 8 },
+  customerAvatar: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center', backgroundColor: '#DDF3F8' },
+  customerAvatarText: { fontFamily: 'Inter_700Bold', fontSize: 12, color: Colors.primary },
   custName: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 14.5, color: '#0B1C30', flex: 1 },
+  customerPhone: { fontFamily: 'Inter_400Regular', fontSize: 11.5, color: '#7A899A', marginTop: 1 },
   badge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 100 },
-  badgeText: { fontFamily: 'Inter_700Bold', fontSize: 9 },
-  groupLine: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#64748B' },
-  suggestion: { fontFamily: 'Inter_400Regular', fontSize: 13, color: '#334155', lineHeight: 18 },
-  rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 },
-  callBtn: { paddingVertical: 6, paddingHorizontal: 10, backgroundColor: '#EEF2F6', borderRadius: 8 },
-  callBtnText: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#0B1C30' },
-  assignBtn: { paddingVertical: 6, paddingHorizontal: 10, backgroundColor: 'rgba(1,120,158,0.08)', borderRadius: 8 },
-  assignBtnText: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: Colors.primary },
-  statusLabel: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#94A3B8', textTransform: 'capitalize' },
-  smallBtn: { paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8, backgroundColor: '#EEF2F6' },
-  smallBtnText: { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: '#334155' },
-  collectBtn: { backgroundColor: '#16A34A' },
+  badgeText: { fontFamily: 'Inter_700Bold', fontSize: 9.5, textTransform: 'uppercase' },
+  amountRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', paddingVertical: 2 },
+  amountLabel: { fontFamily: 'Inter_700Bold', fontSize: 8.5, letterSpacing: 0.7, color: '#94A3B8' },
+  amountValue: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 21, color: '#0B1C30', marginTop: 2 },
+  overdueBlock: { alignItems: 'flex-end' },
+  overdueValue: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 17, color: '#B91C1C' },
+  overdueLabel: { fontFamily: 'Inter_500Medium', fontSize: 10, color: '#94A3B8' },
+  suggestion: { fontFamily: 'Inter_400Regular', fontSize: 12, color: '#526477', lineHeight: 17, paddingTop: 9, borderTopWidth: 1, borderTopColor: '#F1F5F9' },
+  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  statusPill: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 5, paddingHorizontal: 8, borderWidth: 1, borderRadius: 100, backgroundColor: '#FFF' },
+  statusDot: { width: 6, height: 6, borderRadius: 3 },
+  statusPillText: { fontFamily: 'Inter_600SemiBold', fontSize: 10.5 },
+  assignBtn: { flex: 1, minWidth: 0, paddingVertical: 6, paddingHorizontal: 10, backgroundColor: '#EEF7FA', borderRadius: 8, alignItems: 'flex-end' },
+  assignBtnText: { fontFamily: 'Inter_600SemiBold', fontSize: 11.5, color: Colors.primary },
+  cardActions: { flexDirection: 'row', gap: 7, paddingTop: 2 },
+  cardActionBtn: { minHeight: 36, paddingHorizontal: 11, borderRadius: 9, borderWidth: 1, borderColor: '#D8E2EA', backgroundColor: '#FFF', alignItems: 'center', justifyContent: 'center' },
+  cardActionText: { fontFamily: 'Inter_600SemiBold', fontSize: 10.5, color: '#334155' },
+  cardActionSelected: { borderColor: '#86EFAC', backgroundColor: '#F0FDF4' },
+  cardActionSelectedText: { color: '#15803D' },
+  cardActionDisabled: { opacity: 0.4 },
+  paymentBtn: { flex: 1, minHeight: 36, paddingHorizontal: 10, borderRadius: 9, backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center' },
+  paymentBtnText: { fontFamily: 'Inter_600SemiBold', fontSize: 10.5, color: '#FFF' },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
   modalCard: { backgroundColor: '#FFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, gap: 12, maxHeight: '85%' },

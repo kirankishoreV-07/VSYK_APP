@@ -3,9 +3,12 @@ import { useEffect, useState } from 'react';
 import { Stack, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useFonts } from 'expo-font';
-import * as Notifications from 'expo-notifications';
 import { MemberSessionProvider } from '../lib/MemberSessionContext';
-import { routeForNotificationData } from '../lib/notifications';
+import {
+  routeForNotificationData,
+  subscribeToNotificationResponses,
+  type NotificationResponse,
+} from '../lib/notifications';
 import {
   SpaceGrotesk_300Light,
   SpaceGrotesk_400Regular,
@@ -51,21 +54,22 @@ function NotificationRouter() {
 
   useEffect(() => {
     let mounted = true;
+    let unsubscribe = () => {};
 
-    const go = (response: Notifications.NotificationResponse | null) => {
+    const go = (response: NotificationResponse | null) => {
       const data = response?.notification?.request?.content?.data;
       const path = routeForNotificationData(data);
       if (path && mounted) router.push(path as any);
     };
 
-    // App opened from a tap while killed (cold start).
-    Notifications.getLastNotificationResponseAsync().then(go).catch(() => {});
+    void subscribeToNotificationResponses(go).then((removeListener) => {
+      if (mounted) unsubscribe = removeListener;
+      else removeListener();
+    });
 
-    // App already running / backgrounded.
-    const sub = Notifications.addNotificationResponseReceivedListener(go);
     return () => {
       mounted = false;
-      sub.remove();
+      unsubscribe();
     };
   }, [router]);
 

@@ -23,6 +23,7 @@ import {
 } from '../../../lib/memberGroupHistory';
 import { WINNER_HIGHLIGHT } from '../../../lib/auctionWinner';
 import { shareCsvFile } from '../../../lib/csvExport';
+import { useParentBack } from '../../../lib/hooks/useParentBack';
 
 const CHART_COLORS = {
   paid: '#10B981',
@@ -485,6 +486,7 @@ function MonthBarChart({ detail }: { detail: GroupHistoryDetail }) {
 
 export default function GroupHistoryDetailScreen() {
   const router = useRouter();
+  const handleBack = useParentBack('/(tabs)/wallet');
   const { id } = useLocalSearchParams<{ id: string }>();
   const { memberId } = useMemberSession();
   const queryClient = useQueryClient();
@@ -541,7 +543,7 @@ export default function GroupHistoryDetailScreen() {
   return (
     <SafeAreaView style={st.safe} edges={['top']}>
       <View style={st.appBar}>
-        <TouchableOpacity onPress={() => router.back()} style={st.backBtn}>
+        <TouchableOpacity onPress={handleBack} style={st.backBtn} accessibilityRole="button" accessibilityLabel="Back to wallet">
           <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.primary}>
             <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
           </Svg>

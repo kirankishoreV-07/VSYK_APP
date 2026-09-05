@@ -88,6 +88,13 @@ export default function AdminLayout() {
       screenOptions={{
         headerShown: false,
         tabBarStyle: styles.tabBar,
+        // Expo Router registers every route below this layout with the tab
+        // navigator. Default every discovered route to hidden, then opt the
+        // five real top-level destinations back in below. This prevents
+        // nested detail screens and colocated component files from being
+        // squeezed into the Android tab bar.
+        tabBarItemStyle: styles.hiddenTabItem,
+        tabBarHideOnKeyboard: true,
         tabBarActiveTintColor: '#005E7D',
         tabBarInactiveTintColor: '#94A3B8',
         tabBarShowLabel: true,
@@ -105,6 +112,7 @@ export default function AdminLayout() {
         name="dashboard"
         options={{
           title: 'Dashboard',
+          tabBarItemStyle: styles.visibleTabItem,
           tabBarIcon: ({ color, focused }) => (
             <View style={focused ? styles.pill : styles.noPill}>
               <Svg width={22} height={22} viewBox="0 0 24 24" fill={color}>
@@ -121,6 +129,7 @@ export default function AdminLayout() {
         name="customers"
         options={{
           title: 'Customers',
+          tabBarItemStyle: styles.visibleTabItem,
           tabBarIcon: ({ color, focused }) => (
             <View style={focused ? styles.pill : styles.noPill}>
               <Svg width={22} height={22} viewBox="0 0 24 24" fill={color}>
@@ -137,6 +146,7 @@ export default function AdminLayout() {
         name="groups/index"
         options={{
           title: 'Chits',
+          tabBarItemStyle: styles.visibleTabItem,
           tabBarIcon: ({ color, focused }) => (
             <View style={focused ? styles.pill : styles.noPill}>
               <Svg width={22} height={22} viewBox="0 0 24 24" fill={color}>
@@ -153,6 +163,7 @@ export default function AdminLayout() {
         name="auctions/index"
         options={{
           title: 'Auctions',
+          tabBarItemStyle: styles.visibleTabItem,
           tabBarIcon: ({ color, focused }) => (
             <View style={focused ? styles.pill : styles.noPill}>
               <Svg width={22} height={22} viewBox="0 0 24 24" fill={color}>
@@ -169,6 +180,7 @@ export default function AdminLayout() {
         name="settings"
         options={{
           title: 'Settings',
+          tabBarItemStyle: styles.visibleTabItem,
           tabBarIcon: ({ color, focused }) => (
             <View style={focused ? styles.pill : styles.noPill}>
               <Svg width={22} height={22} viewBox="0 0 24 24" fill={color}>
@@ -255,6 +267,12 @@ const styles = StyleSheet.create({
     marginTop: 2,
     marginBottom: Platform.OS === 'ios' ? 0 : 8,
     letterSpacing: 0.3,
+  },
+  hiddenTabItem: {
+    display: 'none',
+  },
+  visibleTabItem: {
+    display: 'flex',
   },
   pill: {
     backgroundColor: 'rgba(0, 94, 125, 0.12)',

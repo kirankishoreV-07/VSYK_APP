@@ -11,7 +11,7 @@ import type {
     CashCollection,
     KPIMetrics,
     AuctionPrizeSettlement,
-} from '../../../app/(admin)/customers/_components/types';
+} from '../../../components/admin/customers/types';
 import { buildMemberPaymentMonths } from '../../memberGroupHistory';
 import { dedupeAuctionCycles } from '../../chitPayments';
 

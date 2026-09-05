@@ -15,8 +15,9 @@ import { useMemberSession } from '../../../lib/MemberSessionContext';
 import { apiPostAuthed } from '../../../lib/api';
 import { dedupeAuctionCycles, getCycleDueAmount } from '../../../lib/chitPayments';
 import { isMemberAuctionWinner, WINNER_HIGHLIGHT } from '../../../lib/auctionWinner';
-import type { AuctionPrizeSettlement } from '../../(admin)/customers/_components/types';
-import { MemberPrizePayoutDetailsModal } from './MemberPrizePayoutDetailsModal';
+import type { AuctionPrizeSettlement } from '../../../components/admin/customers/types';
+import { MemberPrizePayoutDetailsModal } from '../../../components/member/MemberPrizePayoutDetailsModal';
+import { useParentBack } from '../../../lib/hooks/useParentBack';
 
 type PaymentRow = {
   id: string;
@@ -470,6 +471,7 @@ function MonthTimelineItem({
 
 export default function ChitDetailScreen() {
   const router = useRouter();
+  const handleBack = useParentBack('/(tabs)/chits');
   const { id } = useLocalSearchParams<{ id: string }>();
   const queryClient = useQueryClient();
   const { memberId, memberProfile } = useMemberSession();
@@ -721,7 +723,7 @@ export default function ChitDetailScreen() {
     return (
       <SafeAreaView style={s.safe}>
         <View style={s.appBar}>
-          <TouchableOpacity onPress={() => router.back()} style={s.backBtn}>
+          <TouchableOpacity onPress={handleBack} style={s.backBtn} accessibilityRole="button" accessibilityLabel="Back to chits">
             <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.primary}>
               <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
             </Svg>
@@ -793,7 +795,7 @@ export default function ChitDetailScreen() {
     <SafeAreaView style={s.safe} edges={['top']}>
       {/* App Bar */}
       <View style={s.appBar}>
-        <TouchableOpacity onPress={() => { Haptics.selectionAsync(); router.back(); }} style={s.backBtn}>
+        <TouchableOpacity onPress={() => { Haptics.selectionAsync(); handleBack(); }} style={s.backBtn} accessibilityRole="button" accessibilityLabel="Back to chits">
           <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.primary}>
             <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
           </Svg>

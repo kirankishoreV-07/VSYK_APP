@@ -1,15 +1,16 @@
 import React from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, ScrollView, Alert } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 import { useCustomerDetailData } from '../../../lib/hooks/admin/useCustomerDetailData';
-import { CustomerHeader } from './_components/CustomerHeader';
-import { KPIStrip } from './_components/KPIStrip';
-import { OverviewTab } from './_components/OverviewTab';
-import { AdminColors } from './_components/adminStyles';
+import { CustomerHeader } from '../../../components/admin/customers/CustomerHeader';
+import { KPIStrip } from '../../../components/admin/customers/KPIStrip';
+import { OverviewTab } from '../../../components/admin/customers/OverviewTab';
+import { AdminColors } from '../../../components/admin/customers/adminStyles';
 import { computeCustomerUpcomingDues } from '../../../lib/memberGroupHistory';
 import { useAdminParentBack } from '../../../lib/hooks/admin/useAdminParentBack';
+import { DestructiveDeleteCard } from '../../../components/admin/DestructiveDeleteCard';
 
 function HubAppBar({ onBack }: { onBack: () => void }) {
     return (
@@ -124,6 +125,19 @@ export default function CustomerDetailsScreen() {
                     cashCollections={cashCollections}
                     onViewAllTransactions={() => router.push(`/(admin)/customers/${customerId}/payments`)}
                     onViewGroupPayments={() => router.push(`/(admin)/customers/${customerId}/groups`)}
+                />
+
+                <DestructiveDeleteCard
+                    resourceType="customer"
+                    resourceId={customerId}
+                    onDeleted={(result) => {
+                        Alert.alert(
+                            'Customer deleted',
+                            result.warning || 'The customer and all linked records were permanently deleted.',
+                            [{ text: 'OK', onPress: () => router.replace('/(admin)/customers') }],
+                            { cancelable: false },
+                        );
+                    }}
                 />
             </ScrollView>
         </SafeAreaView>

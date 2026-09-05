@@ -5,7 +5,7 @@ import {
 } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
-import { supabase } from '../../../../lib/supabase';
+import { supabase } from '../../../lib/supabase';
 import { formatDateIST, formatPaise } from './utils';
 import {
     dedupeAuctionCycles,
@@ -13,8 +13,8 @@ import {
     getCyclePaymentStatus,
     getCycleRemainingDue,
     type AuctionCycleInfo,
-} from '../../../../lib/chitPayments';
-import { isAuctionScheduledDisplay } from '../../../../lib/auctionUtils';
+} from '../../../lib/chitPayments';
+import { isAuctionScheduledDisplay } from '../../../lib/auctionUtils';
 import type { ChitMember, ChitGroup, CashCollection } from './types';
 
 type AuctionOption = AuctionCycleInfo;

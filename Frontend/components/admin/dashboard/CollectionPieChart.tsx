@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, Pressable } from 'react-native';
+import { View, Text, StyleSheet, Pressable, useWindowDimensions } from 'react-native';
 import Svg, { Path, Circle } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { formatPaise } from '../../../lib/hooks/useDashboard';
@@ -127,6 +127,9 @@ function OverviewPanel({ data }: { data: CollectionPieData }) {
 }
 
 export function CollectionPieChart({ data, selectedIndex, onSelectSlice }: Props) {
+  const { width } = useWindowDimensions();
+  const isCompact = width < 600;
+  const pieSize = isCompact ? 176 : 200;
   const safeData = data?.slices?.length ? data : EMPTY_COLLECTION_PIE_DATA;
   const safeIndex =
     selectedIndex != null && selectedIndex >= 0 && selectedIndex < safeData.slices.length
@@ -141,9 +144,9 @@ export function CollectionPieChart({ data, selectedIndex, onSelectSlice }: Props
 
   return (
     <View>
-      <View style={st.pieRow}>
-        <View style={st.pieWrap}>
-          <Svg width={200} height={200} viewBox="0 0 200 200">
+      <View style={[st.pieRow, isCompact && st.pieRowCompact]}>
+        <View style={[st.pieWrap, { width: pieSize, height: pieSize }]}>
+          <Svg width={pieSize} height={pieSize} viewBox="0 0 200 200">
             <Circle cx={100} cy={100} r={82} fill="#F8FAFC" />
             {safeData.slices.map((slice) => {
               const isSelected = safeIndex === slice.index;
@@ -186,30 +189,36 @@ export function CollectionPieChart({ data, selectedIndex, onSelectSlice }: Props
           </Pressable>
         </View>
 
-        <View style={st.legend}>
+        <View style={[st.legend, isCompact && st.legendCompact]}>
           {safeData.slices.map((slice) => {
             const active = safeIndex === slice.index;
             return (
               <Pressable
                 key={slice.id}
-                style={[st.legendItem, active && st.legendItemActive]}
+                style={[
+                  st.legendItem,
+                  isCompact && st.legendItemCompact,
+                  active && st.legendItemActive,
+                ]}
                 onPress={() => handleSlicePress(slice.index)}
               >
                 <View style={[st.legendDot, { backgroundColor: slice.color }]} />
-                <View style={{ flex: 1 }}>
+                <View style={{ flex: 1, minWidth: 0 }}>
                   <Text style={[st.legendLabel, active && st.legendLabelActive]}>
                     {slice.shortLabel}
                   </Text>
-                  <Text style={st.legendSub}>
-                    {slice.txnCount} txn{slice.txnCount === 1 ? '' : 's'}
+                  <Text style={st.legendSub} numberOfLines={1}>
+                    {isCompact
+                      ? `${formatPaise(slice.amount)} · ${slice.percent}% · ${slice.txnCount} txn${slice.txnCount === 1 ? '' : 's'}`
+                      : `${slice.txnCount} txn${slice.txnCount === 1 ? '' : 's'}`}
                   </Text>
                 </View>
-                <View style={{ alignItems: 'flex-end' }}>
-                  <Text style={[st.legendVal, active && st.legendValActive]}>
+                {!isCompact && <View style={{ alignItems: 'flex-end' }}>
+                  <Text style={[st.legendVal, active && st.legendValActive]} numberOfLines={1}>
                     {formatPaise(slice.amount)}
                   </Text>
                   <Text style={st.legendPct}>{slice.percent}%</Text>
-                </View>
+                </View>}
               </Pressable>
             );
           })}
@@ -227,6 +236,7 @@ export function CollectionPieChart({ data, selectedIndex, onSelectSlice }: Props
 
 const st = StyleSheet.create({
   pieRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 },
+  pieRowCompact: { flexDirection: 'column', gap: 10 },
   pieWrap: { width: 200, height: 200, alignItems: 'center', justifyContent: 'center' },
   pieCenter: {
     position: 'absolute',
@@ -257,6 +267,13 @@ const st = StyleSheet.create({
   },
 
   legend: { flex: 1, gap: 6 },
+  legendCompact: {
+    width: '100%',
+    flex: 0,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+  },
   legendItem: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -266,6 +283,11 @@ const st = StyleSheet.create({
     borderRadius: 10,
   },
   legendItemActive: { backgroundColor: '#F0F9FF' },
+  legendItemCompact: {
+    width: '48%',
+    paddingVertical: 7,
+    paddingHorizontal: 6,
+  },
   legendDot: { width: 10, height: 10, borderRadius: 5 },
   legendLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: '#64748B' },
   legendLabelActive: { color: '#005E7D' },

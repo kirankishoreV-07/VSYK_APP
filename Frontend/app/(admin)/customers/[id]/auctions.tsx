@@ -5,7 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 import { Colors } from '../../../../lib/constants';
 import { useCustomerDetailData } from '../../../../lib/hooks/admin/useCustomerDetailData';
-import { AuctionsTab } from '../_components/AuctionsTab';
+import { AuctionsTab } from '../../../../components/admin/customers/AuctionsTab';
 import { Text } from 'react-native';
 import { useAdminParentBack } from '../../../../lib/hooks/admin/useAdminParentBack';
 

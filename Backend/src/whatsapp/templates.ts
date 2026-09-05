@@ -202,3 +202,48 @@ export async function sendOTP(phone: string, otp: string): Promise<GupshupSendRe
   // (Matches Gupshup's own sample: template.params = ["123456","123456"].)
   return sendTemplateMessage(normalizePhoneToGupshup(phone), templateId, [otp, otp]);
 }
+
+/**
+ * Customer welcome notice. The corresponding Utility template must be
+ * approved in Gupshup/Meta before GUPSHUP_TEMPLATE_CUSTOMER_WELCOME is set.
+ * Template body:
+ *   "Hello {{1}}, thank you for joining VSYK Chits. Your customer ID is {{2}}.
+ *    Let your journey with VSYK Chits begin. You can sign in using your
+ *    registered mobile number."
+ */
+export async function sendCustomerWelcomeNotice(
+  phone: string,
+  customerName: string,
+  customerCode: string,
+): Promise<GupshupSendResult> {
+  const templateId = getTemplateId('GUPSHUP_TEMPLATE_CUSTOMER_WELCOME');
+  if (!templateId) return missingTemplate('GUPSHUP_TEMPLATE_CUSTOMER_WELCOME');
+
+  return sendTemplateMessage(normalizePhoneToGupshup(phone), templateId, [
+    customerName,
+    customerCode,
+  ]);
+}
+
+/**
+ * Chit-group enrolment notice. The corresponding Utility template must be
+ * approved in Gupshup/Meta before GUPSHUP_TEMPLATE_GROUP_ENROLMENT is set.
+ * Template body:
+ *   "Hello {{1}}, you have been enrolled in {{2}}. Ticket number: {{3}}.
+ *    Thank you for choosing VSYK Chits."
+ */
+export async function sendGroupEnrolmentNotice(
+  phone: string,
+  customerName: string,
+  groupName: string,
+  ticketNumber: string,
+): Promise<GupshupSendResult> {
+  const templateId = getTemplateId('GUPSHUP_TEMPLATE_GROUP_ENROLMENT');
+  if (!templateId) return missingTemplate('GUPSHUP_TEMPLATE_GROUP_ENROLMENT');
+
+  return sendTemplateMessage(normalizePhoneToGupshup(phone), templateId, [
+    customerName,
+    groupName,
+    ticketNumber,
+  ]);
+}

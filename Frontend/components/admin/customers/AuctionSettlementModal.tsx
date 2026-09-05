@@ -6,8 +6,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
-import { supabase } from '../../../../lib/supabase';
-import { apiPostAdmin } from '../../../../lib/api';
+import { supabase } from '../../../lib/supabase';
+import { apiPostAdmin } from '../../../lib/api';
 import type { Auction } from './types';
 
 type SettlementMember = {

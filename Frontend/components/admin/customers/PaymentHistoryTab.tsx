@@ -18,8 +18,8 @@ import {
     generateCSVFilename,
     getCycleDueAmount,
 } from './utils';
-import { getMemberWonAuctionNumbers, WINNER_HIGHLIGHT } from '../../../../lib/auctionWinner';
-import { shareCsvFile } from '../../../../lib/csvExport';
+import { getMemberWonAuctionNumbers, WINNER_HIGHLIGHT } from '../../../lib/auctionWinner';
+import { shareCsvFile } from '../../../lib/csvExport';
 import { AdminColors, softElevation } from './adminStyles';
 
 type StatusFilter = 'All' | 'Paid' | 'Pending' | 'Overdue' | 'Partial';

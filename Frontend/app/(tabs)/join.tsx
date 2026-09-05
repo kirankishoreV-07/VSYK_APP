@@ -8,6 +8,8 @@ import * as Haptics from 'expo-haptics';
 import { supabase } from '../../lib/supabase';
 import { Colors, Shadows } from '../../lib/constants';
 import { formatPaise } from '../../lib/hooks/useDashboard';
+import { useParentBack } from '../../lib/hooks/useParentBack';
+import { apiPostAuthed } from '../../lib/api';
 
 type FilterKey = 'short' | 'high_return' | 'all';
 
@@ -71,19 +73,18 @@ function useJoinChit() {
     mutationFn: async (chitGroupId: string) => {
       if (!memberId) throw new Error('Not authenticated');
       
-      const { error } = await supabase.from('chit_members').insert({ 
-        chit_group_id: chitGroupId, 
-        customer_id: memberId,
-        participation_type: 'full',
-        participation_share: 1.0,
-      });
-      
-      if (error) throw new Error(error.message);
+      return apiPostAuthed<{
+        ok: boolean;
+        memberId: string;
+        notification: string;
+        notificationMessage: string;
+      }>('/api/memberships/join', { groupId: chitGroupId });
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: ['active-chits'] });
       qc.invalidateQueries({ queryKey: ['available-chits'] });
       qc.invalidateQueries({ queryKey: ['dashboard-stats'] });
+      Alert.alert('Chit Joined', result.notificationMessage);
     },
     onError: (e: Error) => Alert.alert('Error', e.message),
   });
@@ -97,6 +98,7 @@ const FILTERS: { key: FilterKey; label: string; icon: string }[] = [
 
 export default function JoinChitScreen() {
   const router = useRouter();
+  const handleBack = useParentBack('/(tabs)/chits');
   const [filter, setFilter] = useState<FilterKey>('short');
   const queryClient = useQueryClient();
   const { data: chits, isLoading } = useAvailableChits();
@@ -137,7 +139,7 @@ export default function JoinChitScreen() {
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
       <View style={s.appBar}>
-        <TouchableOpacity onPress={() => { Haptics.selectionAsync(); router.back(); }} style={{ width: 40, height: 40, alignItems: 'center', justifyContent: 'center' }}>
+        <TouchableOpacity onPress={() => { Haptics.selectionAsync(); handleBack(); }} style={{ width: 40, height: 40, alignItems: 'center', justifyContent: 'center' }} accessibilityRole="button" accessibilityLabel="Back to chits">
           <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.primary}><Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" /></Svg>
         </TouchableOpacity>
         <Text style={s.appBarTitle}>Join a Chit</Text>

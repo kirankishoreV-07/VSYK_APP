@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, Modal, Animated, Platform, KeyboardAvoidingView, Alert } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, Modal, Animated, Platform, KeyboardAvoidingView, Alert, Switch } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AppLogo } from '../../components/AppLogo';
 import Svg, { Path } from 'react-native-svg';
@@ -7,6 +7,7 @@ import * as Haptics from 'expo-haptics';
 import { Colors } from '../../lib/constants';
 import { supabase } from '../../lib/supabase';
 import { useRouter } from 'expo-router';
+import { apiPostAdmin } from '../../lib/api';
 
 type CustomerType = 'Individual' | 'Company';
 
@@ -59,11 +60,12 @@ export default function AdminCustomers() {
   const [showStateDropdown, setShowStateDropdown] = useState(false);
   const [postalCode, setPostalCode] = useState('');
   const [notes, setNotes] = useState('');
+  const [whatsappConsentConfirmed, setWhatsappConsentConfirmed] = useState(false);
 
   const isFormDirty = [
     fullName, panNumber, aadhaar, mobile, email, age, gstin,
     addressLine1, addressLine2, city, stateForm, postalCode, notes,
-  ].some((value) => value.trim().length > 0);
+  ].some((value) => value.trim().length > 0) || whatsappConsentConfirmed;
 
   const openModal = () => {
     setModalVisible(true);
@@ -182,39 +184,44 @@ export default function AdminCustomers() {
 
     setLoading(true);
     try {
-      const { error } = await supabase.from('customers').insert([{
-        customer_type: customerType,
-        full_name: normalizedName,
+      const result = await apiPostAdmin<{
+        ok: boolean;
+        customerId: string;
+        customerCode: string;
+        notification: string;
+        notificationMessage: string;
+      }>('/api/admin/customers', {
+        customerType,
+        fullName: normalizedName,
         phone: normalizedMobile,
         email: normalizedEmail || null,
         age: normalizedAge,
-        gender: customerType === 'Individual' ? gender : null,
-        gstin_number: customerType === 'Company' ? gstin.trim().toUpperCase() || null : null,
-        address_line1: addressLine1.trim() || null,
-        address_line2: addressLine2.trim() || null,
-        city: city.trim() || null,
-        state: stateForm.trim() || null,
-        postal_code: postalCode.trim() || null,
-        aadhar_number: aadhaar.trim() || null,
-        pan_number: panNumber.trim().toUpperCase() || null,
-        notes: notes.trim() || null,
-        kyc_status: 'pending',
-      }]);
-
-      if (error) throw error;
+        gender,
+        gstin,
+        addressLine1,
+        addressLine2,
+        city,
+        state: stateForm,
+        postalCode,
+        aadhaar,
+        panNumber,
+        notes,
+        whatsappOptIn: whatsappConsentConfirmed,
+      });
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert('Success', 'Customer created successfully.');
+      Alert.alert('Customer Created', result.notificationMessage);
 
       // Reset form
       setFullName(''); setMobile(''); setEmail(''); setAge(''); setGstin('');
       setAddressLine1(''); setAddressLine2(''); setCity(''); setStateForm('');
       setPostalCode(''); setAadhaar(''); setPanNumber(''); setNotes('');
+      setWhatsappConsentConfirmed(false);
 
       fetchCustomers();
       closeModal(true);
     } catch (err: any) {
-      if (err?.code === '23505') {
+      if (err?.code === '23505' || err?.message?.toLowerCase().includes('already exists')) {
         Alert.alert('Customer Already Exists', 'A customer with this mobile number already exists.');
       } else {
         Alert.alert('Error', err.message || 'Failed to create customer');
@@ -510,6 +517,22 @@ export default function AdminCustomers() {
                   <TextInput style={[styles.input, { minHeight: 80, textAlignVertical: 'top' }]} placeholder="Enter additional notes (optional)" multiline value={notes} onChangeText={setNotes} />
                 </View>
 
+                <View style={styles.consentRow}>
+                  <View style={styles.consentCopy}>
+                    <Text style={styles.consentTitle}>WhatsApp notifications</Text>
+                    <Text style={styles.consentDescription}>
+                      Confirm the customer agreed to receive VSYK account and chit updates on this mobile number.
+                    </Text>
+                  </View>
+                  <Switch
+                    value={whatsappConsentConfirmed}
+                    onValueChange={setWhatsappConsentConfirmed}
+                    trackColor={{ false: '#CBD5E1', true: '#99F6E4' }}
+                    thumbColor={whatsappConsentConfirmed ? Colors.secondary : '#FFFFFF'}
+                    accessibilityLabel="Customer consented to WhatsApp notifications"
+                  />
+                </View>
+
                 <TouchableOpacity style={styles.submitBtn} onPress={handleCreateCustomer} disabled={loading}>
                   <Text style={styles.submitBtnText}>{loading ? 'Creating...' : 'Create Customer Profile'}</Text>
                   {!loading && (
@@ -604,6 +627,19 @@ const styles = StyleSheet.create({
   customerInitials: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 16, color: '#01789E' },
   customerName: { fontFamily: 'Inter_700Bold', fontSize: 16, color: '#0B1C30' },
   customerDetails: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#94A3B8', marginTop: 2 },
+  consentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+    padding: 16,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#CCFBF1',
+    backgroundColor: '#F0FDFA',
+  },
+  consentCopy: { flex: 1 },
+  consentTitle: { fontFamily: 'Inter_700Bold', fontSize: 14, color: '#134E4A' },
+  consentDescription: { fontFamily: 'Inter_400Regular', fontSize: 12, lineHeight: 18, color: '#475569', marginTop: 4 },
   statusBadge: { paddingHorizontal: 12, paddingVertical: 4, borderRadius: 100, borderWidth: 1 },
   statusVerified: { backgroundColor: '#F0FDF4', borderColor: '#DCFCE7' },
   statusPending: { backgroundColor: '#FFFBEB', borderColor: '#FEF3C7' },

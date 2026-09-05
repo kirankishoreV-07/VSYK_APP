@@ -78,12 +78,17 @@ export default function TabLayout() {
         headerShown: false,
         tabBarStyle: styles.tabBar,
         tabBarShowLabel: false,
-        tabBarItemStyle: styles.tabBarItem,
+        // Expo Router registers nested routes in this Tabs navigator too.
+        // Hide every discovered route by default, then expose only the five
+        // intended customer destinations below so detail/component files can
+        // never collapse the bottom navigation.
+        tabBarItemStyle: styles.hiddenTabItem,
       }}
     >
       <Tabs.Screen
         name="index"
         options={{
+          tabBarItemStyle: styles.tabBarItem,
           tabBarIcon: ({ focused }) => (
             <TabItem focused={focused} label={t('nav.home')}>
               <HomeIcon c={focused ? Colors.primary : '#94A3B8'} />
@@ -94,6 +99,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="chits"
         options={{
+          tabBarItemStyle: styles.tabBarItem,
           tabBarIcon: ({ focused }) => (
             <TabItem focused={focused} label={t('nav.chits')}>
               <ChitsIcon c={focused ? Colors.primary : '#94A3B8'} />
@@ -104,6 +110,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="member-auctions"
         options={{
+          tabBarItemStyle: styles.tabBarItem,
           tabBarIcon: ({ focused }) => (
             <TabItem focused={focused} label={t('nav.auctions')}>
               <AuctionsIcon c={focused ? Colors.primary : '#94A3B8'} />
@@ -114,6 +121,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="wallet"
         options={{
+          tabBarItemStyle: styles.tabBarItem,
           tabBarIcon: ({ focused }) => (
             <TabItem focused={focused} label={t('nav.wallet')}>
               <WalletIcon c={focused ? Colors.primary : '#94A3B8'} />
@@ -124,6 +132,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="profile"
         options={{
+          tabBarItemStyle: styles.tabBarItem,
           tabBarIcon: ({ focused }) => (
             <TabItem focused={focused} label={t('nav.profile')}>
               <ProfileIcon c={focused ? Colors.primary : '#94A3B8'} />
@@ -172,6 +181,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 0,
+  },
+  hiddenTabItem: {
+    display: 'none',
   },
   tabItem: {
     alignItems: 'center',

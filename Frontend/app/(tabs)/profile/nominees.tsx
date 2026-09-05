@@ -10,6 +10,7 @@ const { width } = Dimensions.get('window');
 
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../../../lib/supabase';
+import { useParentBack } from '../../../lib/hooks/useParentBack';
 
 type NomineeRow = {
   id: string;
@@ -48,6 +49,7 @@ function useNominees() {
 
 export default function NomineesScreen() {
   const router = useRouter();
+  const handleBack = useParentBack('/(tabs)/profile');
   const { data: nominees, isLoading } = useNominees();
   const queryClient = useQueryClient();
 
@@ -72,7 +74,7 @@ export default function NomineesScreen() {
     <SafeAreaView style={s.safe} edges={['top']}>
       {/* App Bar */}
       <View style={s.appBar}>
-        <TouchableOpacity style={s.backBtn} onPress={() => router.back()}>
+        <TouchableOpacity style={s.backBtn} onPress={handleBack} accessibilityRole="button" accessibilityLabel="Back to profile">
           <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.primary}>
             <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
           </Svg>

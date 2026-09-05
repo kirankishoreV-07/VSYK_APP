@@ -28,6 +28,8 @@ import {
   sendPartialPaymentNotice,
   sendAuctionScheduledNotice,
   sendAuctionReminderNotice,
+  sendCustomerWelcomeNotice,
+  sendGroupEnrolmentNotice,
 } from './templates';
 import { sendTextMessage } from './gupshup';
 import { normalizePhoneToGupshup } from './phoneUtils';
@@ -56,7 +58,7 @@ function shortDate(dateStr: string): string {
   }
 }
 
-type SendOutcome = 'sent' | 'duplicate' | 'skipped_optout' | 'skipped_nobalance' | 'skipped_nomember' | 'skipped_inactive' | 'failed';
+export type SendOutcome = 'sent' | 'duplicate' | 'skipped_optout' | 'skipped_nobalance' | 'skipped_nomember' | 'skipped_inactive' | 'failed';
 
 // Same "active member" definition used to gate chatbot access
 // (Backend/src/whatsapp/service.ts hasActiveMembership) — reused here so a
@@ -123,6 +125,66 @@ async function claimAndSend(
     await sb.from('notification_log').update({ sent_count: 1 }).eq('notification_key', key);
   }
   return 'sent';
+}
+
+/** Send the welcome message once, and only to customers with recorded consent. */
+export async function notifyCustomerWelcome(customerId: string): Promise<SendOutcome> {
+  const sb = getSb();
+  if (!sb) return 'failed';
+
+  const { data: customer, error } = await sb
+    .from('customers')
+    .select('id, customer_id, full_name, phone, whatsapp_opt_in, whatsapp_opt_out_at')
+    .eq('id', customerId)
+    .maybeSingle();
+
+  if (error || !customer) return 'skipped_nomember';
+  if (customer.whatsapp_opt_in !== true || customer.whatsapp_opt_out_at) return 'skipped_optout';
+
+  return claimAndSend(
+    sb,
+    `wa_customer_welcome:${customer.id}`,
+    'wa_customer_welcome',
+    () => sendCustomerWelcomeNotice(
+      customer.phone,
+      (customer.full_name || 'Member').trim(),
+      customer.customer_id || 'Pending',
+    ),
+  );
+}
+
+/** Send one enrolment message for one membership, with authoritative DB values. */
+export async function notifyGroupEnrolment(chitMemberId: string): Promise<SendOutcome> {
+  const sb = getSb();
+  if (!sb) return 'failed';
+
+  const { data: member, error } = await sb
+    .from('chit_members')
+    .select(`
+      id, ticket_number,
+      customers ( full_name, phone, whatsapp_opt_in, whatsapp_opt_out_at ),
+      chit_groups ( name )
+    `)
+    .eq('id', chitMemberId)
+    .maybeSingle();
+
+  if (error || !member) return 'skipped_nomember';
+  const customer: any = (member as any).customers;
+  const group: any = (member as any).chit_groups;
+  if (!customer || !group) return 'skipped_nomember';
+  if (customer.whatsapp_opt_in !== true || customer.whatsapp_opt_out_at) return 'skipped_optout';
+
+  return claimAndSend(
+    sb,
+    `wa_group_enrolment:${(member as any).id}`,
+    'wa_group_enrolment',
+    () => sendGroupEnrolmentNotice(
+      customer.phone,
+      (customer.full_name || 'Member').trim(),
+      group.name || 'your chit group',
+      String((member as any).ticket_number || 'Pending'),
+    ),
+  );
 }
 
 // Shape of a schedule joined with member/customer/group used by A & B.

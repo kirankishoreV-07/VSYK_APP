@@ -5,7 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 import { Colors } from '../../../../lib/constants';
 import { useCustomerDetailData } from '../../../../lib/hooks/admin/useCustomerDetailData';
-import { PaymentsTab } from '../_components/PaymentsTab';
+import { PaymentsTab } from '../../../../components/admin/customers/PaymentsTab';
 import { Text } from 'react-native';
 import { useAdminParentBack } from '../../../../lib/hooks/admin/useAdminParentBack';
 

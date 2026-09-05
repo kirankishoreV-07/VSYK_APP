@@ -14,6 +14,9 @@ import { requireAdminAuth } from './middleware/adminAuth';
 import { accountRouter } from './account/deletion';
 import { collectionsRouter } from './collections/router';
 import { generateAndNotifyToday } from './collections/service';
+import { adminCustomerLifecycleRouter } from './admin/customerLifecycle';
+import { adminDestructiveDeletionRouter } from './admin/destructiveDeletion';
+import { membershipsRouter } from './memberships/router';
 
 dotenv.config();
 
@@ -101,6 +104,9 @@ app.use('/api/whatsapp', whatsappRouter);
 app.use('/api/auth', otpLimiter, authRouter);
 app.use('/api/account', accountRouter);
 app.use('/api/collections', collectionsRouter);
+app.use('/api/admin', adminCustomerLifecycleRouter);
+app.use('/api/admin', adminDestructiveDeletionRouter);
+app.use('/api/memberships', membershipsRouter);
 
 app.get('/api/health', (req: Request, res: Response) => {
   res.json({ status: 'ok', message: 'VSYK Chits Backend is running!' });

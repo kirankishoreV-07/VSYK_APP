@@ -40,6 +40,7 @@ export default function LoginScreen() {
   const [phone, setPhone] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [showAdminPassword, setShowAdminPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   // Member OTP flow
   const [memberStep, setMemberStep] = useState<'phone' | 'otp'>('phone');
@@ -379,22 +380,38 @@ export default function LoginScreen() {
                 {/* Admin Password Input */}
                 <View style={styles.inputGroup}>
                   <Text style={styles.inputLabel}>PASSWORD</Text>
-                  <TextInput
-                    ref={adminPasswordRef}
-                    style={styles.textInput}
-                    placeholder="Enter admin password"
-                    placeholderTextColor="#CBD5E1"
-                    value={password}
-                    onChangeText={setPassword}
-                    secureTextEntry
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    autoComplete="current-password"
-                    textContentType="password"
-                    returnKeyType="done"
-                    editable={!loading}
-                    onSubmitEditing={handleAdminLogin}
-                  />
+                  <View style={styles.passwordInputContainer}>
+                    <TextInput
+                      ref={adminPasswordRef}
+                      style={styles.passwordInput}
+                      placeholder="Enter admin password"
+                      placeholderTextColor="#CBD5E1"
+                      value={password}
+                      onChangeText={setPassword}
+                      secureTextEntry={!showAdminPassword}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      autoComplete="current-password"
+                      textContentType="password"
+                      returnKeyType="done"
+                      editable={!loading}
+                      onSubmitEditing={handleAdminLogin}
+                    />
+                    <TouchableOpacity
+                      style={styles.passwordVisibilityButton}
+                      onPress={() => setShowAdminPassword((visible) => !visible)}
+                      disabled={loading}
+                      accessibilityRole="button"
+                      accessibilityLabel={showAdminPassword ? 'Hide admin password' : 'Show admin password'}
+                      accessibilityState={{ checked: showAdminPassword, disabled: loading }}
+                    >
+                      <Svg width={22} height={22} viewBox="0 0 24 24" fill="#64748B">
+                        <Path d={showAdminPassword
+                          ? 'M12 6a9.77 9.77 0 0 1 8.82 6A9.77 9.77 0 0 1 12 18a9.77 9.77 0 0 1-8.82-6A9.77 9.77 0 0 1 12 6Zm0 2c-2.73 0-5.13 1.48-6.54 4 1.41 2.52 3.81 4 6.54 4s5.13-1.48 6.54-4C17.13 9.48 14.73 8 12 8Zm0 1.5A2.5 2.5 0 1 1 12 14.5 2.5 2.5 0 0 1 12 9.5Z'
+                          : 'M2.1 3.51 3.51 2.1l18.39 18.39-1.41 1.41-3.02-3.02A10.63 10.63 0 0 1 12 20C7 20 2.73 16.89 1 12c.68-1.91 1.75-3.57 3.11-4.88L2.1 5.11v-1.6ZM5.53 8.54A8.2 8.2 0 0 0 3.17 12C4.74 15.67 7.97 18 12 18c1.4 0 2.69-.28 3.84-.78l-1.55-1.55A4 4 0 0 1 8.33 9.7l-2.8-1.16ZM12 4c5 0 9.27 3.11 11 8a11.8 11.8 0 0 1-2.31 3.92l-1.42-1.42A9.6 9.6 0 0 0 20.83 12C19.26 8.33 16.03 6 12 6c-.86 0-1.68.11-2.45.32L7.9 4.67A11.6 11.6 0 0 1 12 4Zm-.8 4.08L15.92 12.8A4 4 0 0 0 11.2 8.08Z'} />
+                      </Svg>
+                    </TouchableOpacity>
+                  </View>
                 </View>
 
                 {/* Submit Button */}
@@ -623,6 +640,30 @@ const styles = StyleSheet.create({
     borderColor: '#E2E8F0',
     borderRadius: Radii.xl,
     backgroundColor: '#FFFFFF',
+  },
+  passwordInputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: Radii.xl,
+    backgroundColor: '#FFFFFF',
+  },
+  passwordInput: {
+    flex: 1,
+    fontFamily: 'Inter_400Regular',
+    fontSize: 16,
+    color: Colors.onSurface,
+    paddingVertical: 16,
+    paddingLeft: 16,
+    paddingRight: 8,
+  },
+  passwordVisibilityButton: {
+    width: 48,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 4,
   },
   otpHeaderRow: {
     flexDirection: 'row',

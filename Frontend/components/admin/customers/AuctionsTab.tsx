@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-nati
 import Svg, { Path, Circle } from 'react-native-svg';
 import type { ChitMember, Auction, AuctionParticipant, AuctionPrizeSettlement } from './types';
 import { formatPaise, formatDateIST } from './utils';
-import { isMemberAuctionWinner, WINNER_HIGHLIGHT } from '../../../../lib/auctionWinner';
+import { isMemberAuctionWinner, WINNER_HIGHLIGHT } from '../../../lib/auctionWinner';
 
 interface AuctionsTabProps {
     memberships: ChitMember[];

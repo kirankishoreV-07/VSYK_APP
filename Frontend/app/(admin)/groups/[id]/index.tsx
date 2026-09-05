@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Modal, TextInput, Alert, ActivityIndicator, RefreshControl, Platform } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Modal, TextInput, Alert, ActivityIndicator, RefreshControl, Platform, Switch } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AppLogo } from '../../../../components/AppLogo';
 import Svg, { Path, Circle } from 'react-native-svg';
@@ -8,9 +8,9 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { supabase } from '../../../../lib/supabase';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { apiPostAdmin } from '../../../../lib/api';
-import { AuctionSettlementModal } from '../../customers/_components/AuctionSettlementModal';
-import { RecordPrizeSettlementModal } from '../../customers/_components/RecordPrizeSettlementModal';
-import { PrizeSettlementDetailsModal } from '../../customers/_components/PrizeSettlementDetailsModal';
+import { AuctionSettlementModal } from '../../../../components/admin/customers/AuctionSettlementModal';
+import { RecordPrizeSettlementModal } from '../../../../components/admin/customers/RecordPrizeSettlementModal';
+import { PrizeSettlementDetailsModal } from '../../../../components/admin/customers/PrizeSettlementDetailsModal';
 import { getAuctionWinnerDisplayName } from '../../../../lib/auctionWinner';
 import {
   dedupeAuctionCycles,
@@ -23,6 +23,7 @@ import {
   getPlaceholderAuctionScheduleDate,
 } from '../../../../lib/auctionUtils';
 import { useAdminParentBack } from '../../../../lib/hooks/admin/useAdminParentBack';
+import { DestructiveDeleteCard } from '../../../../components/admin/DestructiveDeleteCard';
 
 // ── Step3Review: extracted to avoid IIFE JSX parsing issues ──
 function Step3Review({
@@ -142,6 +143,7 @@ export default function AdminGroupDetail() {
   const [activating, setActivating] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null);
   const [participation, setParticipation] = useState<'full' | 'half'>('full');
+  const [enrolmentConsentConfirmed, setEnrolmentConsentConfirmed] = useState(false);
 
   const [auctions, setAuctions] = useState<any[]>([]);
 
@@ -263,7 +265,7 @@ export default function AdminGroupDetail() {
 
   const fetchCustomers = async () => {
     try {
-      const { data } = await supabase.from('customers').select('id, full_name, phone, customer_id').order('full_name');
+      const { data } = await supabase.from('customers').select('id, full_name, phone, customer_id, whatsapp_opt_in, whatsapp_opt_out_at').order('full_name');
       setCustomers(data || []);
     } catch (err) {
       console.error('Error fetching customers:', err);
@@ -589,6 +591,7 @@ export default function AdminGroupDetail() {
   const handleSelectCustomer = (customer: any) => {
     setSelectedCustomer(customer);
     setParticipation('full');
+    setEnrolmentConsentConfirmed(customer.whatsapp_opt_in === true && !customer.whatsapp_opt_out_at);
   };
 
   const handleAddMemberConfirm = async () => {
@@ -615,51 +618,47 @@ export default function AdminGroupDetail() {
 
     setAdding(true);
     try {
-      const { error } = await supabase.from('chit_members').insert([{
-        chit_group_id: group.id,
-        customer_id: selectedCustomer.id,
-        participation_type: participation,
-        participation_share: share,
-      }]);
+      const result = await apiPostAdmin<{
+        ok: boolean;
+        memberId: string;
+        ticketNumber: number | null;
+        notification: string;
+        notificationMessage: string;
+      }>('/api/admin/group-members', {
+        groupId: group.id,
+        customerId: selectedCustomer.id,
+        participationType: participation,
+        whatsappOptInConfirmed: enrolmentConsentConfirmed,
+      });
 
-      if (error) {
-        if (error.code === '23505') Alert.alert('Already Added', 'This member is already in the group.');
-        else if (error.code === 'check_violation' || error.message?.toLowerCase().includes('capacity')) {
-          Alert.alert('Group Full', `Cannot add member — group is at full capacity (${capacity}/${capacity} shares).`);
-        } else Alert.alert('Error', error.message);
-      } else {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        fetchMembers();
-        setShowAddModal(false);
-        setSelectedCustomer(null);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      fetchMembers();
+      setShowAddModal(false);
+      setSelectedCustomer(null);
 
-        // FIX: For the newly added member, proactively create base payment_schedules (all months)
-        // and back-apply any already-completed auction settlements so their "payment due" amounts
-        // are immediately correct on admin customer views and collections.
-        try {
-          // Re-fetch the just-created membership id
-          const { data: newMember } = await supabase
-            .from('chit_members')
-            .select('id')
-            .eq('chit_group_id', group.id)
-            .eq('customer_id', selectedCustomer.id)
-            .maybeSingle();
-
-          if (newMember?.id) {
-            // 1. Ensure base rows exist using current group values
-            await ensureBaseSchedulesForMember(supabase, newMember.id, {
-              start_date: group.start_date,
-              monthly_installment: group.monthly_installment,
-              duration_months: group.no_of_installments || group.duration_months,
-            });
-
-          }
-        } catch (e) {
-          console.warn('Post-add member schedule backfill non-fatal:', e);
-        }
+      // Create base schedules immediately so dues are correct on the first
+      // customer refresh. The membership itself is already authoritative on
+      // the backend and its WhatsApp notification is deduplicated there.
+      try {
+        await ensureBaseSchedulesForMember(supabase, result.memberId, {
+          start_date: group.start_date,
+          monthly_installment: group.monthly_installment,
+          duration_months: group.no_of_installments || group.duration_months,
+        });
+      } catch (e) {
+        console.warn('Post-add member schedule backfill non-fatal:', e);
       }
+
+      Alert.alert('Member Enrolled', result.notificationMessage);
     } catch (err: any) {
-      Alert.alert('Error', err.message);
+      const message = err?.message || 'Failed to enrol customer.';
+      if (message.toLowerCase().includes('already enrolled')) {
+        Alert.alert('Already Added', 'This member is already in the group.');
+      } else if (message.toLowerCase().includes('capacity')) {
+        Alert.alert('Group Full', `Cannot add member — group is at full capacity (${capacity}/${capacity} shares).`);
+      } else {
+        Alert.alert('Error', message);
+      }
     } finally {
       setAdding(false);
     }
@@ -1187,10 +1186,32 @@ export default function AdminGroupDetail() {
           </View>
         </View>
 
+        <DestructiveDeleteCard
+          resourceType="group"
+          resourceId={typeof id === 'string' ? id : ''}
+          inset={false}
+          onDeleted={() => {
+            Alert.alert(
+              'Chit group deleted',
+              'The group and all linked records were permanently deleted.',
+              [{ text: 'OK', onPress: () => router.replace('/(admin)/groups') }],
+              { cancelable: false },
+            );
+          }}
+        />
+
       </ScrollView>
 
       {/* --- ADD MEMBER MODAL --- */}
-      <Modal visible={showAddModal} animationType="slide" presentationStyle="pageSheet">
+      <Modal
+        visible={showAddModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => {
+          if (selectedCustomer) setSelectedCustomer(null);
+          else setShowAddModal(false);
+        }}
+      >
         <SafeAreaView style={{ flex: 1, backgroundColor: '#FFFFFF' }}>
           <View style={styles.modalHeader}>
             <TouchableOpacity onPress={() => {
@@ -1284,6 +1305,24 @@ export default function AdminGroupDetail() {
                 <Text style={styles.emiPreviewSub}>* Before dividend deductions</Text>
               </View>
 
+              <View style={styles.whatsappConsentCard}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.whatsappConsentTitle}>WhatsApp enrolment confirmation</Text>
+                  <Text style={styles.whatsappConsentText}>
+                    {selectedCustomer.whatsapp_opt_in === true && !selectedCustomer.whatsapp_opt_out_at
+                      ? 'Consent is already active for this customer.'
+                      : 'Turn this on only after the customer agrees to receive VSYK account updates.'}
+                  </Text>
+                </View>
+                <Switch
+                  value={enrolmentConsentConfirmed}
+                  onValueChange={setEnrolmentConsentConfirmed}
+                  trackColor={{ false: '#CBD5E1', true: '#99F6E4' }}
+                  thumbColor={enrolmentConsentConfirmed ? '#0F766E' : '#FFFFFF'}
+                  accessibilityLabel="Customer consented to WhatsApp enrolment notification"
+                />
+              </View>
+
               <TouchableOpacity style={[styles.executeBtn, { flex: 0, marginTop: 'auto', marginBottom: 40 }]} onPress={handleAddMemberConfirm} disabled={adding}>
                 {adding ? <ActivityIndicator color="#0F172A" /> : <Text style={styles.executeBtnText}>CONFIRM & ADD MEMBER</Text>}
               </TouchableOpacity>
@@ -1331,36 +1370,6 @@ export default function AdminGroupDetail() {
 
       {/* --- AUCTION PREP CENTER (STEPPED MODAL) --- */}
       <Modal
-        visible={showScheduleModal}
-        animationType="slide"
-        presentationStyle="pageSheet"
-        onRequestClose={() => setShowScheduleModal(false)}
-     />
-        <SafeAreaView style={{ flex: 1, backgroundColor: '#F8FAFC' }}>
-          <View style={styles.modalHeader}>
-            <TouchableOpacity onPress={() => setShowScheduleModal(false)} style={styles.closeBtn}>
-              <Svg width={24} height={24} viewBox="0 0 24 24" fill="#64748B">
-                <Path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
-              </Svg>
-            </TouchableOpacity>
-            <Text style={styles.modalTitle}>Auction Prep Center</Text>
-            <View style={{ width: 40 }} />
-          </View>
-
-          {/* Stepper Header */}
-          <View style={styles.stepperContainer}>
-            {[1, 2, 3].map((s) => (
-              <React.Fragment key={s}>
-                <View style={[styles.stepCircle, prepStep >= s && styles.stepCircleActive]}>
-                  <Text style={[styles.stepNum, prepStep >= s && styles.stepNumActive]}>{s}</Text>
-                </View>
-                {s < 3 && <View style={[styles.stepLine, prepStep > s && styles.stepLineActive]} />}
-              </React.Fragment>
-            ))}
-          </View>
-
-          {/* --- AUCTION PREP CENTER (STEPPED MODAL) --- */}
-          <Modal
             visible={showScheduleModal}
             animationType="slide"
             presentationStyle="pageSheet"
@@ -1689,9 +1698,7 @@ export default function AdminGroupDetail() {
                 <DateTimePicker value={currentTimeValue} mode="time" display="default" onChange={handleTimeChange} />
               )}
             </SafeAreaView>
-          </Modal>
-
-        </SafeAreaView>
+      </Modal>
 
     </SafeAreaView>
   );
@@ -1782,6 +1789,9 @@ const styles = StyleSheet.create({
   customerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, backgroundColor: '#FFFFFF', borderRadius: 12, marginBottom: 8, borderWidth: 1, borderColor: '#F1F5F9' },
   participationContainer: { flex: 1, padding: 20 },
   selectedCustomerCard: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16, backgroundColor: '#F8FAFC', borderRadius: 12, marginBottom: 24, borderWidth: 1, borderColor: '#E2E8F0' },
+  whatsappConsentCard: { flexDirection: 'row', alignItems: 'center', gap: 16, padding: 16, marginTop: 16, borderRadius: 12, borderWidth: 1, borderColor: '#CCFBF1', backgroundColor: '#F0FDFA' },
+  whatsappConsentTitle: { fontFamily: 'Inter_700Bold', fontSize: 13, color: '#134E4A' },
+  whatsappConsentText: { fontFamily: 'Inter_400Regular', fontSize: 12, lineHeight: 17, color: '#475569', marginTop: 3 },
   partOptionsRow: { flexDirection: 'row', gap: 12, marginBottom: 24 },
   partOption: { flex: 1, backgroundColor: '#FFFFFF', borderWidth: 2, borderColor: '#E2E8F0', borderRadius: 16, padding: 16 },
   partOptionActive: { borderColor: '#005E7D', backgroundColor: '#F0F9FF' },

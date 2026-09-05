@@ -19,7 +19,7 @@ import {
   type DashboardActivity,
 } from '../../lib/dashboardAnalytics';
 import { filterScheduledUpcomingForTab } from '../../lib/auctionUtils';
-import { CollectionPieChart } from './_components/CollectionPieChart';
+import { CollectionPieChart } from '../../components/admin/dashboard/CollectionPieChart';
 
 export default function AdminDashboard() {
   const router = useRouter();
@@ -299,18 +299,22 @@ export default function AdminDashboard() {
           <View style={styles.chartStatsRow}>
             <View style={styles.chartStatPill}>
               <Text style={styles.chartStatLabel}>6M TOTAL</Text>
-              <Text style={styles.chartStatVal}>{formatPaise(pieData.summary.total6M)}</Text>
+              <Text style={styles.chartStatVal} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.65}>
+                {formatPaise(pieData.summary.total6M)}
+              </Text>
             </View>
             <View style={styles.chartStatPill}>
               <Text style={styles.chartStatLabel}>AVG / MO</Text>
-              <Text style={styles.chartStatVal}>{formatPaise(pieData.summary.avgMonthly)}</Text>
+              <Text style={styles.chartStatVal} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.65}>
+                {formatPaise(pieData.summary.avgMonthly)}
+              </Text>
             </View>
             <View style={styles.chartStatPill}>
               <Text style={styles.chartStatLabel}>VS LAST MO</Text>
               <Text style={[
                 styles.chartStatVal,
                 { color: (pieData.summary.momChangePct ?? 0) >= 0 ? '#006A65' : '#BA1A1A' },
-              ]}>
+              ]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.65}>
                 {formatMomLabel(pieData.summary.momChangePct)}
               </Text>
             </View>

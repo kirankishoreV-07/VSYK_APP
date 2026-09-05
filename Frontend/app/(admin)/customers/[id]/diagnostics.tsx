@@ -5,7 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 import { Colors } from '../../../../lib/constants';
 import { useCustomerDetailData } from '../../../../lib/hooks/admin/useCustomerDetailData';
-import { DiagnosticsTab } from '../_components/DiagnosticsTab';
+import { DiagnosticsTab } from '../../../../components/admin/customers/DiagnosticsTab';
 import { Text } from 'react-native';
 import { useAdminParentBack } from '../../../../lib/hooks/admin/useAdminParentBack';
 

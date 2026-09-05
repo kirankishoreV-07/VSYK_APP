@@ -1,6 +1,10 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { clearLegacySupabaseAuthStorage, supabase } from './supabase';
+import {
+  clearCurrentSupabaseAuthStorage,
+  clearLegacySupabaseAuthStorage,
+  supabase,
+} from './supabase';
 import { registerForPushNotificationsAsync } from './notifications';
 
 const SESSION_KEY = 'vsyk_member_id';
@@ -92,7 +96,10 @@ export function MemberSessionProvider({ children }: { children: React.ReactNode 
           // Supabase removes a non-retryable invalid refresh token from its
           // own storage. Clear our companion customer id as well so the app
           // cannot fall back into a half-authenticated member state.
-          await AsyncStorage.removeItem(SESSION_KEY);
+          await Promise.all([
+            clearCurrentSupabaseAuthStorage(),
+            AsyncStorage.removeItem(SESSION_KEY),
+          ]);
           if (mounted) {
             setMemberId(null);
             setMemberProfile(null);
@@ -118,7 +125,10 @@ export function MemberSessionProvider({ children }: { children: React.ReactNode 
           setMemberProfile(null);
         }
       } catch {
-        await AsyncStorage.removeItem(SESSION_KEY);
+        await Promise.all([
+          clearCurrentSupabaseAuthStorage(),
+          AsyncStorage.removeItem(SESSION_KEY),
+        ]);
         if (mounted) {
           setMemberId(null);
           setMemberProfile(null);

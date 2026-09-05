@@ -8,7 +8,7 @@ import {
     dedupeAuctionCycles,
     getGroupChipLabel,
 } from './utils';
-import { supabase } from '../../../../lib/supabase';
+import { supabase } from '../../../lib/supabase';
 import { RecordCashCollectionModal } from './RecordCashCollectionModal';
 import { PaymentHistoryTab } from './PaymentHistoryTab';
 import { AdminColors } from './adminStyles';
@@ -16,8 +16,8 @@ import {
     getMemberWonAuctions,
     isMemberAuctionWinner,
     WINNER_HIGHLIGHT,
-} from '../../../../lib/auctionWinner';
-import { getFullyCollectedMonths } from '../../../../lib/chitPayments';
+} from '../../../lib/auctionWinner';
+import { getFullyCollectedMonths } from '../../../lib/chitPayments';
 
 interface GroupsTabProps {
     memberships: ChitMember[];

@@ -6,7 +6,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
-import { apiPostAdmin } from '../../../../lib/api';
+import { apiPostAdmin } from '../../../lib/api';
 import { formatPaise } from './utils';
 import type { AuctionPrizeSettlement } from './types';
 

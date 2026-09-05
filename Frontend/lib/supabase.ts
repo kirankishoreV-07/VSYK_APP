@@ -2,6 +2,7 @@ import 'react-native-url-polyfill/auto';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient } from '@supabase/supabase-js';
 import type { SupportedStorage } from '@supabase/supabase-js';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL!;
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!;
@@ -13,7 +14,9 @@ const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!;
 // "Invalid Refresh Token: Refresh Token Not Found". Versioning the key makes
 // that one-time auth migration explicit and prevents the stale token from
 // being restored. Users with an old session will simply log in again.
-const AUTH_STORAGE_KEY = 'vsyk-auth-session-v2';
+const AUTH_STORAGE_KEY = Constants.executionEnvironment === ExecutionEnvironment.StoreClient
+  ? 'vsyk-auth-session-v2-expo-go'
+  : 'vsyk-auth-session-v2';
 
 // Expo Router renders web routes on the server as well as in the browser.
 // React Native AsyncStorage's web adapter reads `window.localStorage`, which
@@ -51,6 +54,14 @@ export async function clearLegacySupabaseAuthStorage(): Promise<void> {
     // A malformed/missing URL is handled by the Supabase client itself. Auth
     // cleanup should never prevent the app from rendering.
   }
+}
+
+/** Explicitly remove a revoked/corrupt current session and its PKCE state. */
+export async function clearCurrentSupabaseAuthStorage(): Promise<void> {
+  await Promise.all([
+    authStorage.removeItem(AUTH_STORAGE_KEY),
+    authStorage.removeItem(`${AUTH_STORAGE_KEY}-code-verifier`),
+  ]);
 }
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
