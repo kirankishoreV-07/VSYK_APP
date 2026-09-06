@@ -1,9 +1,10 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, StyleSheet,
+  View, ScrollView, TouchableOpacity, StyleSheet,
   ActivityIndicator, TextInput, RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LocalizedText as Text } from '../../components/LocalizedText';
 import { useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Svg, { Path } from 'react-native-svg';
@@ -17,8 +18,10 @@ import {
   UNAUTHORED_THEME,
   type MemberGroupSummary,
 } from '../../lib/memberGroupHistory';
+import { useTranslation } from 'react-i18next';
 
 function GroupHistoryCard({ group, onPress }: { group: MemberGroupSummary; onPress: () => void }) {
+  const { t } = useTranslation();
   const isUnaccounted = group.accountingType === 'unaccounted';
 
   return (
@@ -32,8 +35,8 @@ function GroupHistoryCard({ group, onPress }: { group: MemberGroupSummary; onPre
           <Text style={s.cardCategory} numberOfLines={1}>{group.groupName.toUpperCase()}</Text>
           <Text style={s.cardName} numberOfLines={1}>{group.groupName}</Text>
           <Text style={s.cardMeta}>
-            {isUnaccounted ? 'Cash Only' : 'Accounted'}
-            {' · '}{group.monthsPaid}/{group.durationMonths} months paid
+            {isUnaccounted ? t('common.cashOnly') : t('common.accounted')}
+            {' · '}{t('history.monthsPaid', { paid: group.monthsPaid, total: group.durationMonths })}
           </Text>
         </View>
         <View style={[
@@ -44,24 +47,24 @@ function GroupHistoryCard({ group, onPress }: { group: MemberGroupSummary; onPre
             s.badgeText,
             { color: group.isCompleted ? '#10B981' : Colors.primary },
           ]}>
-            {group.isCompleted ? 'COMPLETED' : 'ONGOING'}
+            {group.isCompleted ? t('common.completed') : t('common.ongoing')}
           </Text>
         </View>
       </View>
 
       <View style={s.statsRow}>
         <View style={s.statItem}>
-          <Text style={s.statLabel}>PAID</Text>
+          <Text style={s.statLabel}>{t('common.paid')}</Text>
           <Text style={s.statVal}>{formatPaise(group.totalPaid)}</Text>
         </View>
         <View style={s.statItem}>
-          <Text style={s.statLabel}>OUTSTANDING</Text>
+          <Text style={s.statLabel}>{t('common.outstanding')}</Text>
           <Text style={[s.statVal, group.totalOutstanding > 0 && { color: '#EF4444' }]}>
             {formatPaise(group.totalOutstanding)}
           </Text>
         </View>
         <View style={s.statItem}>
-          <Text style={s.statLabel}>PROGRESS</Text>
+          <Text style={s.statLabel}>{t('common.progress')}</Text>
           <Text style={s.statVal}>{group.progressPct}%</Text>
         </View>
       </View>
@@ -77,7 +80,7 @@ function GroupHistoryCard({ group, onPress }: { group: MemberGroupSummary; onPre
       </View>
 
       <View style={s.cardFooter}>
-        <Text style={s.footerHint}>Tap to view month-wise details & export</Text>
+        <Text style={s.footerHint}>{t('history.tapForDetails')}</Text>
         <Svg width={18} height={18} viewBox="0 0 24 24" fill={Colors.primary}>
           <Path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z" />
         </Svg>
@@ -95,6 +98,7 @@ function useMemberGroups(memberId: string | null) {
 }
 
 export default function WalletScreen() {
+  const { t } = useTranslation();
   const router = useRouter();
   const { memberId } = useMemberSession();
   const queryClient = useQueryClient();
@@ -145,13 +149,13 @@ export default function WalletScreen() {
         {isSearchActive ? (
           <TextInput
             style={s.searchInput}
-            placeholder="Search your groups..."
+            placeholder={t('history.searchPlaceholder')}
             value={searchQuery}
             onChangeText={setSearchQuery}
             autoFocus
           />
         ) : (
-          <Text style={s.appBarTitle}>History</Text>
+          <Text style={s.appBarTitle}>{t('history.title')}</Text>
         )}
         <TouchableOpacity
           style={[s.iconBtn, isSearchActive && { backgroundColor: Colors.primary }]}
@@ -172,7 +176,7 @@ export default function WalletScreen() {
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={Colors.primary} />}
       >
-        <Text style={s.headerSub}>Your participating chit groups and payment history</Text>
+        <Text style={s.headerSub}>{t('history.subtitle')}</Text>
 
         <View style={s.filterRow}>
           {(['all', 'active', 'completed'] as const).map((key) => (
@@ -182,7 +186,7 @@ export default function WalletScreen() {
               onPress={() => { setFilter(key); Haptics.selectionAsync(); }}
             >
               <Text style={[s.chipText, filter === key && s.chipTextActive]}>
-                {key === 'all' ? 'All' : key === 'active' ? 'Ongoing' : 'Completed'}
+                {t(`history.filters.${key}`)}
               </Text>
             </TouchableOpacity>
           ))}
@@ -192,18 +196,18 @@ export default function WalletScreen() {
           <ActivityIndicator color={Colors.primary} size="large" style={{ marginTop: 40 }} />
         ) : filtered.length === 0 ? (
           <View style={s.emptyCard}>
-            <Text style={s.emptyTitle}>No groups found</Text>
+            <Text style={s.emptyTitle}>{t('history.noGroups')}</Text>
             <Text style={s.emptySub}>
               {searchQuery
-                ? 'Try a different search term.'
-                : 'Join a chit group to see your payment history here.'}
+                ? t('common.tryDifferentSearch')
+                : t('history.joinToSeeHistory')}
             </Text>
           </View>
         ) : (
           <>
             {activeGroups.length > 0 && (
               <View style={s.section}>
-                <Text style={s.sectionTitle}>Participating Groups</Text>
+                <Text style={s.sectionTitle}>{t('history.participatingGroups')}</Text>
                 {activeGroups.map((g) => (
                   <GroupHistoryCard key={g.membershipId} group={g} onPress={() => openGroup(g.membershipId)} />
                 ))}
@@ -212,7 +216,7 @@ export default function WalletScreen() {
 
             {completedGroups.length > 0 && (
               <View style={s.section}>
-                <Text style={s.sectionTitle}>Completed Groups</Text>
+                <Text style={s.sectionTitle}>{t('history.completedGroups')}</Text>
                 {completedGroups.map((g) => (
                   <GroupHistoryCard key={g.membershipId} group={g} onPress={() => openGroup(g.membershipId)} />
                 ))}

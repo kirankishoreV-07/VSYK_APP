@@ -1,7 +1,6 @@
 import { useRef, useState } from 'react';
 import {
   View,
-  Text,
   TouchableOpacity,
   StyleSheet,
   Dimensions,
@@ -10,12 +9,14 @@ import {
   ScrollView,
 } from 'react-native';
 import { Image } from 'expo-image';
+import { LocalizedText as Text } from '../../components/LocalizedText';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Path } from 'react-native-svg';
 import { Colors, Spacing, Radii, Shadows } from '../../lib/constants';
+import { useTranslation } from 'react-i18next';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const HORIZONTAL_PAD = 40;
@@ -29,29 +30,30 @@ const SLIDES = [
   {
     key: 'slide1',
     step: '1 of 3',
-    title: 'Leadership with Vision',
-    subtitle: '', // Handled by rich text renderer
-    cta: 'Get Started',
+    titleKey: 'onboarding.leadershipTitle',
+    subtitleKey: '',
+    ctaKey: 'onboarding.getStarted',
   },
   {
     key: 'slide2',
     step: '2 of 3',
-    title: 'Savings for Life\'s\nPriorities',
-    subtitle: 'A chit fund turns disciplined monthly savings into a flexible corpus for education, healthcare, emergencies, and major life goals — without market volatility.',
-    cta: 'Next',
+    titleKey: 'onboarding.savingsTitle',
+    subtitleKey: 'onboarding.savingsBody',
+    ctaKey: 'common.next',
   },
   {
     key: 'slide3',
     step: '3 of 3',
-    title: 'How Chit Fund\nWorks',
-    subtitle: 'Members contribute monthly, bid in auctions, and one member receives the pooled amount early while others continue earning dividends until everyone benefits.',
-    cta: 'Get Started',
+    titleKey: 'onboarding.howItWorksTitle',
+    subtitleKey: 'onboarding.howItWorksBody',
+    ctaKey: 'onboarding.getStarted',
   },
 ];
 
 // ─── Slide Visualizations ─────────────────────────────────────
 
 function Slide1Visual() {
+  const { t } = useTranslation();
   return (
     <View style={styles.slide1Outer}>
       <LinearGradient
@@ -70,12 +72,11 @@ function Slide1Visual() {
             />
           </View>
           <View style={styles.slide1TextBlock}>
-            <Text style={styles.slide1Title}>Leadership with Vision</Text>
+            <Text style={styles.slide1Title}>{t('onboarding.leadershipTitle')}</Text>
             <Text style={styles.slide1Body}>
-              Guided by{' '}
-              <Text style={styles.subtitleHighlight}>Managing Director MR VENKATESAN.R</Text>, who brings{' '}
-              <Text style={styles.subtitleHighlight}>over 30 years of profound experience</Text> in the financial
-              services and chit fund industry.
+              {t('onboarding.leadershipPrefix')}{' '}
+              <Text style={styles.subtitleHighlight}>{t('onboarding.managingDirector')}</Text>{t('onboarding.leadershipMiddle')}{' '}
+              <Text style={styles.subtitleHighlight}>{t('onboarding.experience')}</Text>{' '}{t('onboarding.leadershipSuffix')}
             </Text>
           </View>
         </View>
@@ -92,11 +93,11 @@ type SavingsGoalItem = {
 };
 
 const SAVINGS_GOALS: SavingsGoalItem[] = [
-  { label: 'Education', sub: 'School & college', color: '#005E7D' },
-  { label: 'Healthcare', sub: 'Hospitals & care', color: '#01789E' },
-  { label: 'Business', sub: 'Invest & grow', color: '#0E7490' },
-  { label: 'Emergencies', sub: 'Urgent needs', color: '#0891B2' },
-  { label: 'Home & Marriage', sub: 'Life milestones', color: '#006A65', wide: true },
+  { label: 'education', sub: 'educationSub', color: '#005E7D' },
+  { label: 'healthcare', sub: 'healthcareSub', color: '#01789E' },
+  { label: 'business', sub: 'businessSub', color: '#0E7490' },
+  { label: 'emergencies', sub: 'emergenciesSub', color: '#0891B2' },
+  { label: 'homeMarriage', sub: 'homeMarriageSub', color: '#006A65', wide: true },
 ];
 
 function GoalTile({
@@ -110,21 +111,23 @@ function GoalTile({
   color: string;
   wide?: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <View style={[styles.goalTile, wide && styles.goalTileWide]}>
       <View style={[styles.goalTileAccent, { backgroundColor: color }]} />
       <View style={styles.goalTileBody}>
         <View style={styles.goalTileHeader}>
           <View style={[styles.goalTileDot, { backgroundColor: color }]} />
-          <Text style={styles.goalTileLabel}>{label}</Text>
+          <Text style={styles.goalTileLabel}>{t(`onboarding.goals.${label}`)}</Text>
         </View>
-        <Text style={styles.goalTileSub}>{sub}</Text>
+        <Text style={styles.goalTileSub}>{t(`onboarding.goals.${sub}`)}</Text>
       </View>
     </View>
   );
 }
 
 function Slide2Visual() {
+  const { t } = useTranslation();
   return (
     <View style={styles.slide2Outer}>
       <LinearGradient
@@ -134,8 +137,8 @@ function Slide2Visual() {
         style={styles.slide2GradientBorder}
       >
         <View style={styles.slide2Card}>
-          <Text style={styles.mapTitle}>YOUR SAVINGS ROADMAP</Text>
-          <Text style={styles.mapSub}>Why chit funds are necessary for Indian families</Text>
+          <Text style={styles.mapTitle}>{t('onboarding.savingsRoadmap')}</Text>
+          <Text style={styles.mapSub}>{t('onboarding.savingsRoadmapSub')}</Text>
 
           <View style={styles.corpusCard}>
             <LinearGradient
@@ -148,16 +151,16 @@ function Slide2Visual() {
                 <Text style={styles.corpusIconText}>₹</Text>
               </View>
               <View style={styles.corpusCopy}>
-                <Text style={styles.corpusEyebrow}>CHIT SAVINGS</Text>
-                <Text style={styles.corpusHeadline}>Flexible Corpus</Text>
-                <Text style={styles.corpusMeta}>Built through disciplined monthly installments</Text>
+                <Text style={styles.corpusEyebrow}>{t('onboarding.chitSavings')}</Text>
+                <Text style={styles.corpusHeadline}>{t('onboarding.flexibleCorpus')}</Text>
+                <Text style={styles.corpusMeta}>{t('onboarding.flexibleCorpusSub')}</Text>
               </View>
             </LinearGradient>
           </View>
 
           <View style={styles.flowBridge}>
             <View style={styles.flowBridgeLine} />
-            <Text style={styles.flowBridgeLabel}>FUNDS YOUR GOALS</Text>
+            <Text style={styles.flowBridgeLabel}>{t('onboarding.fundsGoals')}</Text>
             <View style={styles.flowBridgeLine} />
           </View>
 
@@ -175,27 +178,24 @@ function Slide2Visual() {
 
           <View style={styles.projectionBar}>
             <View style={styles.projectionItem}>
-              <Text style={styles.projectionLabel}>DISCIPLINE</Text>
-              <Text style={styles.projectionVal}>Monthly</Text>
+              <Text style={styles.projectionLabel}>{t('onboarding.discipline')}</Text>
+              <Text style={styles.projectionVal}>{t('onboarding.monthly')}</Text>
             </View>
             <View style={styles.projectionDivider} />
             <View style={styles.projectionItem}>
-              <Text style={styles.projectionLabel}>LIQUIDITY</Text>
-              <Text style={styles.projectionVal}>On demand</Text>
+              <Text style={styles.projectionLabel}>{t('onboarding.liquidity')}</Text>
+              <Text style={styles.projectionVal}>{t('onboarding.onDemand')}</Text>
             </View>
             <View style={styles.projectionDivider} />
             <View style={styles.projectionItem}>
-              <Text style={styles.projectionLabel}>COMMUNITY</Text>
-              <Text style={styles.projectionVal}>Trusted pool</Text>
+              <Text style={styles.projectionLabel}>{t('onboarding.community')}</Text>
+              <Text style={styles.projectionVal}>{t('onboarding.trustedPool')}</Text>
             </View>
           </View>
 
           <View style={styles.slide2TextBlock}>
-            <Text style={styles.slide2Title}>{"Savings for Life's Priorities"}</Text>
-            <Text style={styles.slide2Body}>
-              A chit fund turns disciplined monthly savings into a flexible corpus for education,
-              healthcare, emergencies, and major life goals — without market volatility.
-            </Text>
+            <Text style={styles.slide2Title}>{t('onboarding.savingsTitle')}</Text>
+            <Text style={styles.slide2Body}>{t('onboarding.savingsBody')}</Text>
           </View>
         </View>
       </LinearGradient>
@@ -206,36 +206,37 @@ function Slide2Visual() {
 const CHIT_STEPS = [
   {
     num: 1,
-    title: 'Join a Chit Group',
-    desc: 'Become a member in a trusted community savings pool with a fixed tenure.',
+    title: 'joinGroup',
+    desc: 'joinGroupSub',
   },
   {
     num: 2,
-    title: 'Pay Monthly Installments',
-    desc: 'Contribute a fixed amount every month — building financial discipline.',
+    title: 'payMonthly',
+    desc: 'payMonthlySub',
   },
   {
     num: 3,
-    title: 'Bid in Monthly Auction',
-    desc: 'Members bid for the pooled amount; highest bidder wins that cycle.',
+    title: 'bidMonthly',
+    desc: 'bidMonthlySub',
   },
   {
     num: 4,
-    title: 'Winner Gets Lump Sum',
-    desc: 'The prize helps fund education, medical bills, or business needs early.',
+    title: 'winnerGets',
+    desc: 'winnerGetsSub',
   },
   {
     num: 5,
-    title: 'Others Earn Dividends',
-    desc: 'Non-winners receive a share of the discount — everyone benefits over time.',
+    title: 'othersEarn',
+    desc: 'othersEarnSub',
   },
 ];
 
 function Slide3Visual() {
+  const { t } = useTranslation();
   return (
     <View style={styles.visualCard}>
-      <Text style={styles.flowTitle}>THE CHIT CYCLE</Text>
-      <Text style={styles.flowSub}>Simple 5-step process every month</Text>
+      <Text style={styles.flowTitle}>{t('onboarding.chitCycle')}</Text>
+      <Text style={styles.flowSub}>{t('onboarding.chitCycleSub')}</Text>
 
       <View style={styles.flowTimeline}>
         <View style={styles.flowLine} />
@@ -245,8 +246,8 @@ function Slide3Visual() {
               <Text style={[styles.flowNumText, i === CHIT_STEPS.length - 1 && styles.flowNumTextFinal]}>{step.num}</Text>
             </View>
             <View style={styles.flowBody}>
-              <Text style={styles.flowStepTitle}>{step.title}</Text>
-              <Text style={styles.flowStepDesc}>{step.desc}</Text>
+              <Text style={styles.flowStepTitle}>{t(`onboarding.steps.${step.title}`)}</Text>
+              <Text style={styles.flowStepDesc}>{t(`onboarding.steps.${step.desc}`)}</Text>
             </View>
           </View>
         ))}
@@ -259,7 +260,7 @@ function Slide3Visual() {
           </Svg>
         </View>
         <Text style={styles.flowFooterText}>
-          Every member receives the full chit value once during the group tenure
+          {t('onboarding.everyMemberReceives')}
         </Text>
       </View>
     </View>
@@ -270,6 +271,7 @@ const VISUALS = [Slide1Visual, Slide2Visual, Slide3Visual];
 
 // ─── Main Component ───────────────────────────────────────────
 export default function OnboardingScreen() {
+  const { t } = useTranslation();
   const router = useRouter();
   const flatListRef = useRef<FlatList>(null);
   const scrollX = useRef(new Animated.Value(0)).current;
@@ -315,7 +317,7 @@ export default function OnboardingScreen() {
         <Text style={styles.stepText}>{SLIDES[currentIndex].step}</Text>
 
         <TouchableOpacity onPress={skip} activeOpacity={0.7}>
-          <Text style={styles.skipText}>Skip</Text>
+          <Text style={styles.skipText}>{t('common.skip')}</Text>
         </TouchableOpacity>
       </View>
 
@@ -346,8 +348,8 @@ export default function OnboardingScreen() {
                 <Visual />
                 {item.key === 'slide3' && (
                   <View style={styles.textSection}>
-                    <Text style={styles.title}>{item.title}</Text>
-                    <Text style={styles.subtitle}>{item.subtitle}</Text>
+                    <Text style={styles.title}>{t(item.titleKey)}</Text>
+                    <Text style={styles.subtitle}>{item.subtitleKey ? t(item.subtitleKey) : ''}</Text>
                   </View>
                 )}
               </ScrollView>
@@ -363,7 +365,7 @@ export default function OnboardingScreen() {
           onPress={goNext}
           activeOpacity={0.9}
         >
-          <Text style={styles.ctaBtnText}>{SLIDES[currentIndex].cta}</Text>
+          <Text style={styles.ctaBtnText}>{t(SLIDES[currentIndex].ctaKey)}</Text>
           <Svg width={22} height={22} viewBox="0 0 24 24" fill="#FFFFFF">
             <Path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8-8-8z" />
           </Svg>

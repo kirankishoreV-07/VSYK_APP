@@ -1,10 +1,12 @@
-import { ScrollView, Text, View, TouchableOpacity, StyleSheet } from 'react-native';
+import { ScrollView, View, TouchableOpacity, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LocalizedText as Text } from '../../../components/LocalizedText';
 import { useRouter } from 'expo-router';
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { Colors } from '../../../lib/constants';
 import { useParentBack } from '../../../lib/hooks/useParentBack';
+import { useTranslation } from 'react-i18next';
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -16,6 +18,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 export default function PrivacyPolicyScreen() {
+  const { t } = useTranslation();
   const router = useRouter();
   const handleBack = useParentBack('/(tabs)/profile');
 
@@ -26,63 +29,32 @@ export default function PrivacyPolicyScreen() {
           style={s.backBtn}
           onPress={() => { Haptics.selectionAsync(); handleBack(); }}
           accessibilityRole="button"
-          accessibilityLabel="Back to profile"
+          accessibilityLabel={t('common.backToProfile')}
         >
           <Svg width={22} height={22} viewBox="0 0 24 24" fill={Colors.primary}>
             <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
           </Svg>
         </TouchableOpacity>
-        <Text style={s.appBarTitle}>Privacy Policy</Text>
+        <Text style={s.appBarTitle}>{t('privacy.title')}</Text>
         <View style={{ width: 22 }} />
       </View>
 
       <ScrollView contentContainerStyle={s.content}>
-        <Text style={s.updated}>Last updated: August 2026</Text>
+        <Text style={s.updated}>{t('privacy.updated')}</Text>
 
-        <Section title="What we collect">
-          To operate your chit fund membership, VSYK Chits collects your full name, phone number,
-          email, postal address, KYC identity documents (Aadhaar and PAN numbers), and payment
-          records related to your chit group memberships, auctions, bids, and installments.
-        </Section>
+        <Section title={t('privacy.collectTitle')}>{t('privacy.collectBody')}</Section>
 
-        <Section title="WhatsApp messaging">
-          We use WhatsApp (via Gupshup) to deliver OTP login codes and account notifications:
-          installment due reminders, payment overdue reminders, partial payment confirmations, and
-          auction scheduling notices. We never send marketing messages over WhatsApp, and you can
-          opt out of notifications at any time by replying STOP.
-        </Section>
+        <Section title={t('privacy.whatsappTitle')}>{t('privacy.whatsappBody')}</Section>
 
-        <Section title="How we use your data">
-          Your data is used solely to operate your chit fund account: verifying your identity,
-          recording auction bids and results, tracking installment payments, processing Razorpay
-          payments, and sending you account-related notifications. We do not sell your data or
-          share it with third parties for marketing purposes.
-        </Section>
+        <Section title={t('privacy.useTitle')}>{t('privacy.useBody')}</Section>
 
-        <Section title="Payment processing">
-          Payments are processed by Razorpay. We do not store your card, UPI, or bank credentials —
-          Razorpay handles payment collection directly and we only record the resulting transaction
-          confirmation.
-        </Section>
+        <Section title={t('privacy.paymentTitle')}>{t('privacy.paymentBody')}</Section>
 
-        <Section title="Data retention">
-          Financial and transaction records (payment schedules, transaction history, auction
-          results) are retained as required for regulatory and audit purposes, even after an
-          account deletion request is processed — only your personally identifying information
-          (name, phone, KYC documents) is removed at that point.
-        </Section>
+        <Section title={t('privacy.retentionTitle')}>{t('privacy.retentionBody')}</Section>
 
-        <Section title="Your rights">
-          You may request deletion of your personal information at any time from Profile →
-          Delete My Account. Because chit fund memberships involve ongoing financial obligations,
-          deletion requests are reviewed before processing; your financial and audit records are
-          preserved as required by law even after your personal details are removed.
-        </Section>
+        <Section title={t('privacy.rightsTitle')}>{t('privacy.rightsBody')}</Section>
 
-        <Section title="Contact">
-          For any privacy questions or to exercise your data rights, contact VSYK Chits support
-          through the in-app Contact Support option.
-        </Section>
+        <Section title={t('privacy.contactTitle')}>{t('privacy.contactBody')}</Section>
       </ScrollView>
     </SafeAreaView>
   );

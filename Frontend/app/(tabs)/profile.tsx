@@ -1,15 +1,19 @@
 import { useState, useEffect } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, StyleSheet,
+  View, ScrollView, TouchableOpacity, StyleSheet,
   TextInput, Alert, ActivityIndicator, KeyboardAvoidingView, Platform, RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LocalizedText as Text } from '../../components/LocalizedText';
 import { useRouter } from 'expo-router';
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../../lib/supabase';
 import { apiPostAuthed } from '../../lib/api';
+import { setAppLanguage, type AppLanguage } from '../../lib/i18n';
+import { localeForLanguage } from '../../lib/i18n';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Colors, Shadows } from '../../lib/constants';
 import { useMemberSession } from '../../lib/MemberSessionContext';
 import { useActiveChits, useDashboardStats, formatPaise } from '../../lib/hooks/useDashboard';
@@ -23,10 +27,10 @@ const INDIAN_STATES = [
   'Delhi', 'Jammu and Kashmir', 'Puducherry',
 ];
 
-const KYC_COLORS: Record<string, { bg: string; text: string; label: string }> = {
-  verified:  { bg: '#DCFCE7', text: '#15803D', label: '✓ KYC Verified' },
-  pending:   { bg: '#FEF9C3', text: '#A16207', label: '⏳ KYC Pending' },
-  rejected:  { bg: '#FEE2E2', text: '#B91C1C', label: '✗ KYC Rejected' },
+const KYC_COLORS: Record<string, { bg: string; text: string; icon: keyof typeof MaterialCommunityIcons.glyphMap }> = {
+  verified:  { bg: '#DCFCE7', text: '#15803D', icon: 'check-decagram-outline' },
+  pending:   { bg: '#FEF9C3', text: '#A16207', icon: 'clock-outline' },
+  rejected:  { bg: '#FEE2E2', text: '#B91C1C', icon: 'close-circle-outline' },
 };
 
 function InfoRow({ label, value, dimmed = false }: { label: string; value?: string | null; dimmed?: boolean }) {
@@ -50,9 +54,14 @@ export default function ProfileScreen() {
   const isTamil = i18n.language === 'ta';
   const isEnglish = !isTamil;
 
-  const switchLanguage = (lng: string) => {
+  const switchLanguage = async (lng: AppLanguage) => {
     Haptics.selectionAsync();
-    i18n.changeLanguage(lng);
+    try {
+      await setAppLanguage(lng);
+    } catch (error) {
+      console.warn('Could not save language preference:', error);
+      await i18n.changeLanguage(lng);
+    }
   };
 
   // Editable fields (mirroring admin form)
@@ -102,15 +111,15 @@ export default function ProfileScreen() {
     const normalizedEmail = email.trim().toLowerCase();
     const normalizedPostalCode = postalCode.trim();
     if (!normalizedName) {
-      Alert.alert('Invalid Name', 'Please enter your full name.');
+      Alert.alert(t('profile.invalidName'), t('profile.invalidNameMessage'));
       return;
     }
     if (normalizedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
-      Alert.alert('Invalid Email', 'Please enter a valid email address.');
+      Alert.alert(t('profile.invalidEmail'), t('profile.invalidEmailMessage'));
       return;
     }
     if (normalizedPostalCode && !/^\d{6}$/.test(normalizedPostalCode)) {
-      Alert.alert('Invalid Postal Code', 'Please enter a valid 6-digit postal code.');
+      Alert.alert(t('profile.invalidPostal'), t('profile.invalidPostalMessage'));
       return;
     }
 
@@ -131,10 +140,10 @@ export default function ProfileScreen() {
       await refreshProfile();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setEditMode(false);
-      Alert.alert('Saved ✓', 'Your profile has been updated.');
+      Alert.alert(t('profile.saved'), t('profile.savedMessage'));
     } catch (err: any) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Error', err.message ?? 'Failed to save profile.');
+      Alert.alert(t('common.error'), err.message ?? t('profile.saveFailed'));
     } finally {
       setSaving(false);
     }
@@ -142,10 +151,10 @@ export default function ProfileScreen() {
 
   const handleLogout = () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-    Alert.alert('Log Out', 'Are you sure you want to log out?', [
-      { text: 'Cancel', style: 'cancel' },
+    Alert.alert(t('profile.logOut'), t('profile.logOutConfirm'), [
+      { text: t('common.cancel'), style: 'cancel' },
       {
-        text: 'Log Out', style: 'destructive', onPress: async () => {
+        text: t('profile.logOut'), style: 'destructive', onPress: async () => {
           await logout();
           router.replace('/(auth)/login');
         },
@@ -159,26 +168,26 @@ export default function ProfileScreen() {
   const handleDeleteAccount = () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
     Alert.alert(
-      'Delete My Account',
-      'This will submit a request to permanently delete your personal information. Your financial and payment records will be retained as required by law, but your name, contact details, and KYC documents will be removed once processed. This cannot be undone. Continue?',
+      t('profile.deleteAccount'),
+      t('profile.deleteAccountConfirm'),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('common.cancel'), style: 'cancel' },
         {
-          text: 'Request Deletion',
+          text: t('profile.requestDeletion'),
           style: 'destructive',
           onPress: async () => {
             try {
               const res = await apiPostAuthed<{ ok: boolean; alreadyRequested: boolean }>('/api/account/delete-request', {});
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               Alert.alert(
-                res.alreadyRequested ? 'Already Requested' : 'Request Submitted',
+                res.alreadyRequested ? t('profile.alreadyRequested') : t('profile.requestSubmitted'),
                 res.alreadyRequested
-                  ? 'Your account deletion request is already pending review.'
-                  : 'Your account deletion request has been submitted and will be reviewed.',
+                  ? t('profile.deletionPending')
+                  : t('profile.deletionSubmitted'),
               );
             } catch (err: any) {
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-              Alert.alert('Error', err?.message || 'Failed to submit deletion request.');
+              Alert.alert(t('common.error'), err?.message || t('profile.deletionFailed'));
             }
           },
         },
@@ -197,7 +206,7 @@ export default function ProfileScreen() {
   const kyc = KYC_COLORS[memberProfile.kyc_status ?? 'pending'] ?? KYC_COLORS.pending;
   const initial = memberProfile.full_name?.charAt(0).toUpperCase() ?? 'V';
   const joinedDate = memberProfile.created_at
-    ? new Date(memberProfile.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
+    ? new Date(memberProfile.created_at).toLocaleDateString(localeForLanguage(i18n.resolvedLanguage), { day: 'numeric', month: 'long', year: 'numeric' })
     : null;
 
   return (
@@ -206,7 +215,7 @@ export default function ProfileScreen() {
 
         {/* App Bar */}
         <View style={s.appBar}>
-          <Text style={s.appBarTitle}>My Profile</Text>
+        <Text style={s.appBarTitle}>{t('profile.title')}</Text>
           <TouchableOpacity
             style={[s.editBtn, editMode && { backgroundColor: Colors.primary }]}
             onPress={() => {
@@ -220,7 +229,7 @@ export default function ProfileScreen() {
               <ActivityIndicator size="small" color="#FFF" />
             ) : (
               <Text style={[s.editBtnText, editMode && { color: '#FFF' }]}>
-                {editMode ? 'Save' : 'Edit'}
+                {editMode ? t('common.save') : t('common.edit')}
               </Text>
             )}
           </TouchableOpacity>
@@ -246,59 +255,60 @@ export default function ProfileScreen() {
             <Text style={s.heroName}>{memberProfile.full_name}</Text>
             <Text style={s.heroPhone}>+91 {memberProfile.phone}</Text>
             <View style={[s.kycBadge, { backgroundColor: kyc.bg }]}>
-              <Text style={[s.kycText, { color: kyc.text }]}>{kyc.label}</Text>
+              <MaterialCommunityIcons name={kyc.icon} size={14} color={kyc.text} />
+              <Text style={[s.kycText, { color: kyc.text }]}>{t(`profile.kyc.${memberProfile.kyc_status ?? 'pending'}`)}</Text>
             </View>
             {joinedDate && (
-              <Text style={s.joinedText}>Member since {joinedDate}</Text>
+              <Text style={s.joinedText}>{t('profile.memberSince', { date: joinedDate })}</Text>
             )}
           </View>
 
           {/* Quick Stats */}
           <View style={s.statsRow}>
             <View style={s.statCard}>
-              <Text style={s.statLabel}>ACTIVE GROUPS</Text>
+              <Text style={s.statLabel}>{t('profile.activeGroups')}</Text>
               <Text style={s.statVal}>{chits?.length ?? 0}</Text>
             </View>
             <View style={s.statCard}>
-              <Text style={s.statLabel}>TOTAL VALUE</Text>
+              <Text style={s.statLabel}>{t('dashboard.totalValue')}</Text>
               <Text style={s.statVal}>{formatPaise(stats?.total_portfolio_value ?? 0)}</Text>
             </View>
             <View style={s.statCard}>
-              <Text style={s.statLabel}>CUSTOMER TYPE</Text>
-              <Text style={s.statVal}>{memberProfile.customer_type ?? 'Individual'}</Text>
+              <Text style={s.statLabel}>{t('profile.customerType')}</Text>
+              <Text style={s.statVal}>{memberProfile.customer_type ? t(`profile.customerTypes.${memberProfile.customer_type.toLowerCase()}`, { defaultValue: memberProfile.customer_type }) : t('profile.customerTypes.individual')}</Text>
             </View>
           </View>
 
           {/* ── PERSONAL INFORMATION ── */}
           <View style={s.section}>
-            <Text style={s.sectionTitle}>Personal Information</Text>
+            <Text style={s.sectionTitle}>{t('profile.personalInformation')}</Text>
             <View style={s.card}>
               {editMode ? (
                 <>
                   <View style={s.fieldGroup}>
-                    <Text style={s.fieldLabel}>FULL NAME</Text>
-                    <TextInput style={s.input} value={fullName} onChangeText={setFullName} placeholder="Enter your full name" />
+                    <Text style={s.fieldLabel}>{t('profile.fullName')}</Text>
+                    <TextInput style={s.input} value={fullName} onChangeText={setFullName} placeholder={t('profile.fullNamePlaceholder')} />
                   </View>
                   <View style={s.fieldGroup}>
-                    <Text style={s.fieldLabel}>EMAIL ADDRESS</Text>
-                    <TextInput style={s.input} value={email} onChangeText={setEmail} placeholder="Enter your email address" keyboardType="email-address" autoCapitalize="none" />
+                    <Text style={s.fieldLabel}>{t('profile.emailAddress')}</Text>
+                    <TextInput style={s.input} value={email} onChangeText={setEmail} placeholder={t('profile.emailPlaceholder')} keyboardType="email-address" autoCapitalize="none" />
                   </View>
                 </>
               ) : (
                 <>
-                  <InfoRow label="Full Name" value={memberProfile.full_name} />
+                  <InfoRow label={t('profile.fullName')} value={memberProfile.full_name} />
                   <View style={s.divider} />
-                  <InfoRow label="Email" value={memberProfile.email} dimmed={!memberProfile.email} />
+                  <InfoRow label={t('profile.email')} value={memberProfile.email} dimmed={!memberProfile.email} />
                 </>
               )}
               <View style={s.divider} />
-              <InfoRow label="Phone" value={`+91 ${memberProfile.phone}`} />
+              <InfoRow label={t('profile.phone')} value={`+91 ${memberProfile.phone}`} />
               <View style={s.divider} />
-              <InfoRow label="Age" value={memberProfile.age ? `${memberProfile.age} years` : null} />
+              <InfoRow label={t('profile.age')} value={memberProfile.age ? t('profile.years', { count: memberProfile.age }) : null} />
               {memberProfile.customer_type === 'Individual' && (
                 <>
                   <View style={s.divider} />
-                  <InfoRow label="Gender" value={memberProfile.gender} />
+                  <InfoRow label={t('profile.gender')} value={memberProfile.gender ? t(`profile.genders.${memberProfile.gender.toLowerCase()}`, { defaultValue: memberProfile.gender }) : null} />
                 </>
               )}
               {memberProfile.customer_type === 'Company' && memberProfile.gstin_number && (
@@ -312,27 +322,27 @@ export default function ProfileScreen() {
 
           {/* ── ADDRESS DETAILS ── */}
           <View style={s.section}>
-            <Text style={s.sectionTitle}>Address Details</Text>
+            <Text style={s.sectionTitle}>{t('profile.addressDetails')}</Text>
             <View style={s.card}>
               {editMode ? (
                 <>
                   <View style={s.fieldGroup}>
-                    <Text style={s.fieldLabel}>ADDRESS LINE 1</Text>
-                    <TextInput style={s.input} value={addressLine1} onChangeText={setAddressLine1} placeholder="Enter house number and building" />
+                    <Text style={s.fieldLabel}>{t('profile.addressLine1')}</Text>
+                    <TextInput style={s.input} value={addressLine1} onChangeText={setAddressLine1} placeholder={t('profile.addressLine1Placeholder')} />
                   </View>
                   <View style={s.fieldGroup}>
-                    <Text style={s.fieldLabel}>ADDRESS LINE 2</Text>
-                    <TextInput style={s.input} value={addressLine2} onChangeText={setAddressLine2} placeholder="Enter street and area (optional)" />
+                    <Text style={s.fieldLabel}>{t('profile.addressLine2')}</Text>
+                    <TextInput style={s.input} value={addressLine2} onChangeText={setAddressLine2} placeholder={t('profile.addressLine2Placeholder')} />
                   </View>
                   <View style={s.fieldGroup}>
-                    <Text style={s.fieldLabel}>CITY</Text>
-                    <TextInput style={s.input} value={city} onChangeText={setCity} placeholder="Enter city" />
+                    <Text style={s.fieldLabel}>{t('profile.city')}</Text>
+                    <TextInput style={s.input} value={city} onChangeText={setCity} placeholder={t('profile.cityPlaceholder')} />
                   </View>
                   <View style={[s.fieldGroup, { zIndex: 100 }]}>
-                    <Text style={s.fieldLabel}>STATE</Text>
+                    <Text style={s.fieldLabel}>{t('profile.state')}</Text>
                     <TouchableOpacity style={s.dropdownBtn} onPress={() => setShowStateDD(!showStateDD)}>
                       <Text style={stateForm ? s.dropdownVal : s.dropdownPlaceholder}>
-                        {stateForm || 'Select state'}
+                        {stateForm || t('profile.selectState')}
                       </Text>
                       <Svg width={16} height={16} viewBox="0 0 24 24" fill="#94A3B8">
                         <Path d="M7 10l5 5 5-5z" />
@@ -349,21 +359,21 @@ export default function ProfileScreen() {
                     )}
                   </View>
                   <View style={s.fieldGroup}>
-                    <Text style={s.fieldLabel}>POSTAL CODE</Text>
-                    <TextInput style={s.input} value={postalCode} onChangeText={setPostalCode} placeholder="Enter 6-digit postal code" keyboardType="number-pad" maxLength={6} />
+                    <Text style={s.fieldLabel}>{t('profile.postalCode')}</Text>
+                    <TextInput style={s.input} value={postalCode} onChangeText={setPostalCode} placeholder={t('profile.postalPlaceholder')} keyboardType="number-pad" maxLength={6} />
                   </View>
                 </>
               ) : (
                 <>
-                  <InfoRow label="Address Line 1" value={memberProfile.address_line1} />
+                  <InfoRow label={t('profile.addressLine1')} value={memberProfile.address_line1} />
                   <View style={s.divider} />
-                  <InfoRow label="Address Line 2" value={memberProfile.address_line2} dimmed={!memberProfile.address_line2} />
+                  <InfoRow label={t('profile.addressLine2')} value={memberProfile.address_line2} dimmed={!memberProfile.address_line2} />
                   <View style={s.divider} />
-                  <InfoRow label="City" value={memberProfile.city} />
+                  <InfoRow label={t('profile.city')} value={memberProfile.city} />
                   <View style={s.divider} />
-                  <InfoRow label="State" value={memberProfile.state} />
+                  <InfoRow label={t('profile.state')} value={memberProfile.state} />
                   <View style={s.divider} />
-                  <InfoRow label="Postal Code" value={memberProfile.postal_code} />
+                  <InfoRow label={t('profile.postalCode')} value={memberProfile.postal_code} />
                 </>
               )}
             </View>
@@ -371,10 +381,10 @@ export default function ProfileScreen() {
 
           {/* ── KYC DOCUMENTS ── */}
           <View style={s.section}>
-            <Text style={s.sectionTitle}>KYC Documents</Text>
+            <Text style={s.sectionTitle}>{t('profile.kycDocuments')}</Text>
             <View style={s.card}>
               <InfoRow
-                label="PAN Number"
+                label={t('profile.panNumber')}
                 value={memberProfile.pan_number
                   ? `${memberProfile.pan_number.slice(0, 3)}••••${memberProfile.pan_number.slice(-1)}`
                   : null}
@@ -382,24 +392,25 @@ export default function ProfileScreen() {
               />
               <View style={s.divider} />
               <InfoRow
-                label="Aadhaar"
+                label={t('profile.aadhaar')}
                 value={memberProfile.aadhar_number
                   ? `XXXX XXXX ${memberProfile.aadhar_number.slice(-4)}`
                   : null}
                 dimmed={!memberProfile.aadhar_number}
               />
               <View style={s.divider} />
-              <InfoRow label="KYC Status" value={kyc.label} />
+              <InfoRow label={t('profile.kycStatus')} value={t(`profile.kyc.${memberProfile.kyc_status ?? 'pending'}`)} />
             </View>
-            <Text style={s.secureNote}>
-              🔒 KYC documents can only be updated by the admin. Contact your chit group admin for any KYC changes.
-            </Text>
+            <View style={s.secureNoteRow}>
+              <MaterialCommunityIcons name="lock-outline" size={15} color="#64748B" />
+              <Text style={s.secureNote}>{t('profile.kycAdminOnly')}</Text>
+            </View>
           </View>
 
           {/* ── NOTES ── */}
           {(memberProfile.notes || editMode) && (
             <View style={s.section}>
-              <Text style={s.sectionTitle}>Notes</Text>
+              <Text style={s.sectionTitle}>{t('profile.notes')}</Text>
               <View style={s.card}>
                 {editMode ? (
                   <View style={s.fieldGroup}>
@@ -407,12 +418,12 @@ export default function ProfileScreen() {
                       style={[s.input, { minHeight: 80, textAlignVertical: 'top' }]}
                       value={notes}
                       onChangeText={setNotes}
-                      placeholder="Enter additional notes (optional)"
+                      placeholder={t('profile.notesPlaceholder')}
                       multiline
                     />
                   </View>
                 ) : (
-                  <InfoRow label="Notes" value={memberProfile.notes} dimmed={!memberProfile.notes} />
+                  <InfoRow label={t('profile.notes')} value={memberProfile.notes} dimmed={!memberProfile.notes} />
                 )}
               </View>
             </View>
@@ -427,14 +438,14 @@ export default function ProfileScreen() {
               <TouchableOpacity
                 style={[s.langBtn, isEnglish && s.langBtnActive]}
                 activeOpacity={0.8}
-                onPress={() => switchLanguage('en')}
+                onPress={() => { void switchLanguage('en'); }}
               >
                 <Text style={[s.langBtnText, isEnglish && s.langBtnTextActive]}>English</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[s.langBtn, isTamil && s.langBtnActive]}
                 activeOpacity={0.8}
-                onPress={() => switchLanguage('ta')}
+                onPress={() => { void switchLanguage('ta'); }}
               >
                 <Text style={[s.langBtnText, isTamil && s.langBtnTextActive, { fontFamily: 'HindMadurai_700Bold' }]}>
                   தமிழ்
@@ -461,7 +472,7 @@ export default function ProfileScreen() {
                 setNotes(memberProfile.notes ?? '');
               }}
             >
-              <Text style={s.cancelBtnText}>Cancel Changes</Text>
+              <Text style={s.cancelBtnText}>{t('profile.cancelChanges')}</Text>
             </TouchableOpacity>
           )}
 
@@ -472,7 +483,7 @@ export default function ProfileScreen() {
               activeOpacity={0.8}
               onPress={() => { Haptics.selectionAsync(); router.push('/(tabs)/profile/privacy-policy' as any); }}
             >
-              <Text style={s.privacyBtnTxt}>Privacy Policy</Text>
+              <Text style={s.privacyBtnTxt}>{t('profile.privacyPolicy')}</Text>
             </TouchableOpacity>
           )}
 
@@ -482,14 +493,14 @@ export default function ProfileScreen() {
               <Svg width={18} height={18} viewBox="0 0 24 24" fill="#EF4444">
                 <Path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z" />
               </Svg>
-              <Text style={s.logoutTxt}>Sign Out</Text>
+              <Text style={s.logoutTxt}>{t('profile.signOut')}</Text>
             </TouchableOpacity>
           )}
 
           {/* Delete Account — reviewed request, not instant hard-delete */}
           {!editMode && (
             <TouchableOpacity style={s.deleteBtn} activeOpacity={0.8} onPress={handleDeleteAccount}>
-              <Text style={s.deleteBtnTxt}>Delete My Account</Text>
+              <Text style={s.deleteBtnTxt}>{t('profile.deleteAccount')}</Text>
             </TouchableOpacity>
           )}
 
@@ -542,7 +553,7 @@ const s = StyleSheet.create({
   avatarInitial: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 32, color: '#FFF' },
   heroName: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 24, color: '#FFF', letterSpacing: -0.5 },
   heroPhone: { fontFamily: 'Inter_500Medium', fontSize: 15, color: 'rgba(255,255,255,0.7)' },
-  kycBadge: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 20, marginTop: 4 },
+  kycBadge: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 20, marginTop: 4, flexDirection: 'row', alignItems: 'center', gap: 5 },
   kycText: { fontFamily: 'Inter_700Bold', fontSize: 12 },
   joinedText: { fontFamily: 'Inter_400Regular', fontSize: 12, color: 'rgba(255,255,255,0.5)', marginTop: 2 },
 
@@ -586,7 +597,8 @@ const s = StyleSheet.create({
   dropdownItem: { paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
   dropdownItemText: { fontFamily: 'Inter_500Medium', fontSize: 14, color: '#0B1C30' },
 
-  secureNote: { fontFamily: 'Inter_400Regular', fontSize: 12, color: '#94A3B8', marginLeft: 4, lineHeight: 18 },
+  secureNoteRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginLeft: 4 },
+  secureNote: { flex: 1, fontFamily: 'Inter_400Regular', fontSize: 12, color: '#94A3B8', lineHeight: 18 },
 
   cancelBtn: {
     borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 14,

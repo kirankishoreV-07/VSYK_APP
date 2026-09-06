@@ -1,9 +1,10 @@
 import { useEffect, useState, useRef } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, StyleSheet,
+  View, ScrollView, TouchableOpacity, StyleSheet,
   ActivityIndicator, Alert, RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LocalizedText as Text } from '../../../components/LocalizedText';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Svg, { Path, Circle } from 'react-native-svg';
@@ -24,6 +25,9 @@ import {
 import { WINNER_HIGHLIGHT } from '../../../lib/auctionWinner';
 import { shareCsvFile } from '../../../lib/csvExport';
 import { useParentBack } from '../../../lib/hooks/useParentBack';
+import { useTranslation } from 'react-i18next';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { localeForLanguage } from '../../../lib/i18n';
 
 const CHART_COLORS = {
   paid: '#10B981',
@@ -33,11 +37,12 @@ const CHART_COLORS = {
 };
 
 function DonutChart({ detail }: { detail: GroupHistoryDetail }) {
+  const { t } = useTranslation();
   const segments = [
-    { key: 'paid', value: detail.breakdown.paidAmount, color: CHART_COLORS.paid, label: 'Paid' },
-    { key: 'partial', value: detail.breakdown.partialAmount, color: CHART_COLORS.partial, label: 'Partial' },
-    { key: 'pending', value: detail.breakdown.pendingAmount, color: CHART_COLORS.pending, label: 'Pending' },
-    { key: 'awaiting', value: detail.breakdown.awaitingAmount, color: CHART_COLORS.awaiting, label: 'Awaiting' },
+    { key: 'paid', value: detail.breakdown.paidAmount, color: CHART_COLORS.paid, label: t('common.paid') },
+    { key: 'partial', value: detail.breakdown.partialAmount, color: CHART_COLORS.partial, label: t('common.partial') },
+    { key: 'pending', value: detail.breakdown.pendingAmount, color: CHART_COLORS.pending, label: t('common.pending') },
+    { key: 'awaiting', value: detail.breakdown.awaitingAmount, color: CHART_COLORS.awaiting, label: t('historyDetail.awaiting') },
   ].filter((s) => s.value > 0);
 
   const total = segments.reduce((sum, s) => sum + s.value, 0) || 1;
@@ -48,7 +53,7 @@ function DonutChart({ detail }: { detail: GroupHistoryDetail }) {
 
   return (
     <View style={st.chartCard}>
-      <Text style={st.sectionTitle}>Payment Breakdown</Text>
+      <Text style={st.sectionTitle}>{t('historyDetail.paymentBreakdown')}</Text>
       <View style={st.chartRow}>
         <View style={st.donutWrap}>
           <Svg width={140} height={140} viewBox="0 0 140 140">
@@ -76,7 +81,7 @@ function DonutChart({ detail }: { detail: GroupHistoryDetail }) {
             })}
           </Svg>
           <View style={st.donutCenter}>
-            <Text style={st.donutCenterLabel}>TOTAL PAID</Text>
+            <Text style={st.donutCenterLabel}>{t('common.totalPaid')}</Text>
             <Text style={st.donutCenterVal}>{formatPaise(detail.summary.totalPaid)}</Text>
           </View>
         </View>
@@ -99,6 +104,7 @@ function DonutChart({ detail }: { detail: GroupHistoryDetail }) {
 }
 
 function MonthBarChart({ detail }: { detail: GroupHistoryDetail }) {
+  const { t, i18n } = useTranslation();
   const [viewMode, setViewMode] = useState<'timeline' | 'grid'>('timeline');
   const [filterMode, setFilterMode] = useState<'all' | 'paid' | 'due' | 'future'>('all');
 
@@ -155,9 +161,9 @@ function MonthBarChart({ detail }: { detail: GroupHistoryDetail }) {
       {/* Card Header & View Switcher */}
       <View style={st.chartHeaderRow}>
         <View style={{ flex: 1 }}>
-          <Text style={st.sectionTitle}>Month-wise Projection</Text>
+          <Text style={st.sectionTitle}>{t('historyDetail.monthProjection')}</Text>
           <Text style={st.chartSubTitle}>
-            {detail.summary.durationMonths} Months Tenure · Est. {formatPaise(monthlyInstallment)}/mo
+            {t('historyDetail.tenureEstimate', { months: detail.summary.durationMonths, amount: formatPaise(monthlyInstallment) })}
           </Text>
         </View>
 
@@ -171,7 +177,7 @@ function MonthBarChart({ detail }: { detail: GroupHistoryDetail }) {
             }}
           >
             <Text style={[st.viewToggleText, viewMode === 'timeline' && st.viewToggleTextActive]}>
-              Timeline
+              {t('historyDetail.timeline')}
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -182,7 +188,7 @@ function MonthBarChart({ detail }: { detail: GroupHistoryDetail }) {
             }}
           >
             <Text style={[st.viewToggleText, viewMode === 'grid' && st.viewToggleTextActive]}>
-              Grid
+              {t('historyDetail.grid')}
             </Text>
           </TouchableOpacity>
         </View>
@@ -195,7 +201,7 @@ function MonthBarChart({ detail }: { detail: GroupHistoryDetail }) {
           style={[st.summaryChip, filterMode === 'all' && st.summaryChipActive]}
         >
           <Text style={[st.summaryChipText, filterMode === 'all' && st.summaryChipTextActive]}>
-            All ({detail.months.length})
+            {t('historyDetail.allCount', { count: detail.months.length })}
           </Text>
         </TouchableOpacity>
 
@@ -210,7 +216,7 @@ function MonthBarChart({ detail }: { detail: GroupHistoryDetail }) {
           >
             <View style={[st.summaryChipDot, { backgroundColor: filterMode === 'paid' ? '#FFFFFF' : CHART_COLORS.paid }]} />
             <Text style={[st.summaryChipText, { color: filterMode === 'paid' ? '#FFFFFF' : '#065F46' }]}>
-              {paidCount} Paid
+              {t('historyDetail.paidCount', { count: paidCount })}
             </Text>
           </TouchableOpacity>
         )}
@@ -226,7 +232,7 @@ function MonthBarChart({ detail }: { detail: GroupHistoryDetail }) {
           >
             <View style={[st.summaryChipDot, { backgroundColor: filterMode === 'due' ? '#FFFFFF' : CHART_COLORS.partial }]} />
             <Text style={[st.summaryChipText, { color: filterMode === 'due' ? '#FFFFFF' : '#92400E' }]}>
-              {partialCount + pendingCount} Due
+              {t('historyDetail.dueCount', { count: partialCount + pendingCount })}
             </Text>
           </TouchableOpacity>
         )}
@@ -242,7 +248,7 @@ function MonthBarChart({ detail }: { detail: GroupHistoryDetail }) {
           >
             <View style={[st.summaryChipDot, { backgroundColor: filterMode === 'future' ? '#FFFFFF' : CHART_COLORS.awaiting }]} />
             <Text style={[st.summaryChipText, { color: filterMode === 'future' ? '#FFFFFF' : '#64748B' }]}>
-              {awaitingCount} Future
+              {t('historyDetail.futureCount', { count: awaitingCount })}
             </Text>
           </TouchableOpacity>
         )}
@@ -291,7 +297,7 @@ function MonthBarChart({ detail }: { detail: GroupHistoryDetail }) {
                   {/* Winner Crown or Pointer Dot */}
                   <View style={st.barTopIconWrap}>
                     {m.isMemberWinner ? (
-                      <Text style={st.winnerTrophyIcon}>🏆</Text>
+                      <MaterialCommunityIcons name="trophy-outline" size={15} color={WINNER_HIGHLIGHT.badgeText} />
                     ) : isSelected ? (
                       <View style={[st.selectedPointerDot, { backgroundColor: Colors.primary }]} />
                     ) : null}
@@ -343,7 +349,7 @@ function MonthBarChart({ detail }: { detail: GroupHistoryDetail }) {
                       ? `₹${Math.round(m.paidAmount / 100000)}k`
                       : m.dueAmount != null
                       ? `₹${Math.round(m.dueAmount / 100000)}k`
-                      : 'Est.'}
+                      : t('historyDetail.estimatedShort')}
                   </Text>
                 </TouchableOpacity>
               );
@@ -375,7 +381,7 @@ function MonthBarChart({ detail }: { detail: GroupHistoryDetail }) {
                     M{m.monthNumber}
                   </Text>
                   {m.isMemberWinner ? (
-                    <Text style={{ fontSize: 10 }}>🏆</Text>
+                    <MaterialCommunityIcons name="trophy-outline" size={12} color={WINNER_HIGHLIGHT.badgeText} />
                   ) : (
                     <View style={[st.gridTileDot, { backgroundColor: statusColor }]} />
                   )}
@@ -386,11 +392,11 @@ function MonthBarChart({ detail }: { detail: GroupHistoryDetail }) {
                     ? formatPaise(m.paidAmount)
                     : m.dueAmount != null
                     ? formatPaise(m.dueAmount)
-                    : `Est. ${formatPaise(monthlyInstallment)}`}
+                    : t('historyDetail.estimatedAmount', { amount: formatPaise(monthlyInstallment) })}
                 </Text>
 
                 <Text style={[st.gridTileStatus, { color: statusColor }]} numberOfLines={1}>
-                  {getStatusLabel(m.status).toUpperCase()}
+                  {t(`historyDetail.status.${m.status}`, { defaultValue: getStatusLabel(m.status) })}
                 </Text>
               </TouchableOpacity>
             );
@@ -422,32 +428,31 @@ function MonthBarChart({ detail }: { detail: GroupHistoryDetail }) {
                 </Text>
               </View>
               <View>
-                <Text style={st.inspectorTitle}>Auction / Month {selectedRecord.monthNumber}</Text>
+                <Text style={st.inspectorTitle}>{t('historyDetail.auctionMonth', { month: selectedRecord.monthNumber })}</Text>
                 <Text style={st.inspectorSub}>
-                  {selectedRecord.sourceLabel} · {selectedRecord.status === 'awaiting_auction' ? 'Estimated Projection' : 'Settled Installment'}
+                  {t(`historyDetail.source.${sourceLabelKey(selectedRecord.sourceLabel)}`)} · {selectedRecord.status === 'awaiting_auction' ? t('historyDetail.estimatedProjection') : t('historyDetail.settledInstallment')}
                 </Text>
               </View>
             </View>
 
             <View style={[st.inspectorStatusPill, { backgroundColor: `${selectedStatusColor}18` }]}>
               <Text style={[st.inspectorStatusText, { color: selectedStatusColor }]}>
-                {getStatusLabel(selectedRecord.status).toUpperCase()}
+                {t(`historyDetail.status.${selectedRecord.status}`, { defaultValue: getStatusLabel(selectedRecord.status) })}
               </Text>
             </View>
           </View>
 
           {selectedRecord.isMemberWinner && (
             <View style={st.inspectorWinnerBanner}>
-              <Text style={st.inspectorWinnerBannerText}>
-                🏆 You won this auction · Prize {selectedRecord.winnerPrizeAmount ? formatPaise(selectedRecord.winnerPrizeAmount) : ''}
-              </Text>
+              <MaterialCommunityIcons name="trophy-outline" size={18} color={WINNER_HIGHLIGHT.badgeText} />
+              <Text style={st.inspectorWinnerBannerText}>{t('historyDetail.wonPrize', { amount: selectedRecord.winnerPrizeAmount ? formatPaise(selectedRecord.winnerPrizeAmount) : '' })}</Text>
             </View>
           )}
 
           <View style={st.inspectorStatsGrid}>
             <View style={st.inspectorStatBox}>
               <Text style={st.inspectorStatLabel}>
-                {selectedRecord.dueAmount != null ? 'NET DUE' : 'EST. INSTALLMENT'}
+                {selectedRecord.dueAmount != null ? t('historyDetail.netDue') : t('historyDetail.estimatedInstallment')}
               </Text>
               <Text style={st.inspectorStatVal}>
                 {selectedRecord.dueAmount != null
@@ -456,13 +461,13 @@ function MonthBarChart({ detail }: { detail: GroupHistoryDetail }) {
               </Text>
             </View>
             <View style={st.inspectorStatBox}>
-              <Text style={st.inspectorStatLabel}>TOTAL PAID</Text>
+              <Text style={st.inspectorStatLabel}>{t('common.totalPaid')}</Text>
               <Text style={[st.inspectorStatVal, { color: CHART_COLORS.paid }]}>
                 {formatPaise(selectedRecord.paidAmount)}
               </Text>
             </View>
             <View style={st.inspectorStatBox}>
-              <Text style={st.inspectorStatLabel}>BALANCE</Text>
+              <Text style={st.inspectorStatLabel}>{t('common.balance')}</Text>
               <Text style={[st.inspectorStatVal, { color: selectedBalance > 0 ? CHART_COLORS.pending : '#64748B' }]}>
                 {selectedRecord.dueAmount != null ? formatPaise(selectedBalance) : '—'}
               </Text>
@@ -470,12 +475,10 @@ function MonthBarChart({ detail }: { detail: GroupHistoryDetail }) {
           </View>
 
           {selectedRecord.paidAt ? (
-            <Text style={st.inspectorDateText}>
-              ✓ Paid on {new Date(selectedRecord.paidAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
-            </Text>
+            <Text style={st.inspectorDateText}>{t('historyDetail.paidOn', { date: new Date(selectedRecord.paidAt).toLocaleDateString(localeForLanguage(i18n.resolvedLanguage), { day: 'numeric', month: 'short', year: 'numeric' }) })}</Text>
           ) : selectedRecord.status === 'awaiting_auction' ? (
             <Text style={st.inspectorAwaitingHint}>
-              ⏱️ Payable amount will be settled after auction #{selectedRecord.monthNumber} bidding completes.
+              {t('historyDetail.payableAfterBidding', { month: selectedRecord.monthNumber })}
             </Text>
           ) : null}
         </View>
@@ -485,6 +488,7 @@ function MonthBarChart({ detail }: { detail: GroupHistoryDetail }) {
 }
 
 export default function GroupHistoryDetailScreen() {
+  const { t, i18n } = useTranslation();
   const router = useRouter();
   const handleBack = useParentBack('/(tabs)/wallet');
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -525,7 +529,7 @@ export default function GroupHistoryDetailScreen() {
         dialogTitle: `${data.summary.groupName} — Payment History`,
       });
     } catch {
-      Alert.alert('Export failed', 'Could not export payment history file. Please try again.');
+      Alert.alert(t('historyDetail.exportFailed'), t('historyDetail.exportFailedHelp'));
     }
   };
 
@@ -543,7 +547,7 @@ export default function GroupHistoryDetailScreen() {
   return (
     <SafeAreaView style={st.safe} edges={['top']}>
       <View style={st.appBar}>
-        <TouchableOpacity onPress={handleBack} style={st.backBtn} accessibilityRole="button" accessibilityLabel="Back to wallet">
+        <TouchableOpacity onPress={handleBack} style={st.backBtn} accessibilityRole="button" accessibilityLabel={t('common.backToHistory')}>
           <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.primary}>
             <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
           </Svg>
@@ -566,34 +570,34 @@ export default function GroupHistoryDetailScreen() {
             <View style={{ flex: 1 }}>
               <Text style={st.summaryName}>{summary.groupName}</Text>
               <Text style={st.summaryMeta}>
-                {isUnaccounted ? 'Cash Only Group' : 'Accounted Group'}
-                {' · '}{summary.isCompleted ? 'Completed' : 'Active'}
+                {isUnaccounted ? t('historyDetail.cashOnlyGroup') : t('historyDetail.accountedGroup')}
+                {' · '}{summary.isCompleted ? t('common.completed') : t('common.active')}
               </Text>
             </View>
             <View style={[st.statusBadge, { backgroundColor: summary.isCompleted ? '#D1FAE5' : `${Colors.primary}15` }]}>
               <Text style={[st.statusBadgeText, { color: summary.isCompleted ? '#10B981' : Colors.primary }]}>
-                {summary.isCompleted ? 'COMPLETED' : 'ONGOING'}
+                {summary.isCompleted ? t('common.completed') : t('common.ongoing')}
               </Text>
             </View>
           </View>
 
           <View style={st.statsGrid}>
             <View style={st.statBox}>
-              <Text style={st.statLabel}>TOTAL PAID</Text>
+              <Text style={st.statLabel}>{t('common.totalPaid')}</Text>
               <Text style={st.statVal}>{formatPaise(summary.totalPaid)}</Text>
             </View>
             <View style={st.statBox}>
-              <Text style={st.statLabel}>OUTSTANDING</Text>
+              <Text style={st.statLabel}>{t('common.outstanding')}</Text>
               <Text style={[st.statVal, { color: summary.totalOutstanding > 0 ? '#EF4444' : '#10B981' }]}>
                 {formatPaise(summary.totalOutstanding)}
               </Text>
             </View>
             <View style={st.statBox}>
-              <Text style={st.statLabel}>MONTHS PAID</Text>
+              <Text style={st.statLabel}>{t('historyDetail.monthsPaidLabel')}</Text>
               <Text style={st.statVal}>{summary.monthsPaid}/{summary.durationMonths}</Text>
             </View>
             <View style={st.statBox}>
-              <Text style={st.statLabel}>CHIT VALUE</Text>
+              <Text style={st.statLabel}>{t('chitDetail.chitValue')}</Text>
               <Text style={st.statVal}>{formatPaise(summary.totalValue)}</Text>
             </View>
           </View>
@@ -601,13 +605,13 @@ export default function GroupHistoryDetailScreen() {
           <View style={st.progressTrack}>
             <View style={[st.progressFill, { width: `${summary.progressPct}%` as any }]} />
           </View>
-          <Text style={st.progressCaption}>{summary.progressPct}% of tenure completed</Text>
+          <Text style={st.progressCaption}>{t('historyDetail.tenureCompleted', { percent: summary.progressPct })}</Text>
         </View>
 
         <DonutChart detail={data} />
         <MonthBarChart detail={data} />
 
-        <Text style={st.sectionTitle}>Month-wise Payment Details</Text>
+        <Text style={st.sectionTitle}>{t('historyDetail.monthPaymentDetails')}</Text>
         {data.months.map((m) => {
           const statusColor = getStatusColor(m.status);
           return (
@@ -629,19 +633,19 @@ export default function GroupHistoryDetailScreen() {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[st.monthTitle, m.isMemberWinner && { color: WINNER_HIGHLIGHT.text }]}>
-                    Auction / Month {m.monthNumber}
+                    {t('historyDetail.auctionMonth', { month: m.monthNumber })}
                   </Text>
                   <Text style={st.monthSub}>{m.sourceLabel}</Text>
                 </View>
                 <View style={{ alignItems: 'flex-end', gap: 6 }}>
                   {m.isMemberWinner && (
                     <View style={st.winnerPill}>
-                      <Text style={st.winnerPillText}>WINNER</Text>
+                      <Text style={st.winnerPillText}>{t('common.winner')}</Text>
                     </View>
                   )}
                   <View style={[st.monthStatusPill, { backgroundColor: `${statusColor}18` }]}>
                     <Text style={[st.monthStatusText, { color: statusColor }]}>
-                      {getStatusLabel(m.status).toUpperCase()}
+                      {t(`historyDetail.status.${m.status}`, { defaultValue: getStatusLabel(m.status) })}
                     </Text>
                   </View>
                 </View>
@@ -649,19 +653,19 @@ export default function GroupHistoryDetailScreen() {
 
               <View style={st.monthGrid}>
                 <View style={st.monthCell}>
-                  <Text style={st.monthCellLabel}>DUE</Text>
+                  <Text style={st.monthCellLabel}>{t('common.due')}</Text>
                   <Text style={st.monthCellVal}>
                     {m.dueAmount != null ? formatPaise(m.dueAmount) : '—'}
                   </Text>
                 </View>
                 <View style={st.monthCell}>
-                  <Text style={st.monthCellLabel}>PAID</Text>
+                  <Text style={st.monthCellLabel}>{t('common.paid')}</Text>
                   <Text style={[st.monthCellVal, { color: Colors.primary }]}>
                     {formatPaise(m.paidAmount)}
                   </Text>
                 </View>
                 <View style={st.monthCell}>
-                  <Text style={st.monthCellLabel}>BALANCE</Text>
+                  <Text style={st.monthCellLabel}>{t('common.balance')}</Text>
                   <Text style={st.monthCellVal}>
                     {m.dueAmount != null
                       ? formatPaise(Math.max(0, m.dueAmount - m.paidAmount))
@@ -669,10 +673,10 @@ export default function GroupHistoryDetailScreen() {
                   </Text>
                 </View>
                 <View style={st.monthCell}>
-                  <Text style={st.monthCellLabel}>DATE</Text>
+                  <Text style={st.monthCellLabel}>{t('common.date')}</Text>
                   <Text style={st.monthCellVal}>
                     {m.paidAt
-                      ? new Date(m.paidAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+                      ? new Date(m.paidAt).toLocaleDateString(localeForLanguage(i18n.resolvedLanguage), { day: 'numeric', month: 'short', year: 'numeric' })
                       : '—'}
                   </Text>
                 </View>
@@ -680,17 +684,17 @@ export default function GroupHistoryDetailScreen() {
 
               {m.status === 'awaiting_auction' && (
                 <Text style={st.monthNote}>
-                  Payable amount will appear after auction #{m.monthNumber} is settled.
+                  {t('historyDetail.payableAfterSettlement', { month: m.monthNumber })}
                 </Text>
               )}
               {isUnaccounted && m.paidAmount > 0 && (
                 <Text style={st.monthNote}>
-                  Recorded by admin via cash collection.
+                  {t('historyDetail.recordedByAdmin')}
                 </Text>
               )}
               {m.isMemberWinner && m.winnerPrizeAmount != null && m.winnerPrizeAmount > 0 && (
                 <Text style={st.winnerNote}>
-                  Prize received · {formatPaise(m.winnerPrizeAmount)}
+                  {t('historyDetail.prizeReceived', { amount: formatPaise(m.winnerPrizeAmount) })}
                 </Text>
               )}
             </View>
@@ -701,7 +705,7 @@ export default function GroupHistoryDetailScreen() {
           <Svg width={18} height={18} viewBox="0 0 24 24" fill="#FFFFFF">
             <Path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
           </Svg>
-          <Text style={st.exportFullBtnText}>Export Group History</Text>
+          <Text style={st.exportFullBtnText}>{t('historyDetail.exportHistory')}</Text>
         </TouchableOpacity>
 
         <View style={{ height: 100 }} />
@@ -1011,6 +1015,9 @@ const st = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 6,
     marginBottom: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
   inspectorWinnerBannerText: {
     fontFamily: 'Inter_600SemiBold',
@@ -1113,3 +1120,9 @@ const st = StyleSheet.create({
   },
   exportFullBtnText: { fontFamily: 'Inter_700Bold', fontSize: 14, color: '#FFFFFF' },
 });
+function sourceLabelKey(label: string): 'notRecorded' | 'cashAdmin' | 'online' | 'schedule' {
+  if (label === 'Cash recorded by admin') return 'cashAdmin';
+  if (label === 'Online / logged payment') return 'online';
+  if (label === 'Payment schedule') return 'schedule';
+  return 'notRecorded';
+}

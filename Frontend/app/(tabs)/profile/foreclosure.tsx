@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, TextInput, Alert, ActivityIndicator } from 'react-native';
+import { View, ScrollView, TouchableOpacity, StyleSheet, TextInput, Alert, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LocalizedText as Text } from '../../../components/LocalizedText';
 import { useRouter } from 'expo-router';
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
@@ -9,8 +10,10 @@ import { apiPostAuthed } from '../../../lib/api';
 import { useMemberSession } from '../../../lib/MemberSessionContext';
 import { formatPaise, useActiveChits } from '../../../lib/hooks/useDashboard';
 import { useParentBack } from '../../../lib/hooks/useParentBack';
+import { useTranslation } from 'react-i18next';
 
 export default function ForeclosureScreen() {
+  const { t } = useTranslation();
   const router = useRouter();
   const handleBack = useParentBack('/(tabs)/profile');
   const { memberId } = useMemberSession();
@@ -30,23 +33,23 @@ export default function ForeclosureScreen() {
   const handleSubmit = () => {
     if (!selectedMembershipId) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('No Active Chit', 'Select an active chit group before submitting a request.');
+      Alert.alert(t('foreclosure.noActive'), t('foreclosure.selectBeforeSubmit'));
       return;
     }
     if (reason.trim().length < 10) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Reason Required', 'Please provide at least 10 characters explaining your early-exit request.');
+      Alert.alert(t('foreclosure.reasonRequired'), t('foreclosure.reasonRequiredHelp'));
       return;
     }
 
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
     Alert.alert(
-      'Submit Foreclosure Request?',
-      'You are about to request an early exit. This will be reviewed by the admin and may incur processing fees.',
+      t('foreclosure.confirmTitle'),
+      t('foreclosure.confirmMessage'),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('common.cancel'), style: 'cancel' },
         { 
-          text: 'Submit', 
+          text: t('common.submit'),
           style: 'destructive',
           onPress: async () => {
             setSubmitting(true);
@@ -57,15 +60,15 @@ export default function ForeclosureScreen() {
               );
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               Alert.alert(
-                result.alreadyRequested ? 'Already Submitted' : 'Request Submitted',
+                result.alreadyRequested ? t('foreclosure.alreadySubmitted') : t('profile.requestSubmitted'),
                 result.alreadyRequested
-                  ? 'A foreclosure request for this chit group is already pending review.'
-                  : 'Your request was recorded and will be reviewed by the admin.',
-                [{ text: 'OK', onPress: handleBack }],
+                  ? t('foreclosure.pendingReview')
+                  : t('foreclosure.recorded'),
+                [{ text: t('common.ok'), onPress: handleBack }],
               );
             } catch (error: any) {
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-              Alert.alert('Submission Failed', error?.message || 'Could not submit the request. Please try again.');
+              Alert.alert(t('foreclosure.submissionFailed'), error?.message || t('foreclosure.submissionFailedHelp'));
             } finally {
               setSubmitting(false);
             }
@@ -79,12 +82,12 @@ export default function ForeclosureScreen() {
     <SafeAreaView style={s.safe} edges={['top']}>
       {/* App Bar */}
       <View style={s.appBar}>
-        <TouchableOpacity style={s.backBtn} onPress={handleBack} accessibilityRole="button" accessibilityLabel="Back to profile">
+        <TouchableOpacity style={s.backBtn} onPress={handleBack} accessibilityRole="button" accessibilityLabel={t('common.backToProfile')}>
           <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.primary}>
             <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
           </Svg>
         </TouchableOpacity>
-        <Text style={s.appBarTitle}>Exit & Foreclosure</Text>
+        <Text style={s.appBarTitle}>{t('foreclosure.title')}</Text>
         <View style={{ width: 40 }} />
       </View>
 
@@ -97,20 +100,20 @@ export default function ForeclosureScreen() {
             </Svg>
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={s.warningTitle}>High Impact Action</Text>
-            <Text style={s.warningSub}>Premature closure of chits may result in the forfeiture of dividends and a deduction of a 2% processing fee.</Text>
+            <Text style={s.warningTitle}>{t('foreclosure.highImpact')}</Text>
+            <Text style={s.warningSub}>{t('foreclosure.highImpactHelp')}</Text>
           </View>
         </View>
 
         {/* Eligible memberships */}
         <View style={s.card}>
-          <Text style={s.cardLabel}>SELECT CHIT GROUP</Text>
+          <Text style={s.cardLabel}>{t('foreclosure.selectGroup')}</Text>
           {loadingChits ? (
             <ActivityIndicator color={Colors.secondary} style={s.loader} />
           ) : chitsError ? (
-            <Text style={s.errorText}>Could not load your active chit groups.</Text>
+            <Text style={s.errorText}>{t('foreclosure.loadFailed')}</Text>
           ) : activeChits.length === 0 ? (
-            <Text style={s.cardSub}>You do not have an active chit eligible for foreclosure.</Text>
+            <Text style={s.cardSub}>{t('foreclosure.noEligible')}</Text>
           ) : (
             <>
               <View style={s.chitOptions}>
@@ -128,7 +131,7 @@ export default function ForeclosureScreen() {
                       <View style={s.chitText}>
                         <Text style={s.chitName}>{chit.chit_group.name}</Text>
                         <Text style={s.chitMeta}>
-                          Month {chit.current_month} of {chit.chit_group.duration_months}
+                          {t('common.monthOf', { current: chit.current_month, total: chit.chit_group.duration_months })}
                         </Text>
                       </View>
                     </TouchableOpacity>
@@ -138,12 +141,12 @@ export default function ForeclosureScreen() {
 
               {selectedChit && (
                 <>
-                  <Text style={s.cardTitle}>Eligible with Penalty</Text>
+                  <Text style={s.cardTitle}>{t('foreclosure.eligiblePenalty')}</Text>
                   <Text style={s.cardSub}>
-                    You have completed {Math.max(0, selectedChit.current_month - 1)} of {selectedChit.chit_group.duration_months} months in this chit.
+                    {t('foreclosure.completedMonths', { completed: Math.max(0, selectedChit.current_month - 1), total: selectedChit.chit_group.duration_months })}
                   </Text>
                   <View style={s.feeBox}>
-                    <Text style={s.feeLabel}>Estimated Processing Fee (2%)</Text>
+                    <Text style={s.feeLabel}>{t('foreclosure.estimatedFee')}</Text>
                     <Text style={s.feeVal}>~{formatPaise(selectedChit.chit_group.value * 0.02)}</Text>
                   </View>
                 </>
@@ -154,10 +157,10 @@ export default function ForeclosureScreen() {
 
         {/* Request Form */}
         <View style={s.form}>
-          <Text style={s.formLabel}>Reason for early exit</Text>
+          <Text style={s.formLabel}>{t('foreclosure.reason')}</Text>
           <TextInput
             style={s.input}
-            placeholder="Please explain why you need to exit the chit early..."
+            placeholder={t('foreclosure.reasonPlaceholder')}
             placeholderTextColor="#94A3B8"
             multiline
             numberOfLines={4}
@@ -165,7 +168,7 @@ export default function ForeclosureScreen() {
             onChangeText={setReason}
             textAlignVertical="top"
           />
-          <Text style={s.formHint}>Providing a valid reason helps expedite the review process.</Text>
+          <Text style={s.formHint}>{t('foreclosure.reasonHint')}</Text>
         </View>
 
         <View style={{ height: 100 }} />
@@ -179,7 +182,7 @@ export default function ForeclosureScreen() {
           onPress={handleSubmit}
           disabled={submitting || loadingChits || !selectedMembershipId}
         >
-          {submitting ? <ActivityIndicator color="#FFFFFF" /> : <Text style={s.submitTxt}>SUBMIT REQUEST</Text>}
+          {submitting ? <ActivityIndicator color="#FFFFFF" /> : <Text style={s.submitTxt}>{t('foreclosure.submitRequest')}</Text>}
         </TouchableOpacity>
       </View>
     </SafeAreaView>

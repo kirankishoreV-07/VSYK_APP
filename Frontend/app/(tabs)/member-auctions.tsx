@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, TextInput,
+  View, ScrollView, TouchableOpacity, TextInput,
   StyleSheet, Alert, Animated, RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LocalizedText as Text } from '../../components/LocalizedText';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
@@ -11,6 +12,9 @@ import { supabase } from '../../lib/supabase';
 import { Colors, Shadows } from '../../lib/constants';
 import { formatPaise } from '../../lib/hooks/useDashboard';
 import { useMemberSession } from '../../lib/MemberSessionContext';
+import { useTranslation } from 'react-i18next';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { localeForLanguage } from '../../lib/i18n';
 
 // ─── Types ───────────────────────────────────────────────────
 type BidRow = {
@@ -90,6 +94,7 @@ function useAuctionsList(memberId: string | null) {
 
 // ─── Mutations ────────────────────────────────────────────────
 function useJoinAuction() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async ({ auctionId, customerId }: { auctionId: string; customerId: string }) => {
@@ -98,16 +103,17 @@ function useJoinAuction() {
       const { error } = await supabase.from('auction_participants').insert({ auction_id: auctionId, customer_id: customerId });
       if (error) {
         if (error.message?.includes('not part of this chit group'))
-          throw new Error('You are not enrolled in this chit group. Contact the admin.');
+          throw new Error(t('auctions.notEnrolled'));
         throw new Error(error.message);
       }
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['auctions-list'] }),
-    onError: (e: Error) => Alert.alert('Cannot Join', e.message),
+    onError: (e: Error) => Alert.alert(t('auctions.cannotJoin'), e.message),
   });
 }
 
 function usePlaceBid() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async ({ auctionId, amount, customerId, bidderName }: { auctionId: string; amount: number; customerId: string; bidderName?: string }) => {
@@ -122,11 +128,12 @@ function usePlaceBid() {
       if (error) throw new Error(error.message);
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['auctions-list'] }),
-    onError: (e: Error) => Alert.alert('Bid Failed', e.message),
+    onError: (e: Error) => Alert.alert(t('auctions.bidFailed'), e.message),
   });
 }
 
 function useRetractBid() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async ({ bidId, auctionId }: { bidId: string; auctionId: string }) => {
@@ -142,7 +149,7 @@ function useRetractBid() {
 
       // Verify the update actually applied (RLS could silently block if policy missing)
       if (!data) {
-        throw new Error('Retract failed — bid not found or permission denied. Make sure migration 027 has been run in Supabase.');
+        throw new Error(t('auctions.retractPermissionError'));
       }
 
       // auctions.current_bid is recalculated atomically by the DB trigger
@@ -150,7 +157,7 @@ function useRetractBid() {
       // round-trips raced concurrent bids/retracts and could leave a stale value.
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['auctions-list'] }),
-    onError: (e: Error) => Alert.alert('Retract Failed', e.message),
+    onError: (e: Error) => Alert.alert(t('auctions.retractFailed'), e.message),
   });
 }
 
@@ -175,6 +182,7 @@ function LiveDot() {
 
 // ─── Countdown ────────────────────────────────────────────────
 function Countdown({ targetAt }: { targetAt: string }) {
+  const { t: translate } = useTranslation();
   const calc = () => {
     const diff = new Date(targetAt).getTime() - Date.now();
     if (diff <= 0) return { days: 0, hours: 0, mins: 0, secs: 0 };
@@ -190,7 +198,7 @@ function Countdown({ targetAt }: { targetAt: string }) {
   const pad = (n: number) => String(n).padStart(2, '0');
   return (
     <View style={s.countdownRow}>
-      {t.days > 0 && <><Text style={s.countdownNum}>{pad(t.days)}</Text><Text style={s.countdownColon}>d </Text></>}
+      {t.days > 0 && <><Text style={s.countdownNum}>{pad(t.days)}</Text><Text style={s.countdownColon}>{translate('common.dayShort')} </Text></>}
       <Text style={s.countdownNum}>{pad(t.hours)}</Text><Text style={s.countdownColon}>:</Text>
       <Text style={s.countdownNum}>{pad(t.mins)}</Text><Text style={s.countdownColon}>:</Text>
       <Text style={s.countdownNum}>{pad(t.secs)}</Text>
@@ -200,6 +208,7 @@ function Countdown({ targetAt }: { targetAt: string }) {
 
 // ─── Auction Card ─────────────────────────────────────────────
 function AuctionCard({ auction }: { auction: AuctionDetail }) {
+  const { t, i18n } = useTranslation();
   const { memberId, memberProfile } = useMemberSession();
   const { mutate: placeBid, isPending: bidding } = usePlaceBid();
   const { mutate: joinAuction, isPending: joining } = useJoinAuction();
@@ -236,25 +245,25 @@ function AuctionCard({ auction }: { auction: AuctionDetail }) {
   const currentWinnerPrize = Math.max(0, groupValue - currentHighest);
 
   const handleJoin = () => {
-    if (!memberId) { Alert.alert('Login Required', 'Please log in first.'); return; }
+    if (!memberId) { Alert.alert(t('errors.loginRequired'), t('errors.loginFirst')); return; }
     joinAuction({ auctionId: auction.id, customerId: memberId });
   };
 
   const handleBid = () => {
-    if (!memberId) { Alert.alert('Login Required', 'Please log in to bid.'); return; }
-    if (!isLive || isExpired) { Alert.alert('Auction Closed', 'This auction is no longer accepting bids.'); return; }
-    if (!auction.is_joined) { Alert.alert('Not Joined', 'Join the auction first.'); return; }
+    if (!memberId) { Alert.alert(t('errors.loginRequired'), t('auctions.loginToBid')); return; }
+    if (!isLive || isExpired) { Alert.alert(t('auctions.closed'), t('auctions.noLongerAccepting')); return; }
+    if (!auction.is_joined) { Alert.alert(t('auctions.notJoined'), t('auctions.joinFirst')); return; }
 
     const amountPaise = Math.round(Number(bidAmount) * 100);
-    if (Number.isNaN(amountPaise) || amountPaise <= 0) { Alert.alert('Invalid Amount', 'Enter a valid discount amount in rupees.'); return; }
-    if (amountPaise < minBid) { Alert.alert('Too Low', `Minimum discount is ${formatPaise(minBid)}.`); return; }
-    if (amountPaise > maxBid) { Alert.alert('Too High', `Maximum discount is ${formatPaise(maxBid)}.`); return; }
+    if (Number.isNaN(amountPaise) || amountPaise <= 0) { Alert.alert(t('errors.invalidAmount'), t('auctions.enterValidDiscount')); return; }
+    if (amountPaise < minBid) { Alert.alert(t('auctions.tooLow'), t('auctions.minimumDiscountMessage', { amount: formatPaise(minBid) })); return; }
+    if (amountPaise > maxBid) { Alert.alert(t('auctions.tooHigh'), t('auctions.maximumDiscountMessage', { amount: formatPaise(maxBid) })); return; }
 
     // Must beat the GLOBAL highest bid — not the member's own previous bid
     if (currentHighest > 0 && amountPaise <= currentHighest) {
       Alert.alert(
-        'Must Beat Current Leader',
-        `The current highest bid is ${formatPaise(currentHighest)}. Your bid must be above that to take the lead.`
+        t('auctions.mustBeatLeader'),
+        t('auctions.mustBeatLeaderMessage', { amount: formatPaise(currentHighest) })
       );
       return;
     }
@@ -262,12 +271,12 @@ function AuctionCard({ auction }: { auction: AuctionDetail }) {
     const prizeIfWin = Math.max(0, groupValue - amountPaise);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     Alert.alert(
-      'Confirm Your Bid',
-      `Discount offered: ${formatPaise(amountPaise)}\nIf you win, you receive: ${formatPaise(prizeIfWin)}\n\nYou can retract within 2 minutes of placing.`,
+      t('auctions.confirmBid'),
+      t('auctions.confirmBidMessage', { discount: formatPaise(amountPaise), prize: formatPaise(prizeIfWin) }),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('common.cancel'), style: 'cancel' },
         {
-          text: 'Place Bid',
+          text: t('auctions.placeBid'),
           onPress: () => {
             placeBid({ auctionId: auction.id, amount: amountPaise, customerId: memberId, bidderName: memberProfile?.full_name });
             setBidAmount('');
@@ -280,12 +289,12 @@ function AuctionCard({ auction }: { auction: AuctionDetail }) {
   const handleRetract = () => {
     if (!myLatestBid || !canRetract) return;
     Alert.alert(
-      'Retract Bid?',
-      `This will remove your bid of ${formatPaise(myLatestBid.bid_amount)}.\n\nYou have ${retractSecsLeft}s left in the retract window.\n\nAfter retracting you can place a new bid.`,
+      t('auctions.retractBidTitle'),
+      t('auctions.retractBidMessage', { amount: formatPaise(myLatestBid.bid_amount), seconds: retractSecsLeft }),
       [
-        { text: 'Keep Bid', style: 'cancel' },
+        { text: t('auctions.keepBid'), style: 'cancel' },
         {
-          text: 'Retract',
+          text: t('auctions.retract'),
           style: 'destructive',
           onPress: () => retractBid({ bidId: myLatestBid.id, auctionId: auction.id }),
         },
@@ -299,29 +308,30 @@ function AuctionCard({ auction }: { auction: AuctionDetail }) {
       <View style={s.auctionCardHeader}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           {isLive && <LiveDot />}
-          <Text style={[s.liveLabel, { color: '#EF4444' }]}>LIVE AUCTION</Text>
+          <Text style={[s.liveLabel, { color: '#EF4444' }]}>{t('auctions.liveAuction')}</Text>
         </View>
         {amIWinning && (
           <View style={s.winningBadge}>
-            <Text style={s.winningBadgeText}>🏆 YOU'RE WINNING</Text>
+            <MaterialCommunityIcons name="trophy-outline" size={13} color="#16A34A" />
+            <Text style={s.winningBadgeText}>{t('auctions.youAreWinning')}</Text>
           </View>
         )}
       </View>
 
-      <Text style={s.auctionTitle}>{group?.name ?? 'Auction'}</Text>
+      <Text style={s.auctionTitle}>{group?.name ?? t('common.auction')}</Text>
       <Text style={s.auctionSub}>
-        Chit Value: {formatPaise(groupValue)} · Month {auction.auction_number ?? '—'}/{group?.duration_months ?? '—'}
+        {t('auctions.chitValueMonth', { value: formatPaise(groupValue), month: auction.auction_number ?? '—', total: group?.duration_months ?? '—' })}
       </Text>
 
       {/* Stats card */}
       <View style={s.mainCard}>
         <View style={s.bidRow}>
           <View>
-            <Text style={s.bidRowLabel}>CLOSES IN</Text>
+            <Text style={s.bidRowLabel}>{t('auctions.closesIn')}</Text>
             <Countdown targetAt={auction.closes_at ?? auction.scheduled_at} />
           </View>
           <View style={{ alignItems: 'flex-end' }}>
-            <Text style={s.bidRowLabel}>HIGHEST DISCOUNT</Text>
+            <Text style={s.bidRowLabel}>{t('auctions.highestDiscount')}</Text>
             <Text style={s.currentBidAmt}>{currentHighest > 0 ? formatPaise(currentHighest) : '—'}</Text>
           </View>
         </View>
@@ -333,15 +343,15 @@ function AuctionCard({ auction }: { auction: AuctionDetail }) {
 
         <View style={s.statsGrid}>
           <View>
-            <Text style={s.statLabel}>MIN DISCOUNT</Text>
+            <Text style={s.statLabel}>{t('auctions.minDiscount')}</Text>
             <Text style={s.statVal}>{formatPaise(minBid)}</Text>
           </View>
           <View style={{ alignItems: 'center' }}>
-            <Text style={s.statLabel}>WINNER GETS</Text>
+            <Text style={s.statLabel}>{t('auctions.winnerGets')}</Text>
             <Text style={[s.statVal, { color: Colors.primary }]}>{formatPaise(currentWinnerPrize)}</Text>
           </View>
           <View style={{ alignItems: 'flex-end' }}>
-            <Text style={s.statLabel}>MAX DISCOUNT</Text>
+            <Text style={s.statLabel}>{t('auctions.maxDiscount')}</Text>
             <Text style={s.statVal}>{formatPaise(maxBid)}</Text>
           </View>
         </View>
@@ -351,13 +361,13 @@ function AuctionCard({ auction }: { auction: AuctionDetail }) {
       {myBestBid > 0 && (
         <View style={[s.myBidBox, amIWinning ? s.myBidBoxWinning : s.myBidBoxLosing]}>
           <View style={{ flex: 1 }}>
-            <Text style={s.myBidLabel}>YOUR CURRENT BID</Text>
+            <Text style={s.myBidLabel}>{t('auctions.yourCurrentBid')}</Text>
             <Text style={[s.myBidAmt, { color: amIWinning ? '#10B981' : '#F59E0B' }]}>{formatPaise(myBestBid)}</Text>
-            <Text style={s.myBidSub}>You'd receive {formatPaise(Math.max(0, groupValue - myBestBid))} if you win</Text>
+            <Text style={s.myBidSub}>{t('auctions.youWouldReceive', { amount: formatPaise(Math.max(0, groupValue - myBestBid)) })}</Text>
           </View>
           {amIWinning
-            ? <Text style={s.positionTag}>LEADING 🏆</Text>
-            : <Text style={[s.positionTag, { color: '#F59E0B' }]}>OUTBID — BID HIGHER</Text>
+            ? <View style={s.positionRow}><MaterialCommunityIcons name="trophy-outline" size={13} color="#10B981" /><Text style={s.positionTag}>{t('auctions.leading')}</Text></View>
+            : <Text style={[s.positionTag, { color: '#F59E0B' }]}>{t('auctions.outbid')}</Text>
           }
         </View>
       )}
@@ -365,26 +375,26 @@ function AuctionCard({ auction }: { auction: AuctionDetail }) {
       {/* Join / Bid section */}
       {!auction.is_joined ? (
         <TouchableOpacity style={[s.joinBtn]} onPress={handleJoin} disabled={joining} activeOpacity={0.85}>
-          <Text style={s.joinBtnText}>{joining ? 'Joining…' : 'Join Auction to Bid'}</Text>
+          <Text style={s.joinBtnText}>{joining ? t('common.joining') : t('auctions.joinToBid')}</Text>
         </TouchableOpacity>
       ) : isExpired ? (
         <View style={[s.joinBtn, { backgroundColor: '#94A3B8' }]}>
-          <Text style={s.joinBtnText}>Auction Closed</Text>
+          <Text style={s.joinBtnText}>{t('auctions.closed')}</Text>
         </View>
       ) : (
         <View style={s.bidInputCard}>
           <Text style={s.bidInputLabel}>
             {currentHighest > 0
-              ? `Enter Discount Amount (₹) — must beat ${formatPaise(currentHighest)}`
-              : 'Enter Discount Amount (₹)'}
+              ? t('auctions.discountMustBeat', { amount: formatPaise(currentHighest) })
+              : t('auctions.discountLabel')}
           </Text>
           <TextInput
             style={s.bidInput}
             keyboardType="decimal-pad"
             inputMode="decimal"
             placeholder={currentHighest > 0
-              ? 'Enter an amount above the current bid'
-              : 'Enter discount amount'}
+              ? t('auctions.aboveCurrentPlaceholder')
+              : t('auctions.discountPlaceholder')}
             placeholderTextColor="#94A3B8"
             value={bidAmount}
             onChangeText={setBidAmount}
@@ -395,10 +405,10 @@ function AuctionCard({ auction }: { auction: AuctionDetail }) {
             disabled={bidding || isExpired}
             activeOpacity={0.85}
           >
-            <Text style={s.placeBidLeft}>{bidding ? 'Placing…' : amIWinning ? 'Raise My Bid' : myBestBid > 0 ? 'Bid Higher' : 'Place Bid'}</Text>
+            <Text style={s.placeBidLeft}>{bidding ? t('auctions.placing') : amIWinning ? t('auctions.raiseMyBid') : myBestBid > 0 ? t('auctions.bidHigher') : t('auctions.placeBid')}</Text>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
               <Text style={s.placeBidRight}>
-                {bidAmount ? `Win ₹${Math.max(0, (groupValue / 100) - Number(bidAmount)).toLocaleString('en-IN')}` : 'Highest Wins'}
+                {bidAmount ? t('auctions.winAmount', { amount: `₹${Math.max(0, (groupValue / 100) - Number(bidAmount)).toLocaleString(localeForLanguage(i18n.resolvedLanguage))}` }) : t('auctions.highestWins')}
               </Text>
               <Svg width={18} height={18} viewBox="0 0 24 24" fill={Colors.primary}>
                 <Path d="M16 6l2.29 2.29-4.88 4.88-4-4L2 16.59 3.41 18l6-6 4 4 6.3-6.29L22 12V6z" />
@@ -416,11 +426,11 @@ function AuctionCard({ auction }: { auction: AuctionDetail }) {
               {canRetract ? (
                 <Text style={s.retractBtnText}>
                   {retracting
-                    ? 'Retracting…'
-                    : `↩  Retract bid of ${formatPaise(myLatestBid.bid_amount)}  ·  ${retractSecsLeft}s left`}
+                    ? t('auctions.retracting')
+                    : t('auctions.retractBidCountdown', { amount: formatPaise(myLatestBid.bid_amount), seconds: retractSecsLeft })}
                 </Text>
               ) : (
-                <Text style={s.retractBtnExpired}>🔒 Retract window closed (2 min elapsed)</Text>
+                <View style={s.positionRow}><MaterialCommunityIcons name="lock-outline" size={14} color="#94A3B8" /><Text style={s.retractBtnExpired}>{t('auctions.retractWindowClosed')}</Text></View>
               )}
             </TouchableOpacity>
           )}
@@ -430,27 +440,31 @@ function AuctionCard({ auction }: { auction: AuctionDetail }) {
       {/* My bid history */}
       <View style={s.feedSection}>
         <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-          <Text style={s.feedTitle}>My Bid History</Text>
-          <Text style={s.feedCount}>{auction.my_bids.length} BID{auction.my_bids.length !== 1 ? 'S' : ''}</Text>
+          <Text style={s.feedTitle}>{t('auctions.myBidHistory')}</Text>
+          <Text style={s.feedCount}>{t('auctions.bidCount', { count: auction.my_bids.length })}</Text>
         </View>
         {auction.my_bids.length === 0 ? (
-          <Text style={s.emptySub}>No bids placed yet.</Text>
+          <Text style={s.emptySub}>{t('auctions.noBids')}</Text>
         ) : (
           auction.my_bids.map((b, i) => (
             <View key={b.id} style={[s.feedRow, b.is_retracted && { opacity: 0.45 }]}>
               <View style={[s.feedAvatar, b.is_retracted && { backgroundColor: '#F1F5F9' }]}>
-                <Text style={s.feedAvatarTxt}>{b.is_retracted ? '↩' : 'ME'}</Text>
+                <MaterialCommunityIcons
+                  name={b.is_retracted ? 'undo-variant' : 'account-outline'}
+                  size={18}
+                  color={b.is_retracted ? '#94A3B8' : Colors.primary}
+                />
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={[s.feedName, b.is_retracted && { textDecorationLine: 'line-through', color: '#94A3B8' }]}>
                   {formatPaise(b.bid_amount)}
                 </Text>
                 <Text style={s.feedTime}>
-                  {new Date(b.placed_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                  {new Date(b.placed_at).toLocaleString(localeForLanguage(i18n.resolvedLanguage), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
                 </Text>
               </View>
               <Text style={[s.feedAmt, { color: b.is_retracted ? '#94A3B8' : Colors.primary }]}>
-                {b.is_retracted ? 'Retracted' : i === 0 ? 'Active' : 'Superseded'}
+                {b.is_retracted ? t('auctions.retracted') : i === 0 ? t('common.active') : t('auctions.superseded')}
               </Text>
             </View>
           ))
@@ -462,6 +476,7 @@ function AuctionCard({ auction }: { auction: AuctionDetail }) {
 
 // ─── Main Screen ──────────────────────────────────────────────
 export default function AuctionsScreen() {
+  const { t } = useTranslation();
   const { memberId, isLoading: sessionLoading } = useMemberSession();
   const { data: auctions, isLoading, isRefetching, refetch } = useAuctionsList(memberId);
   const queryClient = useQueryClient();
@@ -479,10 +494,10 @@ export default function AuctionsScreen() {
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
       <View style={s.appBar}>
-        <Text style={s.appBarTitle}>Live Auctions</Text>
+        <Text style={s.appBarTitle}>{t('auctions.title')}</Text>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <LiveDot />
-          <Text style={s.liveCount}>{auctions?.length ?? 0} Live</Text>
+          <Text style={s.liveCount}>{t('auctions.liveCount', { count: auctions?.length ?? 0 })}</Text>
         </View>
       </View>
 
@@ -493,19 +508,19 @@ export default function AuctionsScreen() {
       >
         {sessionLoading || isLoading ? (
           <View style={{ alignItems: 'center', paddingVertical: 80 }}>
-            <Text style={{ fontSize: 32 }}>⚡</Text>
-            <Text style={s.emptyTitle}>Loading…</Text>
+            <MaterialCommunityIcons name="progress-clock" size={36} color={Colors.primary} />
+            <Text style={s.emptyTitle}>{t('common.loading')}</Text>
           </View>
         ) : !memberId ? (
           <View style={s.emptyContainer}>
-            <Text style={{ fontSize: 40 }}>🔒</Text>
-            <Text style={s.emptyTitle}>Sign in to view auctions</Text>
+            <MaterialCommunityIcons name="lock-outline" size={40} color="#94A3B8" />
+            <Text style={s.emptyTitle}>{t('auctions.signInToView')}</Text>
           </View>
         ) : !auctions || auctions.length === 0 ? (
           <View style={s.emptyContainer}>
-            <Text style={{ fontSize: 40 }}>🔨</Text>
-            <Text style={s.emptyTitle}>No live auctions right now</Text>
-            <Text style={s.emptySub}>The admin will start the next auction soon.</Text>
+            <MaterialCommunityIcons name="gavel" size={40} color="#94A3B8" />
+            <Text style={s.emptyTitle}>{t('auctions.noLive')}</Text>
+            <Text style={s.emptySub}>{t('auctions.noLiveHelp')}</Text>
           </View>
         ) : (
           auctions.map(a => <AuctionCard key={a.id} auction={a} />)
@@ -532,7 +547,7 @@ const s = StyleSheet.create({
   auctionCardWinning: { borderColor: '#10B981', borderWidth: 2 },
   auctionCardHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   liveLabel: { fontFamily: 'Inter_700Bold', fontSize: 11, letterSpacing: 1.5 },
-  winningBadge: { backgroundColor: '#DCFCE7', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20 },
+  winningBadge: { backgroundColor: '#DCFCE7', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20, flexDirection: 'row', alignItems: 'center', gap: 4 },
   winningBadgeText: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#16A34A' },
   auctionTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 24, color: '#0B1C30', letterSpacing: -0.5 },
   auctionSub: { fontFamily: 'Inter_400Regular', fontSize: 13, color: '#64748B' },
@@ -557,6 +572,7 @@ const s = StyleSheet.create({
   myBidAmt: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20 },
   myBidSub: { fontFamily: 'Inter_400Regular', fontSize: 11, color: '#64748B', marginTop: 2 },
   positionTag: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#10B981', textAlign: 'right' },
+  positionRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
 
   joinBtn: { backgroundColor: '#0F766E', borderRadius: 18, height: 56, alignItems: 'center', justifyContent: 'center' },
   joinBtnText: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 16, color: '#FFFFFF' },
@@ -577,7 +593,6 @@ const s = StyleSheet.create({
   feedCount: { fontFamily: 'Inter_700Bold', fontSize: 10, color: Colors.primary, letterSpacing: 0.8 },
   feedRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#F8FAFC', padding: 12, borderRadius: 14, borderWidth: 1, borderColor: '#F1F5F9' },
   feedAvatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#E2E8F0', alignItems: 'center', justifyContent: 'center' },
-  feedAvatarTxt: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 13, color: '#64748B' },
   feedName: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: '#0B1C30' },
   feedTime: { fontFamily: 'Inter_400Regular', fontSize: 11, color: '#94A3B8' },
   feedAmt: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 13 },

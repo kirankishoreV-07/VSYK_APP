@@ -1,23 +1,16 @@
 import React from 'react';
 import {
-  View, Text, Modal, TouchableOpacity, StyleSheet, ScrollView,
+  View, Modal, TouchableOpacity, StyleSheet, ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LocalizedText as Text } from '../LocalizedText';
 import Svg, { Path } from 'react-native-svg';
+import { useTranslation } from 'react-i18next';
+import { localeForLanguage } from '../../lib/i18n';
 // Self-contained format helpers (no external dep to avoid path issues)
 const formatPaiseLocal = (paise: number | null | undefined) => {
   const n = Number(paise || 0);
   return `₹${(n / 100).toLocaleString('en-IN')}`;
-};
-
-const formatDateISTLocal = (dateStr: string | null | undefined) => {
-  if (!dateStr) return '—';
-  try {
-    const d = new Date(dateStr);
-    return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
-  } catch {
-    return '—';
-  }
 };
 
 interface Props {
@@ -38,6 +31,7 @@ const DENOM_LABELS = [
 ];
 
 export function MemberPrizePayoutDetailsModal({ visible, onClose, auction, prizeSettlements, group }: Props) {
+  const { t, i18n } = useTranslation();
   if (!auction) return null;
 
   const relevant = (prizeSettlements || []).filter(
@@ -62,40 +56,36 @@ export function MemberPrizePayoutDetailsModal({ visible, onClose, auction, prize
     });
   }
 
-  const entitledR = (entitled / 100).toLocaleString('en-IN');
-  const receivedR = (received / 100).toLocaleString('en-IN');
-  const remainingR = (remaining / 100).toLocaleString('en-IN');
-
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
       <SafeAreaView style={styles.safe}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={onClose} style={styles.closeBtn} accessibilityRole="button" accessibilityLabel="Close prize payout details">
+          <TouchableOpacity onPress={onClose} style={styles.closeBtn} accessibilityRole="button" accessibilityLabel={t('common.closePrizeDetails')}>
             <Svg width={24} height={24} viewBox="0 0 24 24" fill="#64748B">
               <Path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
             </Svg>
           </TouchableOpacity>
           <View style={{ flex: 1, alignItems: 'center' }}>
-            <Text style={styles.title}>Prize Payout Details</Text>
-            <Text style={styles.subtitle}>Auction #{auction.auction_number}</Text>
+            <Text style={styles.title}>{t('prizeDetails.title')}</Text>
+            <Text style={styles.subtitle}>{t('prizeDetails.auctionNumber', { number: auction.auction_number })}</Text>
           </View>
           <View style={{ width: 40 }} />
         </View>
 
         <ScrollView contentContainerStyle={styles.scroll}>
           <View style={styles.summaryCard}>
-            <View style={styles.row}><Text style={styles.label}>Total Prize</Text><Text style={styles.value}>{formatPaiseLocal(entitled)}</Text></View>
-            <View style={styles.row}><Text style={styles.label}>Received so far</Text><Text style={[styles.value, { color: '#16A34A' }]}>{formatPaiseLocal(received)}</Text></View>
-            <View style={styles.row}><Text style={styles.label}>Still to receive</Text><Text style={[styles.value, { color: remaining > 0 ? '#DC2626' : '#16A34A' }]}>{formatPaiseLocal(remaining)}</Text></View>
+            <View style={styles.row}><Text style={styles.label}>{t('prizeDetails.totalPrize')}</Text><Text style={styles.value}>{formatPaiseLocal(entitled)}</Text></View>
+            <View style={styles.row}><Text style={styles.label}>{t('prizeDetails.received')}</Text><Text style={[styles.value, { color: '#16A34A' }]}>{formatPaiseLocal(received)}</Text></View>
+            <View style={styles.row}><Text style={styles.label}>{t('prizeDetails.remaining')}</Text><Text style={[styles.value, { color: remaining > 0 ? '#DC2626' : '#16A34A' }]}>{formatPaiseLocal(remaining)}</Text></View>
             <View style={[styles.badge, remaining <= 0 ? styles.badgeGreen : styles.badgeAmber]}>
-              <Text style={styles.badgeText}>{remaining <= 0 ? 'FULLY RECEIVED' : 'PARTIALLY RECEIVED'}</Text>
+              <Text style={styles.badgeText}>{remaining <= 0 ? t('prizeDetails.fullyReceived') : t('prizeDetails.partiallyReceived')}</Text>
             </View>
           </View>
 
-          <Text style={styles.section}>Payout History</Text>
+          <Text style={styles.section}>{t('prizeDetails.history')}</Text>
 
           {relevant.length === 0 ? (
-            <Text style={styles.empty}>No payouts recorded yet.</Text>
+            <Text style={styles.empty}>{t('prizeDetails.empty')}</Text>
           ) : (
             relevant.map((s: any, i: number) => {
               const amt = (s.amount || 0) / 100;
@@ -103,7 +93,7 @@ export function MemberPrizePayoutDetailsModal({ visible, onClose, auction, prize
               return (
                 <View key={i} style={styles.card}>
                   <View style={styles.cardHeader}>
-                    <Text style={styles.date}>{formatDateISTLocal(s.recorded_at)}</Text>
+                    <Text style={styles.date}>{new Date(s.recorded_at).toLocaleDateString(localeForLanguage(i18n.resolvedLanguage), { day: 'numeric', month: 'short', year: 'numeric' })}</Text>
                     <Text style={styles.amt}>{formatPaiseLocal(s.amount)}</Text>
                   </View>
                   {hasD && (
@@ -115,7 +105,7 @@ export function MemberPrizePayoutDetailsModal({ visible, onClose, auction, prize
                       })}
                     </View>
                   )}
-                  {s.notes ? <Text style={styles.note}>Note: {s.notes}</Text> : null}
+                  {s.notes ? <Text style={styles.note}>{t('prizeDetails.note', { note: s.notes })}</Text> : null}
                 </View>
               );
             })
@@ -123,7 +113,7 @@ export function MemberPrizePayoutDetailsModal({ visible, onClose, auction, prize
 
           {isUnaccounted && relevant.length > 0 && (
             <>
-              <Text style={styles.section}>Total Cash Received (Denominations)</Text>
+              <Text style={styles.section}>{t('prizeDetails.cashDenominations')}</Text>
               <View style={styles.denomRow}>
                 {DENOM_LABELS.map(d => {
                   const c = totalDenoms[d.key];
@@ -136,7 +126,7 @@ export function MemberPrizePayoutDetailsModal({ visible, onClose, auction, prize
         </ScrollView>
 
         <TouchableOpacity style={styles.doneBtn} onPress={onClose}>
-          <Text style={styles.doneText}>DONE</Text>
+          <Text style={styles.doneText}>{t('common.done')}</Text>
         </TouchableOpacity>
       </SafeAreaView>
     </Modal>

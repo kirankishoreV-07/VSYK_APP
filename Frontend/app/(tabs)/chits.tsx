@@ -1,9 +1,10 @@
 import { useState, useMemo, useEffect } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity,
+  View, ScrollView, TouchableOpacity,
   StyleSheet, TextInput, Platform, Dimensions, ActivityIndicator, RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LocalizedText as Text } from '../../components/LocalizedText';
 import { useRouter } from 'expo-router';
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
@@ -13,17 +14,14 @@ import { useMemberSession } from '../../lib/MemberSessionContext';
 import { useActiveChits, formatPaise, formatShortDate, type ActiveChit } from '../../lib/hooks/useDashboard';
 import { useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../../lib/supabase';
+import { useTranslation } from 'react-i18next';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 
 const { width: SW } = Dimensions.get('window');
 
 type FilterKey = 'all' | 'active' | 'due_soon' | 'completed';
 
-const FILTERS: { key: FilterKey; label: string }[] = [
-  { key: 'all', label: 'All Chits' },
-  { key: 'active', label: 'Active' },
-  { key: 'due_soon', label: 'Due Soon' },
-  { key: 'completed', label: 'Completed' },
-];
+const FILTERS: FilterKey[] = ['all', 'active', 'due_soon', 'completed'];
 
 // ─── Helpers ──────────────────────────────────────────────────
 function isDueSoon(chit: ActiveChit): boolean {
@@ -37,32 +35,33 @@ function isUnaccountedGroup(chit: ActiveChit): boolean {
   return chit.chit_group.accounting_type === 'unaccounted';
 }
 
-function getStatusLabel(chit: ActiveChit): string {
-  if (chit.bid_status === 'completed') return 'Completed';
-  if (chit.bid_status === 'bidding') return 'Bidding';
-  if (isDueSoon(chit)) return 'Due Soon';
-  if (isUnaccountedGroup(chit)) return 'Cash Only';
-  return 'Active';
+function getStatusKey(chit: ActiveChit): 'completed' | 'bidding' | 'dueSoon' | 'cashOnly' | 'active' {
+  if (chit.bid_status === 'completed') return 'completed';
+  if (chit.bid_status === 'bidding') return 'bidding';
+  if (isDueSoon(chit)) return 'dueSoon';
+  if (isUnaccountedGroup(chit)) return 'cashOnly';
+  return 'active';
 }
 
-function getStatusColor(label: string, isUnaccounted: boolean): string {
-  if (label === 'Cash Only' || isUnaccounted) return UNAUTHORED_THEME.accent;
-  if (label === 'Due Soon') return '#F59E0B';
-  if (label === 'Completed') return '#10B981';
-  if (label === 'Bidding') return Colors.secondary;
+function getStatusColor(status: ReturnType<typeof getStatusKey>, isUnaccounted: boolean): string {
+  if (status === 'cashOnly' || isUnaccounted) return UNAUTHORED_THEME.accent;
+  if (status === 'dueSoon') return '#F59E0B';
+  if (status === 'completed') return '#10B981';
+  if (status === 'bidding') return Colors.secondary;
   return Colors.secondary;
 }
 
 // ─── Chit Card ────────────────────────────────────────────────
 function ChitCard({ item }: { item: ActiveChit }) {
+  const { t } = useTranslation();
   const router = useRouter();
   const group = item.chit_group;
   const progress = item.current_month / group.duration_months;
   const pct = Math.round(progress * 100);
   const isUnaccounted = isUnaccountedGroup(item);
-  const statusLabel = getStatusLabel(item);
-  const statusColor = getStatusColor(statusLabel, isUnaccounted);
-  const isDue = statusLabel === 'Due Soon';
+  const status = getStatusKey(item);
+  const statusColor = getStatusColor(status, isUnaccounted);
+  const isDue = status === 'dueSoon';
 
   return (
     <TouchableOpacity
@@ -78,12 +77,13 @@ function ChitCard({ item }: { item: ActiveChit }) {
     >
       {/* Status Badge */}
       <View style={[styles.badge, { backgroundColor: `${statusColor}22` }]}>
-        <Text style={[styles.badgeText, { color: statusColor }]}>{statusLabel}</Text>
+        <Text style={[styles.badgeText, { color: statusColor }]}>{t(`common.${status}`)}</Text>
       </View>
 
       {isUnaccounted && (
         <View style={styles.cashBadge}>
-          <Text style={styles.cashBadgeText}>💵 Cash</Text>
+          <MaterialCommunityIcons name="cash" size={13} color="#FFFFFF" />
+          <Text style={styles.cashBadgeText}>{t('common.cash')}</Text>
         </View>
       )}
 
@@ -96,7 +96,7 @@ function ChitCard({ item }: { item: ActiveChit }) {
       {/* Progress */}
       <View style={styles.progressSection}>
         <View style={styles.progressRow}>
-          <Text style={styles.progressLabel}>Progress</Text>
+          <Text style={styles.progressLabel}>{t('common.progress')}</Text>
           <Text style={styles.progressValue}>
             {formatPaise(group.monthly_installment * item.current_month)}
             <Text style={styles.progressTotal}>/{formatPaise(group.value)}</Text>
@@ -106,17 +106,17 @@ function ChitCard({ item }: { item: ActiveChit }) {
           <View style={[styles.progressFill, { width: `${pct}%` as any, backgroundColor: statusColor }]} />
         </View>
         <View style={styles.progressRow}>
-          <Text style={styles.progressLabel}>Month {item.current_month} of {group.duration_months}</Text>
-          <Text style={[styles.progressLabel, { color: statusColor, fontFamily: 'Inter_700Bold' }]}>{pct}% Complete</Text>
+          <Text style={styles.progressLabel}>{t('common.monthOf', { current: item.current_month, total: group.duration_months })}</Text>
+          <Text style={[styles.progressLabel, { color: statusColor, fontFamily: 'Inter_700Bold' }]}>{t('common.percentComplete', { percent: pct })}</Text>
         </View>
       </View>
 
       {/* Footer */}
       <View style={styles.cardFooter}>
         <View>
-          <Text style={styles.footerLabel}>NEXT INSTALLMENT</Text>
+          <Text style={styles.footerLabel}>{t('chits.nextInstallment')}</Text>
           <Text style={styles.footerAmt}>
-            {item.next_payment ? formatPaise(item.next_payment.amount) : 'Paid up'}
+            {item.next_payment ? formatPaise(item.next_payment.amount) : t('chits.paidUp')}
           </Text>
         </View>
         {/* Hide Pay Now button for unaccounted groups */}
@@ -129,7 +129,7 @@ function ChitCard({ item }: { item: ActiveChit }) {
             }}
             activeOpacity={0.85}
           >
-            <Text style={styles.payNowText}>Pay Now</Text>
+            <Text style={styles.payNowText}>{t('common.payNow')}</Text>
             <Svg width={16} height={16} viewBox="0 0 24 24" fill={Colors.primary}>
               <Path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8-8-8z" />
             </Svg>
@@ -143,7 +143,7 @@ function ChitCard({ item }: { item: ActiveChit }) {
             }}
             activeOpacity={0.8}
           >
-            <Text style={styles.detailText}>Details</Text>
+            <Text style={styles.detailText}>{t('common.details')}</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -173,6 +173,7 @@ function SkeletonCard() {
 
 // ─── Main Screen ─────────────────────────────────────────────
 export default function ChitsScreen() {
+  const { t } = useTranslation();
   const router = useRouter();
   const { memberId } = useMemberSession();
   const queryClient = useQueryClient();
@@ -221,7 +222,7 @@ export default function ChitsScreen() {
     <SafeAreaView style={styles.safeArea} edges={['top']}>
       {/* App Bar */}
       <View style={styles.appBar}>
-        <Text style={styles.appBarTitle}>My Chits</Text>
+        <Text style={styles.appBarTitle}>{t('chits.title')}</Text>
         <TouchableOpacity style={styles.addBtn} onPress={() => {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
           router.push('/(tabs)/join');
@@ -244,7 +245,7 @@ export default function ChitsScreen() {
           </Svg>
           <TextInput
             style={styles.searchInput}
-            placeholder="Search your chit groups..."
+            placeholder={t('chits.searchPlaceholder')}
             placeholderTextColor="#94A3B8"
             value={search}
             onChangeText={setSearch}
@@ -253,15 +254,15 @@ export default function ChitsScreen() {
 
         {/* Filter Chips */}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
-          {FILTERS.map(f => (
+          {FILTERS.map(filterKey => (
             <TouchableOpacity
-              key={f.key}
-              style={[styles.chip, filter === f.key && styles.chipActive]}
-              onPress={() => { Haptics.selectionAsync(); setFilter(f.key); }}
+              key={filterKey}
+              style={[styles.chip, filter === filterKey && styles.chipActive]}
+              onPress={() => { Haptics.selectionAsync(); setFilter(filterKey); }}
               activeOpacity={0.8}
             >
-              <Text style={[styles.chipText, filter === f.key && styles.chipTextActive]}>
-                {f.label}
+              <Text style={[styles.chipText, filter === filterKey && styles.chipTextActive]}>
+                {t(`chits.filters.${filterKey}`)}
               </Text>
             </TouchableOpacity>
           ))}
@@ -275,12 +276,12 @@ export default function ChitsScreen() {
           </>
         ) : filtered.length === 0 ? (
           <View style={styles.emptyContainer}>
-            <Text style={styles.emptyIcon}>📂</Text>
+            <MaterialCommunityIcons name="folder-search-outline" size={40} color="#94A3B8" />
             <Text style={styles.emptyTitle}>
-              {search ? 'No results found' : 'No chits here'}
+              {search ? t('common.noResults') : t('chits.noChits')}
             </Text>
             <Text style={styles.emptySub}>
-              {search ? 'Try a different search term' : 'Join a chit group to get started.'}
+              {search ? t('common.tryDifferentSearch') : t('chits.joinToStart')}
             </Text>
           </View>
         ) : (
@@ -298,10 +299,10 @@ export default function ChitsScreen() {
               <Path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
             </Svg>
           </View>
-          <Text style={styles.newChitTitle}>Start a New Chit</Text>
-          <Text style={styles.newChitSub}>Join a group and start saving today</Text>
+          <Text style={styles.newChitTitle}>{t('chits.startNew')}</Text>
+          <Text style={styles.newChitSub}>{t('chits.startNewHelp')}</Text>
           <View style={styles.newChitBtn}>
-            <Text style={styles.newChitBtnText}>Explore Chits</Text>
+            <Text style={styles.newChitBtnText}>{t('chits.explore')}</Text>
           </View>
         </TouchableOpacity>
 
@@ -369,6 +370,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 100,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
   cashBadgeText: {
     fontFamily: 'Inter_700Bold',

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, RefreshControl } from 'react-native';
+import { View, ScrollView, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LocalizedText as Text } from '../../components/LocalizedText';
 import { useRouter } from 'expo-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import Svg, { Path } from 'react-native-svg';
@@ -10,6 +11,8 @@ import { Colors, Shadows } from '../../lib/constants';
 import { formatPaise } from '../../lib/hooks/useDashboard';
 import { useParentBack } from '../../lib/hooks/useParentBack';
 import { apiPostAuthed } from '../../lib/api';
+import { useTranslation } from 'react-i18next';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 
 type FilterKey = 'short' | 'high_return' | 'all';
 
@@ -22,10 +25,10 @@ type ChitGroup = {
  * states the real fact it's based on so nothing is presented as inferred. */
 function fitLabels(g: ChitGroup, filter: FilterKey): string[] {
   const labels: string[] = [];
-  if (g.duration_months <= 12) labels.push('Short tenure');
-  if (g.value >= 500000) labels.push('High value');
-  if (filter === 'short' && g.duration_months <= 12) labels.push('Matches filter');
-  if (filter === 'high_return' && g.value >= 500000) labels.push('Matches filter');
+  if (g.duration_months <= 12) labels.push('shortTenure');
+  if (g.value >= 500000) labels.push('highValue');
+  if (filter === 'short' && g.duration_months <= 12) labels.push('matchesFilter');
+  if (filter === 'high_return' && g.value >= 500000) labels.push('matchesFilter');
   return labels;
 }
 
@@ -66,12 +69,13 @@ function useAvailableChits() {
 }
 
 function useJoinChit() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const { memberId } = useMemberSession();
 
   return useMutation({
     mutationFn: async (chitGroupId: string) => {
-      if (!memberId) throw new Error('Not authenticated');
+      if (!memberId) throw new Error(t('errors.notAuthenticated'));
       
       return apiPostAuthed<{
         ok: boolean;
@@ -84,19 +88,20 @@ function useJoinChit() {
       qc.invalidateQueries({ queryKey: ['active-chits'] });
       qc.invalidateQueries({ queryKey: ['available-chits'] });
       qc.invalidateQueries({ queryKey: ['dashboard-stats'] });
-      Alert.alert('Chit Joined', result.notificationMessage);
+      Alert.alert(t('join.joinedTitle'), result.notificationMessage);
     },
-    onError: (e: Error) => Alert.alert('Error', e.message),
+    onError: (e: Error) => Alert.alert(t('common.error'), e.message),
   });
 }
 
-const FILTERS: { key: FilterKey; label: string; icon: string }[] = [
-  { key: 'short', label: 'Short Term', icon: '⚡' },
-  { key: 'high_return', label: 'High Return', icon: '📈' },
-  { key: 'all', label: 'All', icon: '🔍' },
+const FILTERS: { key: FilterKey; icon: keyof typeof MaterialCommunityIcons.glyphMap }[] = [
+  { key: 'short', icon: 'calendar-range' },
+  { key: 'high_return', icon: 'trending-up' },
+  { key: 'all', icon: 'filter-variant' },
 ];
 
 export default function JoinChitScreen() {
+  const { t } = useTranslation();
   const router = useRouter();
   const handleBack = useParentBack('/(tabs)/chits');
   const [filter, setFilter] = useState<FilterKey>('short');
@@ -127,11 +132,11 @@ export default function JoinChitScreen() {
   const handleJoin = (chit: ChitGroup) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     Alert.alert(
-      'Join Chit',
-      `Join "${chit.name}" for ${formatPaise(chit.monthly_installment)}/month for ${chit.duration_months} months?`,
+      t('join.confirmTitle'),
+      t('join.confirmMessage', { name: chit.name, amount: formatPaise(chit.monthly_installment), months: chit.duration_months }),
       [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Join', style: 'default', onPress: () => joinChit(chit.id) },
+        { text: t('common.cancel'), style: 'cancel' },
+        { text: t('common.join'), style: 'default', onPress: () => joinChit(chit.id) },
       ]
     );
   };
@@ -139,10 +144,10 @@ export default function JoinChitScreen() {
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
       <View style={s.appBar}>
-        <TouchableOpacity onPress={() => { Haptics.selectionAsync(); handleBack(); }} style={{ width: 40, height: 40, alignItems: 'center', justifyContent: 'center' }} accessibilityRole="button" accessibilityLabel="Back to chits">
+        <TouchableOpacity onPress={() => { Haptics.selectionAsync(); handleBack(); }} style={{ width: 40, height: 40, alignItems: 'center', justifyContent: 'center' }} accessibilityRole="button" accessibilityLabel={t('common.backToChits')}>
           <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.primary}><Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" /></Svg>
         </TouchableOpacity>
-        <Text style={s.appBarTitle}>Join a Chit</Text>
+        <Text style={s.appBarTitle}>{t('join.title')}</Text>
         <View style={{ width: 40 }} />
       </View>
 
@@ -155,12 +160,12 @@ export default function JoinChitScreen() {
         <View style={s.aiHeader}>
           <View style={s.aiIconRow}>
             <View style={s.aiIcon}>
-              <Text style={{ fontSize: 18 }}>🔍</Text>
+              <MaterialCommunityIcons name="clipboard-search-outline" size={20} color={Colors.primary} />
             </View>
-            <Text style={s.aiLabel}>RECOMMENDED FOR YOU</Text>
+            <Text style={s.aiLabel}>{t('join.recommended')}</Text>
           </View>
-          <Text style={s.heroTitle}>Available Chit Groups</Text>
-          <Text style={s.heroSub}>Groups matching your selected filter, sorted first. Payout figures below are illustrative — the actual amount depends on auction bidding.</Text>
+          <Text style={s.heroTitle}>{t('join.availableGroups')}</Text>
+          <Text style={s.heroSub}>{t('join.availableGroupsHelp')}</Text>
         </View>
 
         {/* Filter Chips */}
@@ -168,14 +173,14 @@ export default function JoinChitScreen() {
           {FILTERS.map(f => (
             <TouchableOpacity key={f.key} style={[s.chip, filter === f.key && s.chipActive]}
               onPress={() => { Haptics.selectionAsync(); setFilter(f.key); }} activeOpacity={0.8}>
-              <Text>{f.icon}</Text>
-              <Text style={[s.chipTxt, filter === f.key && s.chipTxtActive]}>{f.label}</Text>
+              <MaterialCommunityIcons name={f.icon} size={16} color={filter === f.key ? '#FFFFFF' : '#64748B'} />
+              <Text style={[s.chipTxt, filter === f.key && s.chipTxtActive]}>{t(`join.filters.${f.key}`)}</Text>
             </TouchableOpacity>
           ))}
         </ScrollView>
 
         {/* Cards */}
-        <Text style={s.sectionTitle}>Best Chits for You</Text>
+        <Text style={s.sectionTitle}>{t('join.bestForYou')}</Text>
 
         {isLoading ? (
           <View style={{ alignItems: 'center', paddingVertical: 40 }}>
@@ -183,9 +188,9 @@ export default function JoinChitScreen() {
           </View>
         ) : sorted.length === 0 ? (
           <View style={s.empty}>
-            <Text style={{ fontSize: 32 }}>🎉</Text>
-            <Text style={s.emptyTitle}>You've joined all available chits!</Text>
-            <Text style={s.emptySub}>Check back later for new openings.</Text>
+            <MaterialCommunityIcons name="check-decagram-outline" size={36} color={Colors.secondary} />
+            <Text style={s.emptyTitle}>{t('join.allJoined')}</Text>
+            <Text style={s.emptySub}>{t('join.checkLater')}</Text>
           </View>
         ) : (
           sorted.map((chit, idx) => {
@@ -199,7 +204,7 @@ export default function JoinChitScreen() {
                   <View style={s.fitLabelRow}>
                     {labels.map((label) => (
                       <View key={label} style={[s.fitChip, isTop && s.fitChipTop]}>
-                        <Text style={[s.fitChipText, isTop && s.fitChipTextTop]}>{label}</Text>
+                        <Text style={[s.fitChipText, isTop && s.fitChipTextTop]}>{t(`join.labels.${label}`)}</Text>
                       </View>
                     ))}
                   </View>
@@ -207,20 +212,20 @@ export default function JoinChitScreen() {
 
                 {/* Header */}
                 <Text style={s.cardCategory}>{chit.name.toUpperCase().substring(0, 20)}</Text>
-                <Text style={s.cardValue}>{formatPaise(chit.value)} Total</Text>
+                <Text style={s.cardValue}>{t('join.totalValue', { amount: formatPaise(chit.value) })}</Text>
 
                 {/* Stats */}
                 <View style={s.statsGrid}>
                   <View style={s.statCol}>
-                    <Text style={s.statLabel}>TENURE</Text>
-                    <Text style={s.statVal}>{chit.duration_months} Months</Text>
+                    <Text style={s.statLabel}>{t('join.tenure')}</Text>
+                    <Text style={s.statVal}>{t('common.monthCount', { count: chit.duration_months })}</Text>
                   </View>
                   <View style={s.statCol}>
-                    <Text style={s.statLabel}>ILLUSTRATIVE PAYOUT</Text>
+                    <Text style={s.statLabel}>{t('join.illustrativePayout')}</Text>
                     <Text style={s.statVal}>{formatPaise(range.low)}–{formatPaise(range.high)}</Text>
                   </View>
                   <View style={s.statCol}>
-                    <Text style={s.statLabel}>MONTHLY</Text>
+                    <Text style={s.statLabel}>{t('join.monthly')}</Text>
                     <Text style={s.statVal}>{formatPaise(chit.monthly_installment)}</Text>
                   </View>
                 </View>
@@ -234,7 +239,7 @@ export default function JoinChitScreen() {
                 >
                   {isPending
                     ? <ActivityIndicator color={isTop ? Colors.primary : Colors.primary} size="small" />
-                    : <Text style={[s.joinTxt, isTop && s.joinTxtPrimary]}>{isTop ? 'Join This Chit' : 'View Details'}</Text>
+                    : <Text style={[s.joinTxt, isTop && s.joinTxtPrimary]}>{isTop ? t('join.joinThisChit') : t('common.viewDetails')}</Text>
                   }
                 </TouchableOpacity>
               </View>
@@ -245,11 +250,11 @@ export default function JoinChitScreen() {
         {/* Explanation */}
         <View style={s.aiCard}>
           <View style={s.aiCardIcon}>
-            <Text style={{ fontSize: 20 }}>ℹ️</Text>
+            <MaterialCommunityIcons name="information-outline" size={22} color={Colors.primary} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={s.aiCardTitle}>How this list is ordered</Text>
-            <Text style={s.aiCardSub}>Groups matching your selected filter (tenure or value) are shown first. Payout ranges are illustrative only — the actual amount a member receives depends on that month's auction bidding, not a fixed formula.</Text>
+            <Text style={s.aiCardTitle}>{t('join.orderingTitle')}</Text>
+            <Text style={s.aiCardSub}>{t('join.orderingHelp')}</Text>
           </View>
         </View>
 

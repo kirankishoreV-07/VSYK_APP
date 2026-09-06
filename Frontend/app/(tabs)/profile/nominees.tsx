@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Dimensions, RefreshControl } from 'react-native';
+import { View, ScrollView, TouchableOpacity, StyleSheet, Dimensions, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LocalizedText as Text } from '../../../components/LocalizedText';
 import { useRouter } from 'expo-router';
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
@@ -11,6 +12,7 @@ const { width } = Dimensions.get('window');
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../../../lib/supabase';
 import { useParentBack } from '../../../lib/hooks/useParentBack';
+import { useTranslation } from 'react-i18next';
 
 type NomineeRow = {
   id: string;
@@ -48,6 +50,7 @@ function useNominees() {
 }
 
 export default function NomineesScreen() {
+  const { t } = useTranslation();
   const router = useRouter();
   const handleBack = useParentBack('/(tabs)/profile');
   const { data: nominees, isLoading, isRefetching, refetch } = useNominees();
@@ -74,12 +77,12 @@ export default function NomineesScreen() {
     <SafeAreaView style={s.safe} edges={['top']}>
       {/* App Bar */}
       <View style={s.appBar}>
-        <TouchableOpacity style={s.backBtn} onPress={handleBack} accessibilityRole="button" accessibilityLabel="Back to profile">
+        <TouchableOpacity style={s.backBtn} onPress={handleBack} accessibilityRole="button" accessibilityLabel={t('common.backToProfile')}>
           <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.primary}>
             <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
           </Svg>
         </TouchableOpacity>
-        <Text style={s.appBarTitle}>Nominee Management</Text>
+        <Text style={s.appBarTitle}>{t('nominees.title')}</Text>
         <View style={{ width: 40 }} />
       </View>
 
@@ -89,30 +92,30 @@ export default function NomineesScreen() {
         refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={Colors.primary} />}
       >
         <View style={s.header}>
-          <Text style={s.headerTitle}>Legal Heirs & Beneficiaries</Text>
-          <Text style={s.headerSub}>Ensure your financial assets are securely transferred in unforeseen circumstances. Total allocation must equal 100%.</Text>
+          <Text style={s.headerTitle}>{t('nominees.header')}</Text>
+          <Text style={s.headerSub}>{t('nominees.headerHelp')}</Text>
         </View>
 
         {/* Allocation Progress */}
         <View style={s.allocationCard}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 }}>
-            <Text style={s.allocTitle}>Total Allocation</Text>
+            <Text style={s.allocTitle}>{t('nominees.totalAllocation')}</Text>
             <Text style={s.allocVal}>{totalAllocation}%</Text>
           </View>
           <View style={s.progressBar}>
             <View style={[s.progressFill, { width: `${totalAllocation}%` as any }]} />
           </View>
           <Text style={s.allocSub}>
-            {totalAllocation === 100 ? 'Fully Allocated' : `Needs ${100 - totalAllocation}% more allocation`}
+            {totalAllocation === 100 ? t('nominees.fullyAllocated') : t('nominees.needsAllocation', { percent: 100 - totalAllocation })}
           </Text>
         </View>
 
         {/* Nominees List */}
         <View style={s.list}>
           {isLoading ? (
-            <Text style={{ textAlign: 'center', color: '#64748B', marginTop: 20 }}>Loading nominees...</Text>
+            <Text style={{ textAlign: 'center', color: '#64748B', marginTop: 20 }}>{t('nominees.loading')}</Text>
           ) : nominees?.length === 0 ? (
-            <Text style={{ textAlign: 'center', color: '#64748B', marginTop: 20 }}>No nominees added yet.</Text>
+            <Text style={{ textAlign: 'center', color: '#64748B', marginTop: 20 }}>{t('nominees.empty')}</Text>
           ) : (
             nominees?.map((nominee) => (
               <View key={nominee.id} style={s.card}>
@@ -141,7 +144,7 @@ export default function NomineesScreen() {
                     <Text style={s.detailTxt}>{nominee.phone_number}</Text>
                   </View>
                   <View style={s.allocBadge}>
-                    <Text style={s.allocBadgeTxt}>{nominee.allocation_percentage}% Share</Text>
+                    <Text style={s.allocBadgeTxt}>{t('nominees.share', { percent: nominee.allocation_percentage })}</Text>
                   </View>
                 </View>
               </View>
@@ -154,7 +157,7 @@ export default function NomineesScreen() {
 
       {/* FAB */}
       <TouchableOpacity style={s.fab} activeOpacity={0.9} onPress={() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy)}>
-        <Text style={s.fabTxt}>Add Nominee</Text>
+        <Text style={s.fabTxt}>{t('nominees.add')}</Text>
         <Svg width={20} height={20} viewBox="0 0 24 24" fill="#FFFFFF">
           <Path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
         </Svg>

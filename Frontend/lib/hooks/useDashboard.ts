@@ -228,19 +228,19 @@ export function formatPaise(paise: number): string {
 }
 
 /** Format a date string → "15 Nov" */
-export function formatShortDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString('en-IN', {
+export function formatShortDate(dateStr: string, locale = 'en-IN'): string {
+  return new Date(dateStr).toLocaleDateString(locale, {
     day: 'numeric',
     month: 'short',
   });
 }
 
 /** Format auction scheduled_at → "Starts in 4 hours" or "Tomorrow at 10:00 AM" */
-export function formatAuctionTime(scheduledAt: string): string {
+export function formatAuctionTime(scheduledAt: string, language: 'en' | 'ta' = 'en'): string {
   const now = new Date();
   const scheduled = new Date(scheduledAt);
   const diffMs = scheduled.getTime() - now.getTime();
-  if (diffMs <= 0) return 'Starting now';
+  if (diffMs <= 0) return language === 'ta' ? 'இப்போது தொடங்குகிறது' : 'Starting now';
 
   const totalMinutes = Math.floor(diffMs / 60000);
   const totalHours = Math.floor(totalMinutes / 60);
@@ -251,13 +251,21 @@ export function formatAuctionTime(scheduledAt: string): string {
   const mins = totalMinutes % 60;
 
   if (months > 0) {
-    return `Starts in ${months} mo${days > 0 ? ` ${days} d` : ''}`;
+    return language === 'ta'
+      ? `${months} மாதம்${days > 0 ? ` ${days} நாள்` : ''} கழித்து தொடங்கும்`
+      : `Starts in ${months} mo${days > 0 ? ` ${days} d` : ''}`;
   }
   if (days > 0) {
-    return `Starts in ${days} d${hours > 0 ? ` ${hours} h` : ''}`;
+    return language === 'ta'
+      ? `${days} நாள்${hours > 0 ? ` ${hours} மணி` : ''} கழித்து தொடங்கும்`
+      : `Starts in ${days} d${hours > 0 ? ` ${hours} h` : ''}`;
   }
   if (totalHours > 0) {
-    return `Starts in ${totalHours} h${mins > 0 ? ` ${mins} m` : ''}`;
+    return language === 'ta'
+      ? `${totalHours} மணி${mins > 0 ? ` ${mins} நிமிடம்` : ''} கழித்து தொடங்கும்`
+      : `Starts in ${totalHours} h${mins > 0 ? ` ${mins} m` : ''}`;
   }
-  return `Starts in ${Math.max(totalMinutes, 1)} m`;
+  return language === 'ta'
+    ? `${Math.max(totalMinutes, 1)} நிமிடத்தில் தொடங்கும்`
+    : `Starts in ${Math.max(totalMinutes, 1)} m`;
 }

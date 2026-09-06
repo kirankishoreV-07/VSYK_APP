@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import {
   View,
-  Text,
   TextInput,
   TouchableOpacity,
   ScrollView,
@@ -13,6 +12,7 @@ import {
   Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LocalizedText as Text } from '../../components/LocalizedText';
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
@@ -21,6 +21,8 @@ import { Colors, Shadows, Spacing, Radii } from '../../lib/constants';
 import { supabase } from '../../lib/supabase';
 import { apiPost } from '../../lib/api';
 import { useMemberSession } from '../../lib/MemberSessionContext';
+import { useTranslation } from 'react-i18next';
+import { setAppLanguage } from '../../lib/i18n';
 
 interface OtpVerifyResponse {
   ok: boolean;
@@ -34,6 +36,7 @@ interface AdminLoginResponse {
 }
 
 export default function LoginScreen() {
+  const { t, i18n } = useTranslation();
   const router = useRouter();
   const { loginWithSession } = useMemberSession();
   const [role, setRole] = useState<'member' | 'admin'>('member');
@@ -65,7 +68,7 @@ export default function LoginScreen() {
   const handleRequestOtp = async () => {
     const cleanPhone = cleanMemberPhone();
     if (cleanPhone.length !== 10) {
-      Alert.alert('Invalid Number', 'Please enter a valid 10-digit mobile number.');
+      Alert.alert(t('login.invalidNumber'), t('login.invalidNumberMessage'));
       return;
     }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -76,7 +79,7 @@ export default function LoginScreen() {
       setMemberStep('otp');
       setResendIn(60);
     } catch (err: any) {
-      Alert.alert('Could not send OTP', err?.message || 'Please try again in a moment.');
+      Alert.alert(t('login.otpSendFailed'), err?.message || t('common.tryAgain'));
     } finally {
       setLoading(false);
     }
@@ -86,7 +89,7 @@ export default function LoginScreen() {
   const handleVerifyOtp = async () => {
     const cleanPhone = cleanMemberPhone();
     if (!/^\d{6}$/.test(otp)) {
-      Alert.alert('Invalid OTP', 'Enter the 6-digit code sent to your WhatsApp.');
+      Alert.alert(t('login.invalidOtp'), t('login.invalidOtpMessage'));
       return;
     }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -101,7 +104,7 @@ export default function LoginScreen() {
       router.replace('/(tabs)');
     } catch (err: any) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Verification Failed', err?.message || 'Invalid or expired OTP.');
+      Alert.alert(t('login.verificationFailed'), err?.message || t('login.invalidOrExpiredOtp'));
       setLoading(false);
     }
   };
@@ -171,7 +174,12 @@ export default function LoginScreen() {
           </Svg>
           <Text style={styles.appBarTitle}>VSYK CHITS</Text>
         </View>
-        <TouchableOpacity style={styles.translateBtn}>
+        <TouchableOpacity
+          style={styles.translateBtn}
+          onPress={() => { void setAppLanguage(i18n.resolvedLanguage === 'ta' ? 'en' : 'ta'); }}
+          accessibilityRole="button"
+          accessibilityLabel={t('login.changeLanguage')}
+        >
           <Svg width={24} height={24} viewBox="0 0 24 24" fill="#94a3b8">
             <Path d="m12.87 15.07-2.54-2.51.03-.03c1.74-1.94 2.98-4.17 3.71-6.53H17V4h-7V2H8v2H1v1.99h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7 1.62-4.33L19.12 17h-3.24z" />
           </Svg>
@@ -199,9 +207,9 @@ export default function LoginScreen() {
                 transition={200}
               />
             </View>
-            <Text style={styles.welcomeTitle}>Welcome Back</Text>
+            <Text style={styles.welcomeTitle}>{role === 'member' ? t('login.welcomeBack') : 'Welcome Back'}</Text>
             <Text style={styles.welcomeSubtitle}>
-              Access your chit funds and savings auctions securely.
+              {role === 'member' ? t('login.welcomeSubtitle') : 'Access the administration portal securely.'}
             </Text>
           </View>
 
@@ -224,7 +232,7 @@ export default function LoginScreen() {
                   role === 'member' && styles.roleBtnTextActive,
                 ]}
               >
-                Member
+                {t('login.member')}
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -257,12 +265,12 @@ export default function LoginScreen() {
                 <>
                   {/* Phone Input */}
                   <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>REGISTERED PHONE NUMBER</Text>
+                    <Text style={styles.inputLabel}>{t('login.registeredPhone')}</Text>
                     <View style={styles.phoneInputRow}>
                       <Text style={styles.phonePrefix}>+91</Text>
                       <TextInput
                         style={styles.phoneInput}
-                        placeholder="98765 43210"
+                        placeholder={t('login.phonePlaceholder')}
                         placeholderTextColor="#CBD5E1"
                         keyboardType="phone-pad"
                         maxLength={10}
@@ -274,7 +282,7 @@ export default function LoginScreen() {
                   </View>
 
                   <Text style={{ fontFamily: 'Inter_400Regular', fontSize: 13, color: '#94A3B8', marginBottom: 8, textAlign: 'center' }}>
-                    We'll send a one-time code to your WhatsApp number registered with VSYK Chits.
+                    {t('login.otpWhatsAppHelp')}
                   </Text>
 
                   {/* Send OTP Button */}
@@ -285,7 +293,7 @@ export default function LoginScreen() {
                     disabled={loading}
                   >
                     <Text style={styles.submitBtnText}>
-                      {loading ? 'Sending...' : 'Send OTP on WhatsApp'}
+                      {loading ? t('login.sending') : t('login.sendOtp')}
                     </Text>
                     {!loading && (
                       <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.onBackground}>
@@ -299,9 +307,9 @@ export default function LoginScreen() {
                   {/* OTP Input */}
                   <View style={styles.inputGroup}>
                     <View style={styles.otpHeaderRow}>
-                      <Text style={styles.inputLabel}>ENTER 6-DIGIT OTP</Text>
+                      <Text style={styles.inputLabel}>{t('login.enterOtp')}</Text>
                       <TouchableOpacity onPress={resetMemberFlow} disabled={loading}>
-                        <Text style={styles.resendOtp}>CHANGE NUMBER</Text>
+                        <Text style={styles.resendOtp}>{t('login.changeNumber')}</Text>
                       </TouchableOpacity>
                     </View>
                     <TextInput
@@ -318,7 +326,7 @@ export default function LoginScreen() {
                   </View>
 
                   <Text style={{ fontFamily: 'Inter_400Regular', fontSize: 13, color: '#94A3B8', marginBottom: 8, textAlign: 'center' }}>
-                    Sent to WhatsApp +91 {phone.slice(-10)}. Code expires in 10 minutes.
+                    {t('login.sentToWhatsApp', { phone: phone.slice(-10) })}
                   </Text>
 
                   {/* Verify Button */}
@@ -329,7 +337,7 @@ export default function LoginScreen() {
                     disabled={loading}
                   >
                     <Text style={styles.submitBtnText}>
-                      {loading ? 'Verifying...' : 'Verify & Login'}
+                      {loading ? t('login.verifying') : t('login.verifyLogin')}
                     </Text>
                     {!loading && (
                       <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.onBackground}>
@@ -345,7 +353,7 @@ export default function LoginScreen() {
                     style={{ alignItems: 'center', paddingVertical: 8 }}
                   >
                     <Text style={[styles.resendOtp, (loading || resendIn > 0) && { color: '#CBD5E1' }]}>
-                      {resendIn > 0 ? `RESEND OTP IN ${resendIn}s` : 'RESEND OTP'}
+                      {resendIn > 0 ? t('login.resendIn', { seconds: resendIn }) : t('login.resendOtp')}
                     </Text>
                   </TouchableOpacity>
                 </>
@@ -443,8 +451,8 @@ export default function LoginScreen() {
                 </Svg>
               </View>
               <View>
-                <Text style={styles.biometricTitle}>Enable Biometric Login</Text>
-                <Text style={styles.biometricSub}>FaceID or Fingerprint</Text>
+                <Text style={styles.biometricTitle}>{role === 'member' ? t('login.enableBiometric') : 'Enable Biometric Login'}</Text>
+                <Text style={styles.biometricSub}>{role === 'member' ? t('login.biometricTypes') : 'Face ID or fingerprint'}</Text>
               </View>
             </View>
             <Switch
@@ -461,15 +469,15 @@ export default function LoginScreen() {
           {/* Support Link */}
           <View style={styles.supportRow}>
             <Text style={styles.supportText}>
-              Need help logging in?{' '}
-              <Text style={styles.supportLink}>Contact Support</Text>
+              {role === 'member' ? t('login.needHelp') : 'Need help logging in?'}{' '}
+              <Text style={styles.supportLink}>{role === 'member' ? t('login.contactSupport') : 'Contact Support'}</Text>
             </Text>
           </View>
 
           {/* Footer */}
           <View style={styles.footer}>
-            <Text style={styles.footerTitle}>Secured by VSYK Quantum Vault</Text>
-            <Text style={styles.footerVersion}>v2.4.0 • Enterprise Grade Encryption</Text>
+            <Text style={styles.footerTitle}>{role === 'member' ? t('login.securedBy') : 'Secured by VSYK Quantum Vault'}</Text>
+            <Text style={styles.footerVersion}>{role === 'member' ? t('login.encryption') : 'v2.4.0 · Enterprise Grade Encryption'}</Text>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>

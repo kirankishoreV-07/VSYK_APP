@@ -1,7 +1,6 @@
 import { useEffect } from 'react';
 import {
   View,
-  Text,
   ScrollView,
   TouchableOpacity,
   StyleSheet,
@@ -11,13 +10,13 @@ import {
   RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LocalizedText as Text } from '../../components/LocalizedText';
 import { useRouter } from 'expo-router';
 import Svg, { Circle, Path, G } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { Colors, Shadows } from '../../lib/constants';
 import { AppLogo } from '../../components/AppLogo';
 import { useMemberSession } from '../../lib/MemberSessionContext';
-import { getHealthLabel, getHealthSubtext } from '../../lib/hooks/useProfile';
 import { useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../../lib/supabase';
 import {
@@ -31,6 +30,9 @@ import {
   type UpcomingAuction,
 } from '../../lib/hooks/useDashboard';
 import { useToggleReminder } from '../../lib/hooks/useReminder';
+import { useTranslation } from 'react-i18next';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { localeForLanguage, setAppLanguage } from '../../lib/i18n';
 
 
 const { width: SW } = Dimensions.get('window');
@@ -68,10 +70,11 @@ function Skeleton({ w, h, radius = 8 }: { w: number | string; h: number; radius?
 
 // ─── Chit Card ────────────────────────────────────────────────
 function ChitCard({ item }: { item: ActiveChit }) {
+  const { t, i18n } = useTranslation();
   const router = useRouter();
   const group = item.chit_group;
   const progress = item.current_month / group.duration_months;
-  const statusLabel = item.bid_status === 'bidding' ? 'Bidding' : 'Active';
+  const statusLabel = item.bid_status === 'bidding' ? t('common.bidding') : t('common.active');
   const statusColor = item.bid_status === 'bidding' ? '#F59E0B' : Colors.secondary;
 
   return (
@@ -95,9 +98,9 @@ function ChitCard({ item }: { item: ActiveChit }) {
 
       <View style={styles.progressSection}>
         <View style={styles.progressRow}>
-          <Text style={styles.progressLabel}>Progress</Text>
+          <Text style={styles.progressLabel}>{t('common.progress')}</Text>
           <Text style={styles.progressLabel}>
-            {item.current_month}/{group.duration_months} Months
+            {t('common.monthProgress', { current: item.current_month, total: group.duration_months })}
           </Text>
         </View>
         <View style={styles.progressTrack}>
@@ -110,8 +113,8 @@ function ChitCard({ item }: { item: ActiveChit }) {
           <>
             <View style={{ flex: 1 }}>
               <Text style={styles.nextPayLabel}>
-                Next Payment:{' '}
-                <Text style={styles.nextPayDate}>{formatShortDate(item.next_payment.due_date)}</Text>
+                {t('dashboard.nextPayment')}{' '}
+                <Text style={styles.nextPayDate}>{formatShortDate(item.next_payment.due_date, localeForLanguage(i18n.resolvedLanguage))}</Text>
               </Text>
               <Text style={styles.nextPayAmt}>{formatPaise(item.next_payment.amount)}</Text>
             </View>
@@ -123,11 +126,11 @@ function ChitCard({ item }: { item: ActiveChit }) {
                 router.push(`/(tabs)/chit/${item.membership_id}`);
               }}
             >
-              <Text style={styles.dashPayBtnText}>PAY NOW</Text>
+              <Text style={styles.dashPayBtnText}>{t('common.payNow')}</Text>
             </TouchableOpacity>
           </>
         ) : (
-          <Text style={styles.nextPayLabel}>All payments up to date ✓</Text>
+          <Text style={styles.nextPayLabel}>{t('dashboard.allPaymentsUpToDate')}</Text>
         )}
       </View>
     </TouchableOpacity>
@@ -162,6 +165,7 @@ function SkeletonChitCard() {
 
 // ─── Auction Row ──────────────────────────────────────────────
 function AuctionRow({ item }: { item: UpcomingAuction }) {
+  const { t, i18n } = useTranslation();
   const { mutate: toggleReminder, isPending } = useToggleReminder();
 
   return (
@@ -172,8 +176,8 @@ function AuctionRow({ item }: { item: UpcomingAuction }) {
         </Svg>
       </View>
       <View style={styles.auctionInfo}>
-        <Text style={styles.auctionName}>{item.chit_group?.name ?? 'Auction'}</Text>
-        <Text style={styles.auctionTime}>{formatAuctionTime(item.scheduled_at)}</Text>
+        <Text style={styles.auctionName}>{item.chit_group?.name ?? t('common.auction')}</Text>
+        <Text style={styles.auctionTime}>{formatAuctionTime(item.scheduled_at, i18n.resolvedLanguage === 'ta' ? 'ta' : 'en')}</Text>
       </View>
       <TouchableOpacity
         style={[
@@ -190,7 +194,7 @@ function AuctionRow({ item }: { item: UpcomingAuction }) {
         {isPending
           ? <ActivityIndicator size="small" color={Colors.primary} />
           : <Text style={[styles.remindText, item.has_reminder && styles.remindTextActive]}>
-            {item.has_reminder ? '✓ Set' : 'Remind'}
+            {item.has_reminder ? t('dashboard.reminderSet') : t('dashboard.remindMe')}
           </Text>
         }
       </TouchableOpacity>
@@ -199,10 +203,10 @@ function AuctionRow({ item }: { item: UpcomingAuction }) {
 }
 
 // ─── Empty State ──────────────────────────────────────────────
-function EmptyState({ message, icon }: { message: string; icon: string }) {
+function EmptyState({ message, icon }: { message: string; icon: keyof typeof MaterialCommunityIcons.glyphMap }) {
   return (
     <View style={styles.emptyState}>
-      <Text style={styles.emptyIcon}>{icon}</Text>
+      <MaterialCommunityIcons name={icon} size={28} color="#64748B" />
       <Text style={styles.emptyText}>{message}</Text>
     </View>
   );
@@ -210,6 +214,7 @@ function EmptyState({ message, icon }: { message: string; icon: string }) {
 
 // ─── Main Screen ─────────────────────────────────────────────
 export default function HomeScreen() {
+  const { t, i18n } = useTranslation();
   const router = useRouter();
   const { memberId, memberProfile } = useMemberSession();
   const queryClient = useQueryClient();
@@ -249,6 +254,20 @@ export default function HomeScreen() {
   else if (memberProfile?.kyc_status === 'rejected') healthScore = 400;
 
   const profileLoading = !memberProfile;
+  const healthLabel = healthScore >= 800
+    ? t('dashboard.healthExcellent')
+    : healthScore >= 650
+      ? t('dashboard.healthGood')
+      : healthScore >= 500
+        ? t('dashboard.healthFair')
+        : t('dashboard.healthNeedsAttention');
+  const healthSubtext = healthScore >= 800
+    ? t('dashboard.healthExcellentHelp')
+    : healthScore >= 650
+      ? t('dashboard.healthGoodHelp')
+      : healthScore >= 500
+        ? t('dashboard.healthFairHelp')
+        : t('dashboard.healthNeedsAttentionHelp');
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
@@ -259,13 +278,22 @@ export default function HomeScreen() {
           <View>
             <Text style={styles.appBarTitle}>VSYK CHITS</Text>
             {memberProfile?.full_name ? (
-              <Text style={{ fontFamily: 'Inter_400Regular', fontSize: 12, color: '#64748B', marginTop: 1 }}>
-                Hi, {memberProfile.full_name.split(' ')[0]} 👋
-              </Text>
+              <View style={styles.customerGreeting}>
+                <Text style={styles.customerGreetingLabel}>{t('dashboard.welcome')}</Text>
+                <Text style={styles.customerGreetingName} numberOfLines={1}>
+                  {`${memberProfile.gender?.toLowerCase().startsWith('f') ? 'MS.' : memberProfile.gender?.toLowerCase().startsWith('m') ? 'MR.' : 'MR./MS.'} ${memberProfile.full_name.toUpperCase()}`}
+                </Text>
+              </View>
             ) : null}
           </View>
         </View>
-        <TouchableOpacity style={styles.translateBtn} activeOpacity={0.7}>
+        <TouchableOpacity
+          style={styles.translateBtn}
+          activeOpacity={0.7}
+          onPress={() => { void setAppLanguage(i18n.resolvedLanguage === 'ta' ? 'en' : 'ta'); }}
+          accessibilityRole="button"
+          accessibilityLabel={t('login.changeLanguage')}
+        >
           <Svg width={22} height={22} viewBox="0 0 24 24" fill={Colors.primary}>
             <Path d="m12.87 15.07-2.54-2.51.03-.03c1.74-1.94 2.98-4.17 3.71-6.53H17V4h-7V2H8v2H1v1.99h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7 1.62-4.33L19.12 17h-3.24z" />
           </Svg>
@@ -289,7 +317,7 @@ export default function HomeScreen() {
           {/* Health Card */}
           <View style={styles.healthCard}>
             <View style={styles.healthLeft}>
-              <Text style={styles.healthLabel}>PORTFOLIO HEALTH</Text>
+              <Text style={styles.healthLabel}>{t('dashboard.portfolioHealth')}</Text>
               {profileLoading ? (
                 <View style={{ gap: 8, marginTop: 4 }}>
                   <Skeleton w={140} h={28} radius={6} />
@@ -297,8 +325,8 @@ export default function HomeScreen() {
                 </View>
               ) : (
                 <>
-                  <Text style={styles.healthTitle}>{getHealthLabel(healthScore)}</Text>
-                  <Text style={styles.healthSub}>{getHealthSubtext(healthScore)}</Text>
+                  <Text style={styles.healthTitle}>{healthLabel}</Text>
+                  <Text style={styles.healthSub}>{healthSubtext}</Text>
                 </>
               )}
             </View>
@@ -310,7 +338,7 @@ export default function HomeScreen() {
 
           {/* Total Value */}
           <View style={styles.statCard}>
-            <Text style={styles.statLabel}>TOTAL VALUE</Text>
+            <Text style={styles.statLabel}>{t('dashboard.totalValue')}</Text>
             {statsLoading ? (
               <View style={{ gap: 8, marginTop: 4 }}>
                 <Skeleton w={100} h={22} />
@@ -323,7 +351,7 @@ export default function HomeScreen() {
                   <Svg width={14} height={14} viewBox="0 0 24 24" fill={Colors.secondary}>
                     <Path d="M16 6l2.29 2.29-4.88 4.88-4-4L2 16.59 3.41 18l6-6 4 4 6.3-6.29L22 12V6z" />
                   </Svg>
-                  <Text style={styles.statTrendText}>Active Chits</Text>
+                  <Text style={styles.statTrendText}>{t('dashboard.activeChits')}</Text>
                 </View>
               </>
             )}
@@ -331,7 +359,7 @@ export default function HomeScreen() {
 
           {/* Earnings */}
           <View style={styles.statCard}>
-            <Text style={styles.statLabel}>EARNINGS</Text>
+            <Text style={styles.statLabel}>{t('dashboard.earnings')}</Text>
             {statsLoading ? (
               <View style={{ gap: 8, marginTop: 4 }}>
                 <Skeleton w={100} h={22} />
@@ -344,7 +372,7 @@ export default function HomeScreen() {
                   <Svg width={14} height={14} viewBox="0 0 24 24" fill={Colors.secondary}>
                     <Path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
                   </Svg>
-                  <Text style={styles.statTrendText}>Dividends</Text>
+                  <Text style={styles.statTrendText}>{t('dashboard.dividends')}</Text>
                 </View>
               </>
             )}
@@ -354,13 +382,13 @@ export default function HomeScreen() {
         {/* ── Active Chits Carousel ── */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Active Chits</Text>
+            <Text style={styles.sectionTitle}>{t('dashboard.activeChits')}</Text>
             <TouchableOpacity
               style={styles.viewAllBtn}
               onPress={() => { Haptics.selectionAsync(); router.push('/(tabs)/chits'); }}
               activeOpacity={0.7}
             >
-              <Text style={styles.viewAllText}>View All</Text>
+              <Text style={styles.viewAllText}>{t('common.viewAll')}</Text>
               <Svg width={14} height={14} viewBox="0 0 24 24" fill={Colors.primary}>
                 <Path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z" />
               </Svg>
@@ -373,18 +401,18 @@ export default function HomeScreen() {
               <SkeletonChitCard />
             </ScrollView>
           ) : chitsError ? (
-            <EmptyState message="Failed to load chits. Pull to refresh." icon="⚠️" />
+            <EmptyState message={t('dashboard.chitsLoadFailed')} icon="alert-circle-outline" />
           ) : !chits || chits.length === 0 ? (
             <TouchableOpacity
               style={styles.emptyChitCard}
               onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); router.push('/(tabs)/chits'); }}
               activeOpacity={0.85}
             >
-              <Text style={styles.emptyChitIcon}>💰</Text>
-              <Text style={styles.emptyChitTitle}>No Active Chits</Text>
-              <Text style={styles.emptyChitSub}>Tap to join your first chit fund and start growing your wealth.</Text>
+              <MaterialCommunityIcons name="wallet-plus-outline" size={34} color={Colors.primary} />
+              <Text style={styles.emptyChitTitle}>{t('dashboard.noActiveChits')}</Text>
+              <Text style={styles.emptyChitSub}>{t('dashboard.noActiveChitsHelp')}</Text>
               <View style={styles.emptyChitBtn}>
-                <Text style={styles.emptyChitBtnText}>Browse Chits →</Text>
+                <Text style={styles.emptyChitBtnText}>{t('dashboard.browseChits')}</Text>
               </View>
             </TouchableOpacity>
           ) : (
@@ -403,7 +431,7 @@ export default function HomeScreen() {
 
         {/* ── Upcoming Auctions ── */}
         <View style={[styles.section, { paddingBottom: 110 }]}>
-          <Text style={styles.sectionTitle}>Upcoming Auctions</Text>
+          <Text style={styles.sectionTitle}>{t('dashboard.upcomingAuctions')}</Text>
           {auctionsLoading ? (
             <View style={styles.auctionList}>
               {[1, 2].map((i) => (
@@ -418,7 +446,7 @@ export default function HomeScreen() {
               ))}
             </View>
           ) : !auctions || auctions.length === 0 ? (
-            <EmptyState message="Next auction will be held on the scheduled date for your active groups." icon="📅" />
+            <EmptyState message={t('dashboard.noUpcomingAuctions')} icon="calendar-clock-outline" />
           ) : (
             <View style={styles.auctionList}>
               {auctions.map((auction) => <AuctionRow key={auction.id} item={auction} />)}
@@ -467,6 +495,9 @@ const styles = StyleSheet.create({
   },
   avatarInitial: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 14, color: '#FFFFFF' },
   appBarTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 18, color: Colors.primary, letterSpacing: -0.5 },
+  customerGreeting: { marginTop: 1, maxWidth: Math.max(160, SW - 150) },
+  customerGreetingLabel: { fontFamily: 'Inter_500Medium', fontSize: 9, color: '#64748B', letterSpacing: 0.8 },
+  customerGreetingName: { fontFamily: 'Inter_700Bold', fontSize: 12, color: '#0F172A', letterSpacing: 0.15 },
   translateBtn: {
     width: 40, height: 40, borderRadius: 20,
     backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center',

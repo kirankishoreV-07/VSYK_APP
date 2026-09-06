@@ -33,7 +33,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { View, ActivityIndicator } from 'react-native';
 import { Colors } from '../lib/constants';
-import '../lib/i18n';
+import { initializeAppLanguage } from '../lib/i18n';
 import { installWebAlertAdapter } from '../lib/webAlertAdapter';
 
 installWebAlertAdapter();
@@ -77,6 +77,7 @@ function NotificationRouter() {
 }
 
 export default function RootLayout() {
+  const [languageReady, setLanguageReady] = useState(false);
   const [fontsLoaded] = useFonts({
     SpaceGrotesk_300Light,
     SpaceGrotesk_400Regular,
@@ -94,7 +95,17 @@ export default function RootLayout() {
     HindMadurai_700Bold,
   });
 
-  if (!fontsLoaded) {
+  useEffect(() => {
+    let mounted = true;
+    initializeAppLanguage()
+      .catch((error) => console.warn('Could not restore language preference:', error))
+      .finally(() => {
+        if (mounted) setLanguageReady(true);
+      });
+    return () => { mounted = false; };
+  }, []);
+
+  if (!fontsLoaded || !languageReady) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.primary }}>
         <ActivityIndicator size="large" color={Colors.secondary} />

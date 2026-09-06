@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../../../lib/supabase';
-import { formatPaise, formatShortDate } from '../../../lib/hooks/useDashboard';
+import { formatPaise } from '../../../lib/hooks/useDashboard';
 import {
-  View, Text, ScrollView, TouchableOpacity,
+  View, ScrollView, TouchableOpacity,
   StyleSheet, Alert, ActivityIndicator, Platform, Modal, TextInput, KeyboardAvoidingView, RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LocalizedText as Text } from '../../../components/LocalizedText';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import Svg, { Path, Circle } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
@@ -18,6 +19,8 @@ import { isMemberAuctionWinner, WINNER_HIGHLIGHT } from '../../../lib/auctionWin
 import type { AuctionPrizeSettlement } from '../../../components/admin/customers/types';
 import { MemberPrizePayoutDetailsModal } from '../../../components/member/MemberPrizePayoutDetailsModal';
 import { useParentBack } from '../../../lib/hooks/useParentBack';
+import { useTranslation } from 'react-i18next';
+import { localeForLanguage } from '../../../lib/i18n';
 
 type PaymentRow = {
   id: string;
@@ -209,7 +212,7 @@ const addMonthsKeepDay = (date: Date, months: number) => {
 };
 
 /** Calculate the display period based on month_number and group start_date */
-function getMonthPeriod(payment: PaymentRow, groupStartDate?: string | null): { from: string; to: string; monthName: string; endDate: Date } {
+function getMonthPeriod(payment: PaymentRow, groupStartDate?: string | null, locale = 'en-IN'): { from: string; to: string; monthName: string; endDate: Date } {
   // Use group start_date + month offset for accurate per-month dates
   // Fallback to payment.due_date if no group start_date available
   let startDate: Date;
@@ -224,8 +227,8 @@ function getMonthPeriod(payment: PaymentRow, groupStartDate?: string | null): { 
     startDate.setDate(1);
   }
   const endDate = addMonthsKeepDay(startDate, 1);
-  const fmt = (d: Date) => d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-  const monthName = startDate.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+  const fmt = (d: Date) => d.toLocaleDateString(locale, { day: '2-digit', month: 'short', year: 'numeric' });
+  const monthName = startDate.toLocaleDateString(locale, { month: 'long', year: 'numeric' });
   return { from: fmt(startDate), to: fmt(endDate), monthName, endDate };
 }
 
@@ -248,7 +251,9 @@ function MonthTimelineItem({
   wonAuction?: any;
   onShowPrizeDetails?: (auction: any) => void;
 }) {
-  const period = getMonthPeriod(p, groupStartDate);
+  const { t, i18n } = useTranslation();
+  const locale = localeForLanguage(i18n.resolvedLanguage);
+  const period = getMonthPeriod(p, groupStartDate, locale);
   const dueKnown = payableAmount != null;
   // For unaccounted groups, cash_collections is the source of truth (not payment_schedules.paid).
   const cashFull = dueKnown && isUnaccountedGroup && !!cashCollection && cashCollection.amount >= payableAmount;
@@ -308,7 +313,7 @@ function MonthTimelineItem({
               {period.monthName}
             </Text>
             <Text style={[ts.monthNumber, isUpcoming && { color: '#CBD5E1' }]}>
-              Month {p.month_number} · {period.from} – {period.to}
+              {t('chitDetail.monthPeriod', { month: p.month_number, from: period.from, to: period.to })}
             </Text>
           </View>
           <View style={{ alignItems: 'flex-end', gap: 4 }}>
@@ -329,20 +334,20 @@ function MonthTimelineItem({
             {hasPartialPayment && (
               <View style={ts.partialBadge}>
                 <Text style={ts.partialText}>
-                  {formatPaise(effectivePartialPaid)} paid · {formatPaise(remainingAmount)} remaining
+                  {t('chitDetail.paidRemaining', { paid: formatPaise(effectivePartialPaid), remaining: formatPaise(remainingAmount) })}
                 </Text>
               </View>
             )}
-            {overdue && <View style={ts.overdueBadge}><Text style={ts.overdueText}>OVERDUE</Text></View>}
+            {overdue && <View style={ts.overdueBadge}><Text style={ts.overdueText}>{t('common.overdue')}</Text></View>}
             {auctionLiveLabel && (
-              <View style={ts.liveBadge}><Text style={ts.liveText}>AUCTION LIVE</Text></View>
+              <View style={ts.liveBadge}><Text style={ts.liveText}>{t('auctions.liveAuction')}</Text></View>
             )}
             {isCurrentDue && !overdue && !auctionLiveLabel && daysLeft >= 0 && (
-              <View style={ts.dueBadge}><Text style={ts.dueText}>DUE IN {daysLeft}D</Text></View>
+              <View style={ts.dueBadge}><Text style={ts.dueText}>{t('chitDetail.dueInDays', { days: daysLeft })}</Text></View>
             )}
             {isMemberWinner && (
               <View style={ts.winnerBadge}>
-                <Text style={ts.winnerBadgeText}>WINNER</Text>
+                <Text style={ts.winnerBadgeText}>{t('common.winner')}</Text>
               </View>
             )}
           </View>
@@ -351,13 +356,13 @@ function MonthTimelineItem({
         {isMemberWinner && winnerPrizeAmount != null && winnerPrizeAmount > 0 && (
           <View style={ts.prizeInfoContainer}>
             <Text style={ts.winnerPrizeText}>
-              Prize: {formatPaise(winnerPrizeAmount)}
+              {t('chitDetail.prize', { amount: formatPaise(winnerPrizeAmount) })}
               {(prizeSettlements || []).length > 0 && (() => {
                 const received = (prizeSettlements || []).reduce((s, p) => s + (p.amount || 0), 0);
                 const pending = Math.max(0, winnerPrizeAmount - received);
                 return pending > 0 
-                  ? `  · Received ${formatPaise(received)} · Pending ${formatPaise(pending)}`
-                  : `  · Fully settled`;
+                  ? t('chitDetail.receivedPending', { received: formatPaise(received), pending: formatPaise(pending) })
+                  : t('chitDetail.fullySettled');
               })()}
             </Text>
             {(prizeSettlements || []).length > 0 && wonAuction && onShowPrizeDetails && (
@@ -366,7 +371,7 @@ function MonthTimelineItem({
                 style={ts.detailsButton}
                 activeOpacity={0.7}
               >
-                <Text style={ts.detailsButtonText}>Details →</Text>
+                <Text style={ts.detailsButtonText}>{t('common.details')}</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -383,14 +388,14 @@ function MonthTimelineItem({
             </Svg>
             <Text style={ts.statusPaid}>
               {isUnaccountedGroup && cashCollection
-                ? `Paid · Cash · ${formatShortDate(cashCollection.recorded_at)} · ${formatPaise(cashCollection.amount)}`
+                ? t('chitDetail.paidCashDetails', { date: new Date(cashCollection.recorded_at).toLocaleDateString(locale, { day: 'numeric', month: 'short' }), amount: formatPaise(cashCollection.amount) })
                 : isUnaccountedGroup
-                  ? 'Paid · Cash'
-                  : 'Paid · Online'}
+                  ? t('chitDetail.paidCash')
+                  : t('chitDetail.paidOnline')}
             </Text>
             {(p.dividend_amount ?? 0) > 0 && (
               <View style={ts.dividendBadge}>
-                <Text style={ts.dividendText}>+{formatPaise(p.dividend_amount!)} dividend</Text>
+                <Text style={ts.dividendText}>{t('chitDetail.dividend', { amount: formatPaise(p.dividend_amount!) })}</Text>
               </View>
             )}
           </View>
@@ -401,12 +406,12 @@ function MonthTimelineItem({
                 <Path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" />
               </Svg>
               <Text style={[ts.statusPaid, { color: '#D97706' }]}>
-                {`Partial · Cash · ${formatShortDate(cashCollection.recorded_at)} · ${formatPaise(cashCollection.amount)} paid`}
+                {t('chitDetail.partialCash', { date: new Date(cashCollection.recorded_at).toLocaleDateString(locale, { day: 'numeric', month: 'short' }), amount: formatPaise(cashCollection.amount) })}
               </Text>
             </View>
             <View style={ts.remainingCashBadge}>
               <Text style={ts.remainingCashText}>
-                {formatPaise(remainingAmount)} still to be paid · pay balance in cash to staff
+                {t('chitDetail.cashBalance', { amount: formatPaise(remainingAmount) })}
               </Text>
             </View>
           </View>
@@ -416,7 +421,7 @@ function MonthTimelineItem({
               <Path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z" />
             </Svg>
             <Text style={ts.statusScheduled}>
-              Payable after Auction #{p.month_number} settles
+              {t('chitDetail.payableAfterAuction', { month: p.month_number })}
             </Text>
           </View>
         ) : isUnaccountedGroup ? (
@@ -426,8 +431,8 @@ function MonthTimelineItem({
             </Svg>
             <Text style={ts.statusScheduled}>
               {hasPartialPayment
-                ? `${formatPaise(remainingAmount)} due · pay cash to staff`
-                : 'Cash payment · Staff will record'}
+                ? t('chitDetail.cashDue', { amount: formatPaise(remainingAmount) })
+                : t('chitDetail.cashStaffRecord')}
             </Text>
           </View>
         ) : canPay ? (
@@ -448,7 +453,7 @@ function MonthTimelineItem({
                   <Path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z" />
                 </Svg>
                 <Text style={ts.payBtnText}>
-                  {hasPartialPayment ? 'PAY REMAINING' : overdue ? 'PAY NOW - OVERDUE' : 'PAY NOW'}
+                  {hasPartialPayment ? t('chitDetail.payRemaining') : overdue ? t('chitDetail.payOverdue') : t('common.payNow')}
                 </Text>
                 <View style={ts.payBtnAmtBadge}>
                   <Text style={ts.payBtnAmt}>{formatPaise(hasPartialPayment ? remainingAmount : payableAmount)}</Text>
@@ -461,7 +466,7 @@ function MonthTimelineItem({
             <Svg width={14} height={14} viewBox="0 0 24 24" fill="#94A3B8">
               <Path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z" />
             </Svg>
-            <Text style={ts.statusScheduled}>Scheduled · Not yet due</Text>
+            <Text style={ts.statusScheduled}>{t('chitDetail.scheduledNotDue')}</Text>
           </View>
         )}
       </View>
@@ -470,6 +475,7 @@ function MonthTimelineItem({
 }
 
 export default function ChitDetailScreen() {
+  const { t } = useTranslation();
   const router = useRouter();
   const handleBack = useParentBack('/(tabs)/chits');
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -615,7 +621,7 @@ export default function ChitDetailScreen() {
             throw new Error('Payment server returned an invalid order.');
           }
         } catch (orderErr: any) {
-          Alert.alert('Payment Error', orderErr?.message || 'Failed to create payment order.');
+          Alert.alert(t('chitDetail.paymentError'), orderErr?.message || t('chitDetail.orderFailed'));
           setPayingId(null);
           return;
         }
@@ -646,15 +652,15 @@ export default function ChitDetailScreen() {
             signature: paymentData.razorpay_signature,
           });
           if (!verify.verified) {
-            Alert.alert('Payment Verification Failed', 'Please try again.');
+            Alert.alert(t('chitDetail.verificationFailed'), t('common.tryAgain'));
             setPayingId(null);
             return;
           }
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           if (verify.fullyPaid) {
-            Alert.alert('Payment Successful', `Month ${payment.month_number} is now fully paid.`);
+            Alert.alert(t('chitDetail.paymentSuccessful'), t('chitDetail.monthFullyPaid', { month: payment.month_number }));
           } else {
-            Alert.alert('Partial Payment Recorded', `Received ${formatPaise(verify.appliedAmount)}.\n\nRemaining: ${formatPaise(verify.remaining)}`);
+            Alert.alert(t('chitDetail.partialRecorded'), t('chitDetail.partialRecordedMessage', { amount: formatPaise(verify.appliedAmount), remaining: formatPaise(verify.remaining) }));
           }
           refreshAfterPayment();
         }
@@ -663,8 +669,8 @@ export default function ChitDetailScreen() {
         // We intentionally do NOT simulate/mark payments — payment state can
         // only come from a verified Razorpay transaction.
         Alert.alert(
-          'Payment Unavailable Here',
-          'Online payment needs the full VSYK Chits app build. Please use a development or production build to pay.',
+          t('chitDetail.paymentUnavailable'),
+          t('chitDetail.paymentUnavailableHelp'),
         );
         setPayingId(null);
         return;
@@ -672,7 +678,7 @@ export default function ChitDetailScreen() {
     } catch (e: any) {
       if (e?.code !== 'PAYMENT_CANCELLED') {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        Alert.alert('Payment Failed', e?.description ?? e?.message ?? 'Something went wrong. Please try again.');
+        Alert.alert(t('chitDetail.paymentFailed'), e?.description ?? e?.message ?? t('common.somethingWentWrong'));
       }
     } finally {
       setPayingId(null);
@@ -702,7 +708,7 @@ export default function ChitDetailScreen() {
     if (payMode === 'partial') {
       const parsed = Number(partialAmount);
       if (!parsed || parsed <= 0) {
-        Alert.alert('Invalid amount', 'Enter a valid partial amount.');
+        Alert.alert(t('errors.invalidAmount'), t('chitDetail.invalidPartial'));
         return;
       }
       payAmount = Math.min(parsed * 100, payableAmount);
@@ -723,16 +729,16 @@ export default function ChitDetailScreen() {
     return (
       <SafeAreaView style={s.safe}>
         <View style={s.appBar}>
-          <TouchableOpacity onPress={handleBack} style={s.backBtn} accessibilityRole="button" accessibilityLabel="Back to chits">
+          <TouchableOpacity onPress={handleBack} style={s.backBtn} accessibilityRole="button" accessibilityLabel={t('common.backToChits')}>
             <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.primary}>
               <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
             </Svg>
           </TouchableOpacity>
-          <Text style={s.appBarTitle}>Chit Details</Text>
+          <Text style={s.appBarTitle}>{t('chitDetail.title')}</Text>
           <View style={{ width: 40 }} />
         </View>
         <Text style={{ textAlign: 'center', marginTop: 80, color: '#94A3B8', fontFamily: 'Inter_400Regular' }}>
-          Chit group not found or access denied.
+          {t('chitDetail.notFound')}
         </Text>
       </SafeAreaView>
     );
@@ -795,7 +801,7 @@ export default function ChitDetailScreen() {
     <SafeAreaView style={s.safe} edges={['top']}>
       {/* App Bar */}
       <View style={s.appBar}>
-        <TouchableOpacity onPress={() => { Haptics.selectionAsync(); handleBack(); }} style={s.backBtn} accessibilityRole="button" accessibilityLabel="Back to chits">
+        <TouchableOpacity onPress={() => { Haptics.selectionAsync(); handleBack(); }} style={s.backBtn} accessibilityRole="button" accessibilityLabel={t('common.backToChits')}>
           <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.primary}>
             <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
           </Svg>
@@ -820,28 +826,28 @@ export default function ChitDetailScreen() {
         <View style={s.heroCard}>
           <View style={s.heroTop}>
             <View>
-              <Text style={s.heroLabel}>CHIT VALUE</Text>
+              <Text style={s.heroLabel}>{t('chitDetail.chitValue')}</Text>
               <Text style={s.heroValue}>{formatPaise(group.value)}</Text>
             </View>
             <View style={[s.statusPill, group.status === 'active' && { backgroundColor: '#DCFCE7' }]}>
               <Text style={[s.statusPillText, group.status === 'active' && { color: '#16A34A' }]}>
-                {group.status?.toUpperCase()}
+                {t(`common.${group.status}`, { defaultValue: group.status })}
               </Text>
             </View>
           </View>
           <View style={s.heroStats}>
             <View style={s.heroStat}>
-              <Text style={s.heroStatLabel}>MONTHLY DUE</Text>
+              <Text style={s.heroStatLabel}>{t('chitDetail.monthlyDue')}</Text>
               <Text style={s.heroStatVal}>{formatPaise(group.monthly_installment)}</Text>
             </View>
             <View style={s.heroStatDivider} />
             <View style={s.heroStat}>
-              <Text style={s.heroStatLabel}>DURATION</Text>
-              <Text style={s.heroStatVal}>{group.duration_months} Months</Text>
+              <Text style={s.heroStatLabel}>{t('chitDetail.duration')}</Text>
+              <Text style={s.heroStatVal}>{t('common.monthCount', { count: group.duration_months })}</Text>
             </View>
             <View style={s.heroStatDivider} />
             <View style={s.heroStat}>
-              <Text style={s.heroStatLabel}>PROGRESS</Text>
+              <Text style={s.heroStatLabel}>{t('common.progress')}</Text>
               <Text style={s.heroStatVal}>{paidCount}/{group.duration_months}</Text>
             </View>
           </View>
@@ -854,26 +860,26 @@ export default function ChitDetailScreen() {
         {/* Summary Cards */}
         <View style={s.summaryRow}>
           <View style={[s.summaryCard, { borderLeftColor: Colors.secondary }]}>
-            <Text style={s.summaryLabel}>TOTAL PAID</Text>
+            <Text style={s.summaryLabel}>{t('common.totalPaid')}</Text>
             <Text style={[s.summaryVal, { color: Colors.secondary }]}>{formatPaise(totalPaid)}</Text>
           </View>
           <View style={[s.summaryCard, { borderLeftColor: '#EF4444' }]}>
-            <Text style={s.summaryLabel}>REMAINING</Text>
+            <Text style={s.summaryLabel}>{t('common.remaining')}</Text>
             <Text style={[s.summaryVal, { color: '#EF4444' }]}>{formatPaise(totalDue)}</Text>
           </View>
         </View>
 
         {/* Timeline Header */}
         <View style={s.sectionHeader}>
-          <Text style={s.sectionTitle}>Payment Timeline</Text>
-          <Text style={s.sectionSub}>{payments.length} installments</Text>
+          <Text style={s.sectionTitle}>{t('chitDetail.paymentTimeline')}</Text>
+          <Text style={s.sectionSub}>{t('chitDetail.installmentCount', { count: payments.length })}</Text>
         </View>
 
         {/* Timeline */}
         <View style={ts.container}>
           {payments.length === 0 ? (
             <Text style={{ color: '#94A3B8', textAlign: 'center', padding: 24, fontFamily: 'Inter_400Regular' }}>
-              No payment schedule found.
+              {t('chitDetail.noSchedule')}
             </Text>
           ) : (
             payments.map((p, idx) => {
@@ -922,7 +928,7 @@ export default function ChitDetailScreen() {
             keyboardShouldPersistTaps="handled"
           >
             <View style={s.paySheet}>
-              <Text style={s.payTitle}>Pay Installment</Text>
+              <Text style={s.payTitle}>{t('chitDetail.payInstallment')}</Text>
               {(() => {
                 const existingPartialPaid = selectedPayment ? (partialPaymentTotals[selectedPayment.month_number] || 0) : 0;
                 const totalDueOriginal = selectedPayable || 0;
@@ -931,24 +937,24 @@ export default function ChitDetailScreen() {
                 return (
                   <>
                     <Text style={s.paySub}>
-                      Month {selectedPayment?.month_number ?? '-'}
+                      {t('common.monthNumber', { month: selectedPayment?.month_number ?? '-' })}
                       {existingPartialPaid > 0 ? (
-                        <Text style={{ color: '#F59E0B' }}> · {formatPaise(existingPartialPaid)} already paid</Text>
+                        <Text style={{ color: '#F59E0B' }}>{t('chitDetail.alreadyPaid', { amount: formatPaise(existingPartialPaid) })}</Text>
                       ) : null}
                     </Text>
                     {existingPartialPaid > 0 && (
                       <View style={{ backgroundColor: '#FEF3C7', padding: 12, borderRadius: 10, marginTop: 8 }}>
                         <Text style={{ fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#92400E' }}>
-                          Original due: {formatPaise(totalDueOriginal)}
+                          {t('chitDetail.originalDue', { amount: formatPaise(totalDueOriginal) })}
                         </Text>
                         <Text style={{ fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#92400E', marginTop: 2 }}>
-                          Remaining: {formatPaise(remainingDue)}
+                          {t('common.remainingAmount', { amount: formatPaise(remainingDue) })}
                         </Text>
                       </View>
                     )}
                     {!existingPartialPaid && (
                       <Text style={[s.paySub, { marginTop: -8 }]}>
-                        Due {formatPaise(totalDueOriginal)}
+                        {t('chitDetail.dueAmount', { amount: formatPaise(totalDueOriginal) })}
                       </Text>
                     )}
                   </>
@@ -960,13 +966,13 @@ export default function ChitDetailScreen() {
                   style={[s.payModeBtn, payMode === 'full' && s.payModeBtnActive]}
                   onPress={() => setPayMode('full')}
                 >
-                  <Text style={s.payModeText}>Pay Full</Text>
+                  <Text style={s.payModeText}>{t('chitDetail.payFull')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[s.payModeBtn, payMode === 'partial' && s.payModeBtnActive]}
                   onPress={() => setPayMode('partial')}
                 >
-                  <Text style={s.payModeText}>Pay Partial</Text>
+                  <Text style={s.payModeText}>{t('chitDetail.payPartial')}</Text>
                 </TouchableOpacity>
               </View>
 
@@ -974,23 +980,23 @@ export default function ChitDetailScreen() {
                 <View style={{ gap: 8 }}>
                   <TextInput
                     style={s.payInput}
-                    placeholder="Enter amount in ₹"
+                    placeholder={t('chitDetail.amountPlaceholder')}
                     keyboardType="number-pad"
                     value={partialAmount}
                     onChangeText={setPartialAmount}
                   />
                   <Text style={s.payHint}>
-                    Max {formatPaise(selectedPayment ? Math.max(0, selectedPayable - (partialPaymentTotals[selectedPayment.month_number] || 0)) : selectedPayable)}
+                    {t('chitDetail.maximumAmount', { amount: formatPaise(selectedPayment ? Math.max(0, selectedPayable - (partialPaymentTotals[selectedPayment.month_number] || 0)) : selectedPayable) })}
                   </Text>
                 </View>
               )}
 
               <View style={s.payActions}>
                 <TouchableOpacity style={s.payCancelBtn} onPress={() => setPaySheetVisible(false)}>
-                  <Text style={s.payCancelText}>Cancel</Text>
+                  <Text style={s.payCancelText}>{t('common.cancel')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={s.payConfirmBtn} onPress={submitPay}>
-                  <Text style={s.payConfirmText}>Pay Now</Text>
+                  <Text style={s.payConfirmText}>{t('common.payNow')}</Text>
                 </TouchableOpacity>
               </View>
             </View>

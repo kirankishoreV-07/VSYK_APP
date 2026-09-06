@@ -1,15 +1,19 @@
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Image, Dimensions } from 'react-native';
+import { View, ScrollView, TouchableOpacity, StyleSheet, Image, Dimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LocalizedText as Text } from '../../../components/LocalizedText';
 import { useRouter } from 'expo-router';
 import Svg, { Path, Circle } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { Colors, Shadows } from '../../../lib/constants';
 import { useParentBack } from '../../../lib/hooks/useParentBack';
+import { useTranslation } from 'react-i18next';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 
 const { width } = Dimensions.get('window');
 const SW = width - 40;
 
 export default function AIInsightsScreen() {
+  const { t } = useTranslation();
   const router = useRouter();
   const handleBack = useParentBack('/(tabs)/profile');
 
@@ -17,12 +21,12 @@ export default function AIInsightsScreen() {
     <SafeAreaView style={s.safe} edges={['top']}>
       {/* App Bar */}
       <View style={s.appBar}>
-        <TouchableOpacity style={s.backBtn} onPress={handleBack} accessibilityRole="button" accessibilityLabel="Back to profile">
+        <TouchableOpacity style={s.backBtn} onPress={handleBack} accessibilityRole="button" accessibilityLabel={t('common.backToProfile')}>
           <Svg width={24} height={24} viewBox="0 0 24 24" fill={Colors.primary}>
             <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
           </Svg>
         </TouchableOpacity>
-        <Text style={s.appBarTitle}>Insights</Text>
+        <Text style={s.appBarTitle}>{t('insights.title')}</Text>
         <View style={{ width: 40 }} />
       </View>
 
@@ -33,10 +37,10 @@ export default function AIInsightsScreen() {
             <Svg width={20} height={20} viewBox="0 0 24 24" fill={Colors.secondary}>
               <Path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V5h14v14zM7 10h2v7H7zm4-3h2v10h-2zm4 6h2v4h-2z" />
             </Svg>
-            <Text style={s.headerLabel}>AI MONTHLY INSIGHTS</Text>
+            <Text style={s.headerLabel}>{t('insights.monthly')}</Text>
           </View>
-          <Text style={s.headerTitle}>Your September Review</Text>
-          <Text style={s.headerSub}>Smart analytics derived from your chit performance and savings behavior.</Text>
+          <Text style={s.headerTitle}>{t('insights.review')}</Text>
+          <Text style={s.headerSub}>{t('insights.reviewHelp')}</Text>
         </View>
 
         {/* Dividend Yield Analysis */}
@@ -45,8 +49,8 @@ export default function AIInsightsScreen() {
           
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
             <View>
-              <Text style={s.cardTitle}>Dividend Yield Analysis</Text>
-              <Text style={s.cardSub}>Profitability across active chits</Text>
+              <Text style={s.cardTitle}>{t('insights.dividendAnalysis')}</Text>
+              <Text style={s.cardSub}>{t('insights.profitability')}</Text>
             </View>
             <View style={s.badge}>
               <Text style={s.badgeTxt}>+12.4% APR</Text>
@@ -61,7 +65,7 @@ export default function AIInsightsScreen() {
           </View>
 
           <View style={s.cardFooter}>
-            <Text style={s.footerLabel}>LATEST DIVIDEND</Text>
+            <Text style={s.footerLabel}>{t('insights.latestDividend')}</Text>
             <Text style={s.footerVal}>₹4,250.00</Text>
           </View>
         </View>
@@ -76,10 +80,10 @@ export default function AIInsightsScreen() {
                   <Path d="M14 11c1.66 0 2.99-1.34 2.99-3S15.66 5 14 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z" />
                 </Svg>
               </View>
-              <Text style={s.bentoTitle}>Auction Trends</Text>
+              <Text style={s.bentoTitle}>{t('insights.auctionTrends')}</Text>
             </View>
             <View>
-              <Text style={s.bentoSub}>Next bid suggested</Text>
+              <Text style={s.bentoSub}>{t('insights.nextBidSuggested')}</Text>
               <Text style={s.bentoVal}>₹18,500</Text>
             </View>
           </View>
@@ -93,10 +97,10 @@ export default function AIInsightsScreen() {
                   <Path d="M16 6l2.29 2.29-4.88 4.88-4-4L2 16.59 3.41 18l6-6 4 4 6.3-6.29L22 12V6z" />
                 </Svg>
               </View>
-              <Text style={[s.bentoTitle, { color: '#FFF' }]}>Market Highs</Text>
+              <Text style={[s.bentoTitle, { color: '#FFF' }]}>{t('insights.marketHighs')}</Text>
             </View>
             <View>
-              <Text style={[s.bentoSub, { color: 'rgba(255,255,255,0.7)' }]}>Volume peak</Text>
+              <Text style={[s.bentoSub, { color: 'rgba(255,255,255,0.7)' }]}>{t('insights.volumePeak')}</Text>
               <Text style={s.bentoVal}>8.2% UP</Text>
             </View>
           </View>
@@ -106,8 +110,8 @@ export default function AIInsightsScreen() {
         <View style={s.card}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
             <View>
-              <Text style={s.cardTitle}>Savings Milestone</Text>
-              <Text style={s.cardSub}>Target: Family Home Fund</Text>
+              <Text style={s.cardTitle}>{t('insights.savingsMilestone')}</Text>
+              <Text style={s.cardSub}>{t('insights.familyHomeTarget')}</Text>
             </View>
             <View style={s.ringContainer}>
               <Svg width={60} height={60} viewBox="0 0 60 60" style={{ transform: [{ rotate: '-90deg' }] }}>
@@ -121,8 +125,8 @@ export default function AIInsightsScreen() {
           <View style={{ gap: 12 }}>
             <View style={s.listItem}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                <View style={s.listIconBox}><Text style={{ fontSize: 16 }}>💰</Text></View>
-                <Text style={s.listTitle}>Chit #802 (Group A)</Text>
+                <View style={s.listIconBox}><MaterialCommunityIcons name="wallet-outline" size={18} color={Colors.primary} /></View>
+                <Text style={s.listTitle}>{t('insights.exampleGroup')}</Text>
               </View>
               <Svg width={20} height={20} viewBox="0 0 24 24" fill={Colors.secondary}>
                 <Path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
@@ -130,10 +134,10 @@ export default function AIInsightsScreen() {
             </View>
             <View style={[s.listItem, { backgroundColor: '#FFFFFF' }]}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                <View style={[s.listIconBox, { backgroundColor: '#F8FAFC' }]}><Text style={{ fontSize: 16 }}>⏳</Text></View>
-                <Text style={[s.listTitle, { color: '#64748B' }]}>Pending Verification</Text>
+                <View style={[s.listIconBox, { backgroundColor: '#F8FAFC' }]}><MaterialCommunityIcons name="clock-outline" size={18} color="#64748B" /></View>
+                <Text style={[s.listTitle, { color: '#64748B' }]}>{t('insights.pendingVerification')}</Text>
               </View>
-              <Text style={s.listMeta}>IN 2 DAYS</Text>
+              <Text style={s.listMeta}>{t('insights.inTwoDays')}</Text>
             </View>
           </View>
         </View>
@@ -141,12 +145,12 @@ export default function AIInsightsScreen() {
         {/* Boost Potential CTA */}
         <View style={s.ctaCard}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-            <Text style={{ fontSize: 24 }}>🚀</Text>
-            <Text style={s.ctaTitle}>Boost Potential</Text>
+            <MaterialCommunityIcons name="trending-up" size={26} color={Colors.secondary} />
+            <Text style={s.ctaTitle}>{t('insights.boostPotential')}</Text>
           </View>
-          <Text style={s.ctaSub}>Participate in the upcoming 'Mega 50' chit to increase your projected dividends by 18% this quarter.</Text>
+          <Text style={s.ctaSub}>{t('insights.boostHelp')}</Text>
           <TouchableOpacity style={s.ctaBtn} activeOpacity={0.9} onPress={() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy)}>
-            <Text style={s.ctaBtnTxt}>EXPLORE NEW GROUPS</Text>
+            <Text style={s.ctaBtnTxt}>{t('insights.exploreGroups')}</Text>
           </TouchableOpacity>
         </View>
 

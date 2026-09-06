@@ -1,10 +1,11 @@
 import { Tabs, useRouter } from 'expo-router';
 import { useEffect } from 'react';
-import { ActivityIndicator, View, Text, StyleSheet, Platform } from 'react-native';
+import { ActivityIndicator, View, StyleSheet, Platform } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 import { Colors } from '../../lib/constants';
 import { useTranslation } from 'react-i18next';
 import { useMemberSession } from '../../lib/MemberSessionContext';
+import { LocalizedText as Text } from '../../components/LocalizedText';
 
 // ─── Tab Item Component ───────────────────────────────────────
 type TabIconProps = { focused: boolean; label: string; children: React.ReactNode };
