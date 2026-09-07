@@ -4,7 +4,6 @@ import {
   ScrollView,
   TouchableOpacity,
   StyleSheet,
-  Platform,
   Dimensions,
   ActivityIndicator,
   RefreshControl,
@@ -384,14 +383,12 @@ export default function HomeScreen() {
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>{t('dashboard.activeChits')}</Text>
             <TouchableOpacity
-              style={styles.viewAllBtn}
+              style={styles.browseChitsBtn}
               onPress={() => { Haptics.selectionAsync(); router.push('/(tabs)/chits'); }}
               activeOpacity={0.7}
             >
-              <Text style={styles.viewAllText}>{t('common.viewAll')}</Text>
-              <Svg width={14} height={14} viewBox="0 0 24 24" fill={Colors.primary}>
-                <Path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z" />
-              </Svg>
+              <MaterialCommunityIcons name="magnify" size={15} color={Colors.primary} />
+              <Text style={styles.browseChitsText}>{t('dashboard.browseChits')}</Text>
             </TouchableOpacity>
           </View>
 
@@ -455,19 +452,6 @@ export default function HomeScreen() {
         </View>
       </ScrollView>
 
-      {/* ── FAB ── */}
-      <TouchableOpacity
-        style={styles.fab}
-        onPress={() => {
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-          router.push('/(tabs)/chits');
-        }}
-        activeOpacity={0.85}
-      >
-        <Svg width={28} height={28} viewBox="0 0 24 24" fill="#FFFFFF">
-          <Path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
-        </Svg>
-      </TouchableOpacity>
     </SafeAreaView>
   );
 }
@@ -531,8 +515,12 @@ const styles = StyleSheet.create({
   section: { gap: 12 },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   sectionTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20, color: Colors.primary, letterSpacing: -0.3 },
-  viewAllBtn: { flexDirection: 'row', alignItems: 'center', gap: 2 },
-  viewAllText: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: Colors.primary, letterSpacing: 0.3 },
+  browseChitsBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10,
+    backgroundColor: 'rgba(1,120,158,0.08)',
+  },
+  browseChitsText: { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: Colors.primary },
 
   // Chit Card
   chitCarousel: { paddingRight: 20, gap: 12 },
@@ -618,12 +606,4 @@ const styles = StyleSheet.create({
   // Skeleton
   skeleton: { backgroundColor: '#E2E8F0' },
 
-  // FAB
-  fab: {
-    position: 'absolute', bottom: Platform.OS === 'ios' ? 104 : 88, right: 20,
-    width: 56, height: 56, borderRadius: 28, backgroundColor: Colors.primary,
-    alignItems: 'center', justifyContent: 'center',
-    shadowColor: Colors.primary, shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.4, shadowRadius: 16, elevation: 12,
-  },
 });

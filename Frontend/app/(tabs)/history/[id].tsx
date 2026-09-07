@@ -36,6 +36,11 @@ const CHART_COLORS = {
   awaiting: '#94A3B8',
 };
 
+function formatTimelineAmount(paise: number): string {
+  if (paise < 100000) return formatPaise(paise);
+  return `₹${Math.round(paise / 100000)}k`;
+}
+
 function DonutChart({ detail }: { detail: GroupHistoryDetail }) {
   const { t } = useTranslation();
   const segments = [
@@ -346,9 +351,9 @@ function MonthBarChart({ detail }: { detail: GroupHistoryDetail }) {
                   {/* Short Amount / Status Hint */}
                   <Text style={st.barAmountHint} numberOfLines={1}>
                     {m.paidAmount > 0
-                      ? `₹${Math.round(m.paidAmount / 100000)}k`
+                      ? formatTimelineAmount(m.paidAmount)
                       : m.dueAmount != null
-                      ? `₹${Math.round(m.dueAmount / 100000)}k`
+                      ? formatTimelineAmount(m.dueAmount)
                       : t('historyDetail.estimatedShort')}
                   </Text>
                 </TouchableOpacity>
