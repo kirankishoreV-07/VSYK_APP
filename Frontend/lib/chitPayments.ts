@@ -102,14 +102,31 @@ export function getMemberDueAfterAuction(
 
 export type CyclePaymentStatus = 'awaiting_auction' | 'unpaid' | 'partial' | 'full';
 
+/** Cash-only dues are collected to the nearest rupee; database units stay paise. */
+export function roundCashPaise(amount: number): number {
+  return Math.round(amount / 100) * 100;
+}
+
+export function getCashCycleDueAmount(
+  monthNumber: number,
+  monthlyInstallment: number,
+  auctions: AuctionCycleInfo[],
+): number | null {
+  const due = getCycleDueAmount(monthNumber, monthlyInstallment, auctions);
+  return due == null ? null : roundCashPaise(due);
+}
+
 /** Member payment state for a cycle (cash or logged transactions). */
 export function getCyclePaymentStatus(
   monthNumber: number,
   monthlyInstallment: number,
   auctions: AuctionCycleInfo[],
   paidAmount: number,
+  cashOnly = false,
 ): CyclePaymentStatus {
-  const due = getCycleDueAmount(monthNumber, monthlyInstallment, auctions);
+  const due = cashOnly
+    ? getCashCycleDueAmount(monthNumber, monthlyInstallment, auctions)
+    : getCycleDueAmount(monthNumber, monthlyInstallment, auctions);
   if (due == null) return 'awaiting_auction';
   if (paidAmount >= due) return 'full';
   if (paidAmount > 0) return 'partial';
@@ -130,8 +147,11 @@ export function getCycleRemainingDue(
   monthlyInstallment: number,
   auctions: AuctionCycleInfo[],
   paidAmount: number,
+  cashOnly = false,
 ): number | null {
-  const due = getCycleDueAmount(monthNumber, monthlyInstallment, auctions);
+  const due = cashOnly
+    ? getCashCycleDueAmount(monthNumber, monthlyInstallment, auctions)
+    : getCycleDueAmount(monthNumber, monthlyInstallment, auctions);
   if (due == null) return null;
   return Math.max(0, due - paidAmount);
 }
@@ -146,7 +166,7 @@ export function getFullyCollectedMonths(
   return collections
     .filter((c) => {
       if (excludeId && 'id' in c && (c as { id?: string }).id === excludeId) return false;
-      return isCycleFullyCollected(c.month_number, monthlyInstallment, auctions, c.amount);
+      return getCyclePaymentStatus(c.month_number, monthlyInstallment, auctions, c.amount, true) === 'full';
     })
     .map((c) => c.month_number);
 }

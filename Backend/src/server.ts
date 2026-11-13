@@ -17,6 +17,7 @@ import { generateAndNotifyToday } from './collections/service';
 import { adminCustomerLifecycleRouter } from './admin/customerLifecycle';
 import { adminDestructiveDeletionRouter } from './admin/destructiveDeletion';
 import { membershipsRouter } from './memberships/router';
+import { auctionHistoryRouter } from './admin/auctionHistory';
 
 dotenv.config();
 
@@ -106,6 +107,7 @@ app.use('/api/account', accountRouter);
 app.use('/api/collections', collectionsRouter);
 app.use('/api/admin', adminCustomerLifecycleRouter);
 app.use('/api/admin', adminDestructiveDeletionRouter);
+app.use('/api/admin', auctionHistoryRouter);
 app.use('/api/memberships', membershipsRouter);
 
 app.get('/api/health', (req: Request, res: Response) => {

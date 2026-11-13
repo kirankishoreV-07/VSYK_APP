@@ -15,7 +15,7 @@ import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { supabase } from '../../../lib/supabase';
 import { RecordCashCollectionModal } from '../customers/RecordCashCollectionModal';
-import { getCycleDueAmount, getFullyCollectedMonths } from '../../../lib/chitPayments';
+import { getCycleDueAmount as getExactCycleDueAmount, getCashCycleDueAmount, getFullyCollectedMonths } from '../../../lib/chitPayments';
 import { isAuctionScheduledDisplay } from '../../../lib/auctionUtils';
 import { isMemberAuctionWinner, WINNER_HIGHLIGHT } from '../../../lib/auctionWinner';
 import { buildCsvDocument, paiseToCsvAmount, shareCsvFile } from '../../../lib/csvExport';
@@ -83,6 +83,7 @@ export function GroupMemberPaymentModal({
   const [loggingPayment, setLoggingPayment] = useState(false);
 
   const isUnaccountedGroup = group?.accounting_type === 'unaccounted';
+  const getCycleDueAmount = isUnaccountedGroup ? getCashCycleDueAmount : getExactCycleDueAmount;
 
   const resetSubViews = useCallback(() => {
     setShowLogPayment(false);
@@ -99,11 +100,12 @@ export function GroupMemberPaymentModal({
 
   const fetchCashCollections = useCallback(async (chitMemberId: string) => {
     try {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('cash_collections')
         .select('*')
         .eq('chit_member_id', chitMemberId)
         .order('month_number', { ascending: true });
+      if (error) throw error;
       setMemberCashCollections(data || []);
     } catch (err) {
       console.error('Error fetching cash collections:', err);
@@ -345,8 +347,9 @@ export function GroupMemberPaymentModal({
             )}
             existingCollection={editingCashCollection}
             onRequestSettlement={handleRequestSettlement}
-            onSuccess={() => {
-              if (member.id) fetchCashCollections(member.id);
+            onSuccess={async (saved) => {
+              setMemberCashCollections((rows) => [...rows.filter((row) => row.id !== saved.id), saved]);
+              if (member.id) await fetchCashCollections(member.id);
               setShowRecordCash(false);
               setEditingCashCollection(null);
             }}

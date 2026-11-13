@@ -10,7 +10,7 @@
 
 import { Router, Request, Response } from 'express';
 import { requireAdminAuth } from '../middleware/adminAuth';
-import { generateAndNotifyToday } from './service';
+import { generateAndNotifyToday, generateTodaysFollowups } from './service';
 import { notifyStaffDailyDigest } from '../whatsapp/proactiveNotifications';
 
 // Reading/updating individual follow-up rows (status, assignment, notes) is
@@ -22,6 +22,17 @@ import { notifyStaffDailyDigest } from '../whatsapp/proactiveNotifications';
 // digest-sending (Gupshup) genuinely need to run on the backend.
 
 export const collectionsRouter = Router();
+
+/** Refresh financial snapshots without sending staff WhatsApp messages. */
+collectionsRouter.post('/followups/refresh', requireAdminAuth, async (_req: Request, res: Response) => {
+  try {
+    const result = await generateTodaysFollowups();
+    return res.json({ ok: true, ...result });
+  } catch (error: any) {
+    console.error('[Collections] refresh failed:', error?.message || error);
+    return res.status(500).json({ error: 'Could not refresh completed-auction balances. Please retry.' });
+  }
+});
 
 /** Generate (idempotent) today's follow-up list and send staff their digest. */
 collectionsRouter.post('/followups/generate', requireAdminAuth, async (_req: Request, res: Response) => {

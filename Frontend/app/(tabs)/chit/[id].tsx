@@ -14,7 +14,7 @@ import * as Haptics from 'expo-haptics';
 import { Colors, Shadows } from '../../../lib/constants';
 import { useMemberSession } from '../../../lib/MemberSessionContext';
 import { apiPostAuthed } from '../../../lib/api';
-import { dedupeAuctionCycles, getCycleDueAmount } from '../../../lib/chitPayments';
+import { dedupeAuctionCycles, getCycleDueAmount, getCashCycleDueAmount } from '../../../lib/chitPayments';
 import { isMemberAuctionWinner, WINNER_HIGHLIGHT } from '../../../lib/auctionWinner';
 import type { AuctionPrizeSettlement } from '../../../components/admin/customers/types';
 import { MemberPrizePayoutDetailsModal } from '../../../components/member/MemberPrizePayoutDetailsModal';
@@ -199,6 +199,7 @@ function useCashCollections(membershipId: string | undefined, isUnaccounted: boo
       return byMonth;
     },
     enabled: !!membershipId && isUnaccounted,
+    refetchInterval: isUnaccounted ? 10_000 : false,
   });
 }
 
@@ -756,7 +757,7 @@ export default function ChitDetailScreen() {
   const getPayable = (p: PaymentRow) => {
     const defaultInstallment = group?.monthly_installment || 0;
     const auctionList = Array.from(settlementByMonth.values());
-    return getCycleDueAmount(p.month_number, defaultInstallment, auctionList);
+    return (isUnaccounted ? getCashCycleDueAmount : getCycleDueAmount)(p.month_number, defaultInstallment, auctionList);
   };
 
   // First unpaid month — for unaccounted, a month is covered when cash paid >= payable amount.

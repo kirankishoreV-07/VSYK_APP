@@ -343,7 +343,14 @@ export function GroupsTab({
                     auctions={groupAuctions}
                     cashCollections={groupCashCollections}
                     coveredMonths={fullyCollectedMonths}
-                    onSuccess={() => {
+                    onSuccess={async (saved) => {
+                        setCashCollections((rows) => [...rows.filter((row) => row.id !== saved.id), saved]);
+                        const { data, error } = await supabase
+                            .from('cash_collections')
+                            .select('*')
+                            .eq('chit_member_id', saved.chit_member_id)
+                            .order('month_number', { ascending: true });
+                        if (!error && data) setCashCollections(data as CashCollection[]);
                         setCashModalVisible(false);
                         setEditingCollection(null);
                     }}

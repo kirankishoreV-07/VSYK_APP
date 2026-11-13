@@ -280,7 +280,8 @@ export async function fetchGroupHistoryDetail(
     const schedule = scheduleByMonth.get(month);
     const auction = auctionByMonth.get(month);
     const memberWonThisMonth = isMemberAuctionWinner(auction, membershipId);
-    const dueAmount = getCycleDueAmount(month, group.monthly_installment, auctions);
+    const exactDue = getCycleDueAmount(month, group.monthly_installment, auctions);
+    const dueAmount = exactDue != null && isUnaccounted ? Math.round(exactDue / 100) * 100 : exactDue;
 
     let paidAmount = 0;
     let paidAt: string | null = null;
@@ -532,7 +533,8 @@ export function buildMemberPaymentMonths(input: BuildMonthsInput): MonthPaymentR
     const schedule = scheduleByMonth.get(month);
     const auction = auctionByMonth.get(month);
     const memberWonThisMonth = isMemberAuctionWinner(auction, membershipId);
-    const dueAmount = getCycleDueAmount(month, monthlyInstallment, dedupedAuctions);
+    const exactDue = getCycleDueAmount(month, monthlyInstallment, dedupedAuctions);
+    const dueAmount = exactDue != null && isUnaccounted ? Math.round(exactDue / 100) * 100 : exactDue;
 
     let paidAmount = 0;
     let paidAt: string | null = null;

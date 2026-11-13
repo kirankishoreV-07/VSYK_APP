@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, Modal, Animated, Platform, KeyboardAvoidingView, Alert, Switch, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AppLogo } from '../../components/AppLogo';
@@ -8,6 +8,7 @@ import { Colors } from '../../lib/constants';
 import { supabase } from '../../lib/supabase';
 import { useRouter } from 'expo-router';
 import { apiPostAdmin } from '../../lib/api';
+import { searchCustomers } from '../../lib/customerSearch';
 
 type CustomerType = 'Individual' | 'Company';
 
@@ -100,13 +101,20 @@ export default function AdminCustomers() {
 
   const fetchCustomers = async () => {
     try {
-      const { data, error } = await supabase
-        .from('customers')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
-      if (data) setCustomers(data);
+      // Supabase caps individual responses; include every page in local search.
+      const rows: any[] = [];
+      const pageSize = 500;
+      for (let offset = 0; ; offset += pageSize) {
+        const { data, error } = await supabase.from('customers')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: true })
+          .range(offset, offset + pageSize - 1);
+        if (error) throw error;
+        rows.push(...(data || []));
+        if (!data || data.length < pageSize) break;
+      }
+      setCustomers(rows);
     } catch (err) {
       console.error('Error fetching customers:', err);
     }
@@ -232,12 +240,12 @@ export default function AdminCustomers() {
     }
   };
 
-  const filteredCustomers = customers.filter(c => {
-    const query = searchQuery.trim().toLowerCase();
-    return c.full_name?.toLowerCase().includes(query) ||
-      c.customer_id?.toLowerCase().includes(query) ||
-      c.phone?.replace(/\D/g, '').includes(query.replace(/\D/g, ''));
-  });
+  const filteredCustomers = useMemo(() => searchCustomers(customers, searchQuery), [customers, searchQuery]);
+  const updateSearch = (value: string) => {
+    persistedCustomerSearch = value;
+    persistedCustomerScrollY = 0;
+    setSearchQuery(value);
+  };
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -258,6 +266,8 @@ export default function AdminCustomers() {
         ref={listRef}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -284,8 +294,16 @@ export default function AdminCustomers() {
               placeholder="Search by name, customer ID, or mobile number"
               placeholderTextColor="#94A3B8"
               value={searchQuery}
-              onChangeText={(value) => { persistedCustomerSearch = value; setSearchQuery(value); }}
+              onChangeText={updateSearch}
+              autoCorrect={false}
+              autoCapitalize="none"
+              returnKeyType="search"
             />
+            {!!searchQuery && (
+              <TouchableOpacity onPress={() => updateSearch('')} accessibilityRole="button" accessibilityLabel="Clear customer search" style={{ padding: 8 }}>
+                <Text style={{ color: Colors.primary, fontSize: 20 }}>×</Text>
+              </TouchableOpacity>
+            )}
           </View>
 
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filtersScroll} contentContainerStyle={styles.filtersContent}>
@@ -322,14 +340,14 @@ export default function AdminCustomers() {
 
         {/* Customer List */}
         <View style={styles.listContainer}>
-          <Text style={styles.sectionTitle}>Recent Customers</Text>
+          <Text style={styles.sectionTitle}>{searchQuery.trim() ? `Search results (${filteredCustomers.length})` : 'Recent Customers'}</Text>
 
           {filteredCustomers.length === 0 ? (
             <Text style={{ fontFamily: 'Inter_500Medium', color: '#64748B', textAlign: 'center', marginTop: 20 }}>No customers found matching your criteria.</Text>
           ) : (
-            filteredCustomers.map((c, i) => (
+            filteredCustomers.map((c) => (
               <TouchableOpacity 
-                key={i} 
+                key={c.id}
                 style={styles.customerCard} 
                 activeOpacity={0.7}
                 onPress={() => {

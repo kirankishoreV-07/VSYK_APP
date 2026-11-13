@@ -272,13 +272,20 @@ async function callGupshupApi(
   apiKey: string,
   operationName: string,
 ): Promise<GupshupSendResult> {
-  // GUPSHUP_DRY_RUN short-circuits every outbound Gupshup call before any
-  // network request is made — this is the single choke point ALL send*
-  // functions above route through, so it is the one place a test/regression
-  // run can be made fully incapable of reaching real customers, regardless
-  // of which real template IDs are configured in .env. Set only by test
-  // entrypoints (never by the live server), and never for production.
-  if (process.env.GUPSHUP_DRY_RUN === 'true') {
+  // Local testing may explicitly allow the configured OTP template while
+  // keeping all other outbound messages in dry-run mode. Default dry-run
+  // behavior still blocks every send unless this separate flag is enabled.
+  let liveOtpAllowed = false;
+  if (process.env.GUPSHUP_ALLOW_LIVE_OTP === 'true' && operationName === 'sendTemplateMessage') {
+    try {
+      const template = JSON.parse(body.get('template') || '{}');
+      const otpTemplateId = process.env.GUPSHUP_TEMPLATE_OTP?.trim();
+      liveOtpAllowed = !!otpTemplateId && template.id === otpTemplateId;
+    } catch {
+      liveOtpAllowed = false;
+    }
+  }
+  if (process.env.GUPSHUP_DRY_RUN === 'true' && !liveOtpAllowed) {
     const fakeMessageId = `dryrun-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     console.log(`[Gupshup][DRY RUN] ${operationName} — no real request sent (msgId: ${fakeMessageId})`);
     return { success: true, messageId: fakeMessageId, statusCode: 202 };

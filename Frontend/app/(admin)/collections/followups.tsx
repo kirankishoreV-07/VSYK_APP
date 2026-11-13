@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, Linking, Modal, TextInput,
   KeyboardAvoidingView, SectionList, RefreshControl, Platform,
@@ -12,6 +12,7 @@ import { Colors, Shadows } from '../../../lib/constants';
 import { formatPaise } from '../../../lib/hooks/useDashboard';
 import { apiPostAdmin } from '../../../lib/api';
 import { useAdminParentBack } from '../../../lib/hooks/admin/useAdminParentBack';
+import { useFocusEffect } from '@react-navigation/native';
 
 type Priority = 'high' | 'medium' | 'low';
 type Status = 'pending' | 'contacted' | 'promised' | 'collected' | 'no_response';
@@ -27,6 +28,7 @@ type FollowupRow = {
   amount_due: number;
   suggested_action: string;
   status: Status;
+  payment_schedules: { month_number: number; due_date: string } | null;
   chit_members: {
     customer_id: string;
     customers: { full_name: string; phone: string } | null;
@@ -51,13 +53,16 @@ const PRIORITY_META: Record<Priority, { label: string; color: string; bg: string
 };
 
 function todayStr(): string {
-  return new Date().toISOString().slice(0, 10);
+  return new Date(Date.now() + 330 * 60_000).toISOString().slice(0, 10);
 }
 
 function useTodaysFollowups() {
   return useQuery<FollowupRow[]>({
     queryKey: ['admin', 'collection-followups', todayStr()],
     queryFn: async () => {
+      // A refresh must reconcile snapshots, not merely reload yesterday's
+      // amounts or stale rows for live/upcoming auctions.
+      await apiPostAdmin('/api/collections/followups/refresh', {});
       const result: FollowupRow[] = [];
       const pageSize = 500;
       for (let offset = 0; ; offset += pageSize) {
@@ -66,6 +71,7 @@ function useTodaysFollowups() {
         .select(`
           id, chit_member_id, payment_schedule_id, assigned_staff_id, priority,
           days_overdue, amount_due, suggested_action, status,
+          payment_schedules ( month_number, due_date ),
           chit_members ( customer_id, customers ( full_name, phone ), chit_groups ( id, name ) )
         `)
         .eq('follow_up_date', todayStr())
@@ -77,6 +83,8 @@ function useTodaysFollowups() {
       if (page.length < pageSize) return result;
       }
     },
+    staleTime: 5_000,
+    refetchInterval: 30_000,
   });
 }
 
@@ -163,11 +171,8 @@ function QueueSummary({
   unassignedCount: number;
 }) {
   const activeCount = analytics.total - analytics.completed;
-  const completionText = analytics.total > 0
-    ? `${Math.round(analytics.completionRate * 100)}% complete`
-    : 'No queue yet';
   const metrics = [
-    { label: 'ACTIVE', value: String(activeCount), helper: completionText, tone: '#005E7D' },
+    { label: 'ACTIVE', value: String(activeCount), helper: 'Finalized unpaid cycles', tone: '#005E7D' },
     { label: 'OUTSTANDING', value: formatPaise(analytics.outstandingDue), helper: 'Actionable balance', tone: '#B91C1C' },
     { label: 'HIGH PRIORITY', value: String(analytics.groups.reduce((sum, group) => sum + group.highCount, 0)), helper: 'Needs attention', tone: '#B45309' },
     { label: 'UNASSIGNED', value: String(unassignedCount), helper: 'Allocate staff', tone: '#475569' },
@@ -215,6 +220,28 @@ export default function CollectionsFollowupsScreen() {
   const [sort, setSort] = useState<'priority' | 'amount' | 'overdue' | 'name'>('priority');
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [assignTarget, setAssignTarget] = useState<FollowupRow | null>(null);
+  const [notifying, setNotifying] = useState(false);
+  useFocusEffect(useCallback(() => {
+    void qc.invalidateQueries({ queryKey: ['admin', 'collection-followups'] });
+    void qc.invalidateQueries({ queryKey: ['admin', 'staff-members'] });
+  }, [qc]));
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        void qc.invalidateQueries({ queryKey: ['admin', 'collection-followups'] });
+      }, 500);
+    };
+    const channel = supabase.channel(`followups-screen-${groupId || 'groups'}`);
+    for (const table of ['auctions', 'cash_collections', 'payment_schedules', 'chit_member_transactions', 'collection_followups']) {
+      channel.on('postgres_changes', { event: '*', schema: 'public', table }, refresh);
+    }
+    channel.on('postgres_changes', { event: '*', schema: 'public', table: 'staff_members' }, () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'staff-members'] });
+    }).subscribe();
+    return () => { clearTimeout(timer); void supabase.removeChannel(channel); };
+  }, [groupId, qc]);
 
   const allRows = useMemo(() => (rows ?? []).filter(row => !groupId || (row.chit_members?.chit_groups?.id ?? 'unassigned') === groupId), [rows, groupId]);
   const analytics = useAnalytics(allRows);
@@ -282,7 +309,6 @@ export default function CollectionsFollowupsScreen() {
     },
     { key: 'unassigned' as const, label: 'Unassigned', count: unassignedCount },
     { key: 'no_response' as const, label: 'No response', count: analytics.statusCounts.no_response },
-    { key: 'collected' as const, label: 'Collected', count: analytics.statusCounts.collected },
     { key: 'all' as const, label: 'All', count: analytics.total },
   ]), [allRows, analytics.statusCounts, analytics.total, unassignedCount]);
 
@@ -301,8 +327,9 @@ export default function CollectionsFollowupsScreen() {
 
   const updateFollowup = useMutation({
     mutationFn: async (vars: { id: string; patch: Partial<Pick<FollowupRow, 'status' | 'assigned_staff_id'>> }) => {
-      const { error } = await supabase.from('collection_followups').update(vars.patch).eq('id', vars.id);
+      const { data, error } = await supabase.from('collection_followups').update(vars.patch).eq('id', vars.id).select('id').single();
       if (error) throw new Error(error.message);
+      if (!data) throw new Error('The follow-up changed during refresh. Please retry.');
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'collection-followups'] }),
     onError: (e: Error) => Alert.alert('Error', e.message),
@@ -311,8 +338,8 @@ export default function CollectionsFollowupsScreen() {
   const handleGenerate = async () => {
     setGenerating(true);
     try {
-      await apiPostAdmin('/api/collections/followups/generate', {});
-      await refetch();
+      const result = await refetch();
+      if (result.error) throw result.error;
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e: any) {
       Alert.alert('Error', e.message || 'Could not generate today’s list.');
@@ -322,26 +349,30 @@ export default function CollectionsFollowupsScreen() {
   };
 
   const handleNotifyStaff = async () => {
+    if (notifying) return;
+    setNotifying(true);
     try {
+      const result = await refetch();
+      if (result.error) throw result.error;
       await apiPostAdmin('/api/collections/followups/resend-digest', {});
       Alert.alert('Staff notified', 'Today\'s follow-up list was sent to assigned staff.');
     } catch (e: any) {
       Alert.alert('Error', e.message || 'Could not notify assigned staff.');
+    } finally {
+      setNotifying(false);
     }
   };
 
   const markCollected = (row: FollowupRow) => {
     Alert.alert(
-      'Mark Collected',
-      'This only logs that staff reported the payment as collected. It does NOT record the actual payment. ' +
-      'You still need to record it via the customer’s payment/cash-collection screen for it to count toward dues.',
+      'Record payment',
+      'Open this customer’s group payment screen to record the receipt. The follow-up remains open until payment is saved and the balance is cleared.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Go Record Payment', onPress: () => {
-            updateFollowup.mutate({ id: row.id, patch: { status: 'collected' } });
             if (row.chit_members?.customer_id) {
-              router.push(`/(admin)/customers/${row.chit_members.customer_id}`);
+              router.push(`/(admin)/customers/${row.chit_members.customer_id}/groups`);
             }
           },
         },
@@ -405,25 +436,27 @@ export default function CollectionsFollowupsScreen() {
           )}
           ListHeaderComponent={(
             <View>
-              {!groupId && <View style={styles.operationsCard}>
+              {<View style={styles.operationsCard}>
                 <View style={styles.operationsCopy}>
                   <Text style={styles.operationsEyebrow}>TODAY’S WORKLIST</Text>
-                  <Text style={styles.operationsTitle}>Collections by group</Text>
-                  <Text style={styles.operationsSub}>Choose a group to review customers and manage follow-ups.</Text>
+                  <Text style={styles.operationsTitle}>{groupId ? groupName : 'Collections by group'}</Text>
+                  <Text style={styles.operationsSub}>Completed auctions only · unpaid balances updated on refresh.</Text>
+                  <Text style={styles.operationsSub}>Pull down to refresh. Auto-refresh every 30 seconds.</Text>
                 </View>
                 <View style={styles.actionsRow}>
-                  <TouchableOpacity style={styles.primaryBtn} onPress={handleGenerate} disabled={generating}>
-                    {generating
+                  <TouchableOpacity style={[styles.primaryBtn, isRefetching && styles.primaryBtnDisabled]} onPress={handleGenerate} disabled={generating || isRefetching}>
+                    {generating || isRefetching
                       ? <ActivityIndicator color="#FFF" size="small" />
                       : <Text style={styles.primaryBtnText}>Refresh queue</Text>}
                   </TouchableOpacity>
                   <TouchableOpacity
-                    style={styles.secondaryBtn}
+                    style={[styles.secondaryBtn, (notifying || unassignedCount === analytics.total) && styles.primaryBtnDisabled]}
                     onPress={handleNotifyStaff}
+                    disabled={notifying || !allRows.some(row => row.assigned_staff_id)}
                     accessibilityRole="button"
                     accessibilityLabel="Notify assigned staff about today's follow-ups"
                   >
-                    <Text style={styles.secondaryBtnText}>Notify staff</Text>
+                    <Text style={styles.secondaryBtnText}>{notifying ? 'Sending…' : 'Notify staff'}</Text>
                   </TouchableOpacity>
                 </View>
               </View>}
@@ -484,10 +517,10 @@ export default function CollectionsFollowupsScreen() {
                   </TouchableOpacity>
                 ))}
               </ScrollView>
-              {groupId && <TouchableOpacity style={styles.advancedToggle} accessibilityRole="button" accessibilityState={{ expanded: showAdvancedFilters }} onPress={() => setShowAdvancedFilters(value => !value)}>
+              {<TouchableOpacity style={styles.advancedToggle} accessibilityRole="button" accessibilityState={{ expanded: showAdvancedFilters }} onPress={() => setShowAdvancedFilters(value => !value)}>
                 <Text style={styles.collapseToggleText}>{showAdvancedFilters ? 'Hide staff & sorting' : 'Staff & sorting'}{staffFilter !== 'all' || sort !== 'priority' ? ' · Applied' : ''} {showAdvancedFilters ? '−' : '+'}</Text>
               </TouchableOpacity>}
-              {groupId && showAdvancedFilters && <>
+              {showAdvancedFilters && <>
                 <Text style={styles.fieldLabel}>Assigned staff</Text>
                 <ScrollView horizontal style={{ flexGrow: 0 }} showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
                   {[{ id: 'all', full_name: 'All staff' }, ...(staff ?? [])].map(person => (
@@ -550,6 +583,7 @@ export default function CollectionsFollowupsScreen() {
               onUpdate={(patch) => updateFollowup.mutate({ id: item.id, patch })}
               onMarkCollected={() => markCollected(item)}
               onAssignPress={() => setAssignTarget(item)}
+              busy={updateFollowup.isPending && updateFollowup.variables?.id === item.id}
             />
           )}
           ListEmptyComponent={filteredGroups.length === 0 ? (
@@ -572,9 +606,13 @@ export default function CollectionsFollowupsScreen() {
         row={assignTarget}
         staff={staff ?? []}
         onClose={() => setAssignTarget(null)}
-        onAssign={(staffId) => {
-          if (assignTarget) updateFollowup.mutate({ id: assignTarget.id, patch: { assigned_staff_id: staffId } });
-          setAssignTarget(null);
+        saving={updateFollowup.isPending}
+        onAssign={async (staffId) => {
+          if (!assignTarget) return;
+          try {
+            await updateFollowup.mutateAsync({ id: assignTarget.id, patch: { assigned_staff_id: staffId } });
+            setAssignTarget(null);
+          } catch { /* Mutation reports the error; keep the selection open. */ }
         }}
         onOpenManageStaff={() => { setAssignTarget(null); setStaffModalVisible(true); }}
       />
@@ -583,7 +621,7 @@ export default function CollectionsFollowupsScreen() {
 }
 
 function FollowupCard({
-  row, staff, onOpenCustomer, onUpdate, onMarkCollected, onAssignPress,
+  row, staff, onOpenCustomer, onUpdate, onMarkCollected, onAssignPress, busy,
 }: {
   row: FollowupRow;
   staff: StaffMember[];
@@ -591,6 +629,7 @@ function FollowupCard({
   onUpdate: (patch: Partial<Pick<FollowupRow, 'status' | 'assigned_staff_id'>>) => void;
   onMarkCollected: () => void;
   onAssignPress: () => void;
+  busy: boolean;
 }) {
   const cust = row.chit_members?.customers;
   const pc = PRIORITY_META[row.priority];
@@ -631,6 +670,7 @@ function FollowupCard({
           <Text style={[styles.badgeText, { color: pc.color }]}>{pc.label}</Text>
         </View>
       </View>
+      <Text style={styles.customerPhone}>Auction cycle {row.payment_schedules?.month_number ?? '—'} · Due {row.payment_schedules?.due_date ?? '—'} · Finalized</Text>
 
       <View style={styles.amountRow}>
         <View>
@@ -648,20 +688,23 @@ function FollowupCard({
       ) : null}
 
       <View style={styles.metaRow}>
-        <TouchableOpacity style={[styles.statusPill, { borderColor: statusMeta.color }]} onPress={openStatusMenu}>
+        <TouchableOpacity disabled={busy} style={[styles.statusPill, { borderColor: statusMeta.color }]} onPress={openStatusMenu}>
           <View style={[styles.statusDot, { backgroundColor: statusMeta.color }]} />
           <Text style={[styles.statusPillText, { color: statusMeta.color }]}>{statusMeta.label} ▾</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.assignBtn} onPress={onAssignPress}>
+        <TouchableOpacity disabled={busy} style={styles.assignBtn} onPress={onAssignPress}>
+          <Text style={styles.customerPhone}>Assigned staff</Text>
           <Text style={styles.assignBtnText} numberOfLines={1}>
-            {assignedStaff ? assignedStaff.full_name : 'Assign staff'}
+            {busy ? 'Saving…' : assignedStaff ? `${assignedStaff.full_name} · Change` : 'Choose staff member'}
           </Text>
         </TouchableOpacity>
       </View>
 
       <View style={styles.cardActions}>
         <TouchableOpacity
-          onPress={() => cust?.phone && Linking.openURL(`tel:${cust.phone}`)}
+          onPress={() => {
+            if (cust?.phone) void Linking.openURL(`tel:${cust.phone}`).catch(() => Alert.alert('Call unavailable', 'Could not open the phone app.'));
+          }}
           style={[styles.cardActionBtn, !cust?.phone && styles.cardActionDisabled]}
           disabled={!cust?.phone}
         >
@@ -670,16 +713,16 @@ function FollowupCard({
         <TouchableOpacity
           style={[styles.cardActionBtn, row.status === 'contacted' && styles.cardActionSelected]}
           onPress={() => onUpdate({ status: 'contacted' })}
-          disabled={row.status === 'contacted'}
+          disabled={busy || row.status === 'contacted'}
         >
           <Text style={[styles.cardActionText, row.status === 'contacted' && styles.cardActionSelectedText]}>
             {row.status === 'contacted' ? 'Contacted' : 'Mark contacted'}
           </Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.paymentBtn} onPress={onMarkCollected}>
+      </View>
+        <TouchableOpacity disabled={busy} style={styles.paymentBtn} onPress={onMarkCollected}>
           <Text style={styles.paymentBtnText}>Record payment</Text>
         </TouchableOpacity>
-      </View>
     </View>
   );
 }
@@ -709,7 +752,11 @@ function StaffManagerModal({ visible, onClose, staff }: { visible: boolean; onCl
       const { error } = await supabase.from('staff_members').update({ active: false }).eq('id', id);
       if (error) throw new Error(error.message);
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'staff-members'] }),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['admin', 'staff-members'] });
+      await qc.invalidateQueries({ queryKey: ['admin', 'collection-followups'] });
+    },
+    onError: (e: Error) => Alert.alert('Could not remove staff', e.message),
   });
 
   const canSave = name.trim().length > 0 && /^\d{10}$/.test(phone.replace(/\D/g, '')) && !addStaff.isPending;
@@ -787,7 +834,10 @@ function StaffManagerModal({ visible, onClose, staff }: { visible: boolean; onCl
                     <Text style={styles.staffName}>{s.full_name}</Text>
                     <Text style={styles.staffPhone}>{s.phone}</Text>
                   </View>
-                  <TouchableOpacity onPress={() => deactivateStaff.mutate(s.id)} hitSlop={8}>
+                  <TouchableOpacity disabled={deactivateStaff.isPending} onPress={() => Alert.alert('Remove staff member?', `Remove ${s.full_name} from the active staff directory?`, [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Remove', style: 'destructive', onPress: () => deactivateStaff.mutate(s.id) },
+                  ])} style={{ minHeight: 44, justifyContent: 'center', paddingHorizontal: 12 }}>
                     <Text style={styles.removeText}>Remove</Text>
                   </TouchableOpacity>
                 </View>
@@ -805,18 +855,21 @@ function StaffManagerModal({ visible, onClose, staff }: { visible: boolean; onCl
 }
 
 function AssignStaffModal({
-  row, staff, onClose, onAssign, onOpenManageStaff,
+  row, staff, onClose, onAssign, onOpenManageStaff, saving,
 }: {
   row: FollowupRow | null;
   staff: StaffMember[];
   onClose: () => void;
-  onAssign: (staffId: string | null) => void;
+  onAssign: (staffId: string | null) => void | Promise<void>;
   onOpenManageStaff: () => void;
+  saving: boolean;
 }) {
   const custName = row?.chit_members?.customers?.full_name ?? 'this customer';
+  const [selectedStaffId, setSelectedStaffId] = useState<string | null>(null);
+  useEffect(() => { setSelectedStaffId(row?.assigned_staff_id ?? null); }, [row?.id, row?.assigned_staff_id]);
 
   return (
-    <Modal visible={!!row} animationType="slide" transparent onRequestClose={onClose}>
+    <Modal visible={!!row} animationType="slide" transparent onRequestClose={() => { if (!saving) onClose(); }}>
       <View style={styles.modalOverlay}>
         <View style={styles.modalCard}>
           <Text style={styles.modalTitle}>Assign staff</Text>
@@ -831,18 +884,19 @@ function AssignStaffModal({
             </View>
           ) : (
             <ScrollView style={styles.staffListScroll}>
-              {row?.assigned_staff_id && (
-                <TouchableOpacity style={styles.assignOptionRow} onPress={() => onAssign(null)}>
-                  <Text style={styles.assignOptionUnassign}>Unassign</Text>
+              <TouchableOpacity disabled={saving} style={[styles.assignOptionRow, !selectedStaffId && styles.assignOptionRowSelected]} onPress={() => setSelectedStaffId(null)}>
+                  <Text style={styles.assignOptionUnassign}>Unassigned</Text>
                 </TouchableOpacity>
-              )}
               {staff.map((s) => {
-                const selected = row?.assigned_staff_id === s.id;
+                const selected = selectedStaffId === s.id;
                 return (
                   <TouchableOpacity
                     key={s.id}
                     style={[styles.assignOptionRow, selected && styles.assignOptionRowSelected]}
-                    onPress={() => onAssign(s.id)}
+                    disabled={saving}
+                    onPress={() => setSelectedStaffId(s.id)}
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: selected }}
                   >
                     <View style={{ flex: 1 }}>
                       <Text style={styles.staffName}>{s.full_name}</Text>
@@ -855,7 +909,10 @@ function AssignStaffModal({
             </ScrollView>
           )}
 
-          <TouchableOpacity style={styles.secondaryBtn} onPress={onClose}>
+          <TouchableOpacity style={[styles.primaryBtn, saving && styles.primaryBtnDisabled]} disabled={saving || (selectedStaffId != null && !staff.some(person => person.id === selectedStaffId))} onPress={() => { void onAssign(selectedStaffId); }}>
+            {saving ? <ActivityIndicator color="#FFF" /> : <Text style={styles.primaryBtnText}>Save assignment</Text>}
+          </TouchableOpacity>
+          <TouchableOpacity disabled={saving} style={styles.secondaryBtn} onPress={onClose}>
             <Text style={styles.secondaryBtnText}>Cancel</Text>
           </TouchableOpacity>
         </View>
@@ -890,9 +947,9 @@ const styles = StyleSheet.create({
   operationsTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 19, color: '#0B1C30' },
   operationsSub: { fontFamily: 'Inter_400Regular', fontSize: 12.5, lineHeight: 18, color: '#526477', marginTop: 3 },
   actionsRow: { flexDirection: 'row', gap: 10 },
-  primaryBtn: { flex: 1, backgroundColor: Colors.primary, paddingVertical: 12, borderRadius: 12, alignItems: 'center' },
+  primaryBtn: { minHeight: 46, backgroundColor: Colors.primary, paddingHorizontal: 16, paddingVertical: 12, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   primaryBtnText: { fontFamily: 'Inter_600SemiBold', color: '#FFF', fontSize: 13 },
-  secondaryBtn: { flex: 1, borderWidth: 1, borderColor: Colors.primary, paddingVertical: 12, borderRadius: 12, alignItems: 'center', backgroundColor: '#FFF' },
+  secondaryBtn: { minHeight: 46, borderWidth: 1, borderColor: Colors.primary, paddingHorizontal: 16, paddingVertical: 12, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFF' },
   secondaryBtnText: { fontFamily: 'Inter_600SemiBold', color: Colors.primary, fontSize: 13 },
 
   summaryStrip: { gap: 10, paddingHorizontal: 16, paddingVertical: 14 },
@@ -951,19 +1008,19 @@ const styles = StyleSheet.create({
   overdueValue: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 17, color: '#B91C1C' },
   overdueLabel: { fontFamily: 'Inter_500Medium', fontSize: 10, color: '#94A3B8' },
   suggestion: { fontFamily: 'Inter_400Regular', fontSize: 12, color: '#526477', lineHeight: 17, paddingTop: 9, borderTopWidth: 1, borderTopColor: '#F1F5F9' },
-  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  statusPill: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 5, paddingHorizontal: 8, borderWidth: 1, borderRadius: 100, backgroundColor: '#FFF' },
+  metaRow: { alignItems: 'stretch', gap: 10 },
+  statusPill: { minHeight: 44, alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 8, paddingHorizontal: 12, borderWidth: 1, borderRadius: 12, backgroundColor: '#FFF' },
   statusDot: { width: 6, height: 6, borderRadius: 3 },
   statusPillText: { fontFamily: 'Inter_600SemiBold', fontSize: 10.5 },
-  assignBtn: { flex: 1, minWidth: 0, paddingVertical: 6, paddingHorizontal: 10, backgroundColor: '#EEF7FA', borderRadius: 8, alignItems: 'flex-end' },
+  assignBtn: { minHeight: 54, minWidth: 0, paddingVertical: 10, paddingHorizontal: 12, backgroundColor: '#EEF7FA', borderRadius: 12, alignItems: 'flex-start', gap: 4 },
   assignBtnText: { fontFamily: 'Inter_600SemiBold', fontSize: 11.5, color: Colors.primary },
   cardActions: { flexDirection: 'row', gap: 7, paddingTop: 2 },
-  cardActionBtn: { minHeight: 36, paddingHorizontal: 11, borderRadius: 9, borderWidth: 1, borderColor: '#D8E2EA', backgroundColor: '#FFF', alignItems: 'center', justifyContent: 'center' },
+  cardActionBtn: { flex: 1, minHeight: 44, paddingHorizontal: 11, borderRadius: 9, borderWidth: 1, borderColor: '#D8E2EA', backgroundColor: '#FFF', alignItems: 'center', justifyContent: 'center' },
   cardActionText: { fontFamily: 'Inter_600SemiBold', fontSize: 10.5, color: '#334155' },
   cardActionSelected: { borderColor: '#86EFAC', backgroundColor: '#F0FDF4' },
   cardActionSelectedText: { color: '#15803D' },
   cardActionDisabled: { opacity: 0.4 },
-  paymentBtn: { flex: 1, minHeight: 36, paddingHorizontal: 10, borderRadius: 9, backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center' },
+  paymentBtn: { minHeight: 46, paddingHorizontal: 10, borderRadius: 12, backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center' },
   paymentBtnText: { fontFamily: 'Inter_600SemiBold', fontSize: 10.5, color: '#FFF' },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },

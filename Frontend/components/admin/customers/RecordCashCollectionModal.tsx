@@ -6,10 +6,11 @@ import {
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { supabase } from '../../../lib/supabase';
+import { useQueryClient } from '@tanstack/react-query';
 import { formatDateIST, formatPaise } from './utils';
 import {
     dedupeAuctionCycles,
-    getCycleDueAmount,
+    getCashCycleDueAmount as getCycleDueAmount,
     getCyclePaymentStatus,
     getCycleRemainingDue,
     type AuctionCycleInfo,
@@ -46,7 +47,7 @@ interface Props {
     visible: boolean;
     onClose: () => void;
     membership: ChitMember;
-    onSuccess: () => void;
+    onSuccess: (collection: CashCollection) => void | Promise<void>;
     existingCollection?: CashCollection | null;
     /** Render inline (no nested Modal) — use inside another Modal/sheet */
     embedded?: boolean;
@@ -80,6 +81,7 @@ export function RecordCashCollectionModal({
     coveredMonths = [],
     onRequestSettlement,
 }: Props) {
+    const queryClient = useQueryClient();
     const slideAnim = React.useRef(new Animated.Value(800)).current;
     const group: ChitGroup = membership.chit_groups;
 
@@ -103,7 +105,7 @@ export function RecordCashCollectionModal({
         if (!visible) return;
         if (existingCollection) {
             setMonthNumber(String(existingCollection.month_number));
-            setAmount(String(existingCollection.amount / 100));
+            setAmount(String(Math.round(existingCollection.amount / 100)));
             setNotes(existingCollection.notes || '');
             setDenom500(String(existingCollection.denomination_500));
             setDenom200(String(existingCollection.denomination_200));
@@ -180,7 +182,7 @@ export function RecordCashCollectionModal({
         lastAutoFilledMonth.current = monthNumber;
 
         if (effectiveExisting) {
-            setAmount(String(effectiveExisting.amount / 100));
+            setAmount(String(Math.round(effectiveExisting.amount / 100)));
             setNotes(effectiveExisting.notes || '');
             setDenom500(String(effectiveExisting.denomination_500));
             setDenom200(String(effectiveExisting.denomination_200));
@@ -231,7 +233,9 @@ export function RecordCashCollectionModal({
     const amountInPaise = Math.round(amountInRupees * 100);
     const denominationMatches = (denominationTotal * 100) === amountInPaise;
     const doesNotExceedDue = expectedDuePaise != null && amountInPaise <= expectedDuePaise;
-    const isValid = monthNumber && expectedDuePaise != null && amountInPaise > 0 && denominationMatches && doesNotExceedDue;
+    const counts = [denom500, denom200, denom100, denom50, denom20, denom10];
+    const validCounts = counts.every((count) => /^\d*$/.test(count) && Number.isSafeInteger(Number(count)));
+    const isValid = monthNumber && expectedDuePaise != null && Number.isSafeInteger(amountInRupees) && amountInPaise > 0 && validCounts && denominationMatches && doesNotExceedDue;
 
     const paymentStatus = useMemo(() => {
         if (expectedDuePaise == null) return 'Unpaid';
@@ -275,21 +279,27 @@ export function RecordCashCollectionModal({
                 recorded_by: (await supabase.auth.getUser()).data.user?.id || null,
             };
 
+            let savedCollection: CashCollection;
             if (effectiveExisting) {
-                const { error } = await supabase
+                const { data, error } = await supabase
                     .from('cash_collections')
                     .update(collectionData)
-                    .eq('id', effectiveExisting.id);
+                    .eq('id', effectiveExisting.id)
+                    .select('*')
+                    .single();
 
                 if (error) throw error;
+                savedCollection = data as CashCollection;
 
                 Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                 Alert.alert('Success', 'Cash collection updated successfully.');
             } else {
                 // Insert new collection
-                const { error } = await supabase
+                const { data, error } = await supabase
                     .from('cash_collections')
-                    .insert([collectionData]);
+                    .insert([collectionData])
+                    .select('*')
+                    .single();
 
                 if (error) {
                     if (error.code === '23505') { // Unique constraint violation
@@ -298,12 +308,20 @@ export function RecordCashCollectionModal({
                     }
                     throw error;
                 }
+                savedCollection = data as CashCollection;
 
                 Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                 Alert.alert('Success', `Cash collection recorded for Month ${monthNum} (${paymentStatus} payment).`);
             }
 
-            onSuccess();
+            await onSuccess(savedCollection);
+            await queryClient.invalidateQueries({
+                predicate: (query) => {
+                    const key = query.queryKey;
+                    return (key[0] === 'admin' && ['customer-detail', 'collection-followups'].includes(String(key[1]))) ||
+                        ['cash-collections', 'chit-detail', 'active-chits', 'dashboard-stats', 'group-history', 'member-group-history', 'member-history', 'collections-followups'].includes(String(key[0]));
+                },
+            });
             handleClose();
         } catch (err: any) {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -408,10 +426,11 @@ export function RecordCashCollectionModal({
                                     group.monthly_installment,
                                     auctionCycles,
                                     paidAmount,
+                                    true,
                                 );
                                 const collectionStatus = getCollectionStatusLabel(
                                     paymentStatus,
-                                    getCycleRemainingDue(month, group.monthly_installment, auctionCycles, paidAmount),
+                                    getCycleRemainingDue(month, group.monthly_installment, auctionCycles, paidAmount, true),
                                 );
                                 const isAwaitingAuction = cycleDue == null;
                                 const isDisabled = isCovered || isAwaitingAuction;
@@ -517,9 +536,9 @@ export function RecordCashCollectionModal({
                     <TextInput
                         style={styles.input}
                         placeholder="Enter collected amount"
-                        keyboardType="decimal-pad"
+                        keyboardType="number-pad"
                         value={amount}
-                        onChangeText={setAmount}
+                        onChangeText={(value) => setAmount(value.replace(/[^0-9]/g, ''))}
                     />
                 </View>
             </View>
@@ -565,7 +584,7 @@ export function RecordCashCollectionModal({
                                                 placeholder="Enter note count"
                                                 keyboardType="number-pad"
                                                 value={val}
-                                                onChangeText={setVal}
+                                                onChangeText={(value) => setVal(value.replace(/[^0-9]/g, ''))}
                                             />
                                             <Text style={styles.denominationTotal}>
                                                 = ₹{((parseInt(val) || 0) * value).toFixed(0)}
@@ -586,7 +605,7 @@ export function RecordCashCollectionModal({
                                         styles.validationValue,
                                         denominationMatches ? styles.validationValueSuccess : styles.validationValueError,
                                     ]}>
-                                        ₹{denominationTotal.toFixed(2)}
+                                        ₹{denominationTotal.toLocaleString('en-IN')}
                                     </Text>
                                 </View>
                                 <View style={{ alignItems: 'center', paddingHorizontal: 12 }}>
@@ -606,7 +625,7 @@ export function RecordCashCollectionModal({
                                         styles.validationValue,
                                         denominationMatches ? styles.validationValueSuccess : styles.validationValueError,
                                     ]}>
-                                        ₹{amountInRupees.toFixed(2)}
+                                        ₹{amountInRupees.toLocaleString('en-IN')}
                                     </Text>
                                 </View>
                             </View>
@@ -614,11 +633,11 @@ export function RecordCashCollectionModal({
                             {!denominationMatches && amount && denominationTotal > 0 && (
                                 <View style={styles.cashMismatchHelp}>
                                     <Text style={styles.validationError}>
-                                        Denominations represent the cash actually received. Use the counted total to record a partial payment; the exact remaining rupees/paise will stay due.
+                                        Enter the notes actually received, including ₹10 and ₹20 notes. Use the counted total for a partial payment; the remaining whole rupees stay due.
                                     </Text>
                                     <TouchableOpacity
                                         style={styles.useCountedTotalBtn}
-                                        onPress={() => setAmount(denominationTotal.toFixed(2))}
+                                        onPress={() => setAmount(String(denominationTotal))}
                                     >
                                         <Text style={styles.useCountedTotalText}>
                                             Use ₹{denominationTotal.toLocaleString('en-IN')} as collected amount

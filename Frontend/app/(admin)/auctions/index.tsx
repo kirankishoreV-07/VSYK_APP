@@ -12,9 +12,10 @@ import {
   sanitizePlaceholderAuctionSchedules,
 } from '../../../lib/auctionUtils';
 import { getAuctionWinnerDisplayName } from '../../../lib/auctionWinner';
+import { AuctionHistoryPanel } from '../../../components/admin/auctions/AuctionHistoryPanel';
 
 // ─── Types ────────────────────────────────────────────────────
-type AuctionRow = {
+export type AuctionRow = {
   id: string;
   chit_group_id: string;
   auction_number: number | null;
@@ -31,7 +32,7 @@ type AuctionRow = {
   winner_prize_amount: number;
   winner_name: string | null;
   winner_member_id: string | null;
-  chit_groups: { name: string; group_code: string; value: number; capacity: number } | null;
+  chit_groups: { name: string; group_code: string; value: number; capacity: number; accounting_type?: string } | null;
   _bid_count?: number;
   _winner_display?: string;
 };
@@ -51,43 +52,53 @@ const statusColor = (s: string) =>
 const statusBg = (s: string) =>
   s === 'live' ? '#D1FAE5' : s === 'completed' ? '#E0F2FE' : s === 'cancelled' ? '#FEE2E2' : '#FEF3C7';
 
+async function loadAuctionRows(): Promise<AuctionRow[]> {
+  const rows: AuctionRow[] = [];
+  for (let offset = 0; ; offset += 500) {
+    const { data, error } = await supabase.from('auctions')
+      .select('*, chit_groups(name, group_code, value, capacity, accounting_type)')
+      .order('scheduled_at', { ascending: false }).order('id', { ascending: true })
+      .range(offset, offset + 499);
+    if (error) throw error;
+    rows.push(...((data || []) as AuctionRow[]));
+    if (!data || data.length < 500) return rows;
+  }
+}
+
 export default function AdminAuctionsIndex() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<'history' | 'upcoming'>('upcoming');
   const [refreshing, setRefreshing] = useState(false);
   const [allAuctions, setAllAuctions] = useState<AuctionRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fetchAll = async () => {
     try {
-      const { data, error } = await supabase
-        .from('auctions')
-        .select('*, chit_groups(name, group_code, value, capacity)')
-        .order('scheduled_at', { ascending: false });
-      if (error) throw error;
-
-      let rows = (data || []) as AuctionRow[];
+      let rows = await loadAuctionRows();
       const sanitized = await sanitizePlaceholderAuctionSchedules(supabase, rows);
       if (sanitized) {
-        const { data: refreshed, error: refreshError } = await supabase
-          .from('auctions')
-          .select('*, chit_groups(name, group_code, value, capacity)')
-          .order('scheduled_at', { ascending: false });
-        if (refreshError) throw refreshError;
-        rows = (refreshed || []) as AuctionRow[];
+        rows = await loadAuctionRows();
       }
-      rows = dedupeAuctionRows(rows);
+      rows = [
+        ...dedupeAuctionRows(rows).filter(row => !['completed', 'cancelled'].includes(row.status)),
+        ...rows.filter(row => ['completed', 'cancelled'].includes(row.status)),
+      ];
 
       const ids = rows.map(r => r.id);
       if (ids.length > 0) {
-        const { data: bidCounts } = await supabase
-          .from('auction_bids')
-          .select('auction_id')
-          .in('auction_id', ids)
-          .eq('is_retracted', false);
         const countMap: Record<string, number> = {};
-        for (const b of (bidCounts || [])) countMap[b.auction_id] = (countMap[b.auction_id] || 0) + 1;
+        for (let chunk = 0; chunk < ids.length; chunk += 100) {
+          for (let offset = 0; ; offset += 500) {
+            const { data: bidCounts, error } = await supabase.from('auction_bids')
+              .select('id, auction_id').in('auction_id', ids.slice(chunk, chunk + 100))
+              .eq('is_retracted', false).order('id', { ascending: true }).range(offset, offset + 499);
+            if (error) throw error;
+            for (const b of bidCounts || []) countMap[b.auction_id] = (countMap[b.auction_id] || 0) + 1;
+            if (!bidCounts || bidCounts.length < 500) break;
+          }
+        }
         rows.forEach(r => { r._bid_count = countMap[r.id] || 0; });
       }
 
@@ -118,8 +129,10 @@ export default function AdminAuctionsIndex() {
       }
 
       setAllAuctions(rows);
+      setFetchError(null);
     } catch (err) {
       console.error('Error fetching auctions:', err);
+      setFetchError('Could not update auction records. Pull down to retry; existing records may be out of date.');
     } finally {
       setLoading(false);
     }
@@ -163,13 +176,6 @@ export default function AdminAuctionsIndex() {
   const scheduledUpcoming = filterScheduledUpcomingForTab(allAuctions);
   const history = allAuctions.filter(a => a.status === 'completed' || a.status === 'cancelled');
 
-  // Summary stats
-  const totalSettled = history.filter(a => a.status === 'completed').length;
-  const totalPrizePaid = history.reduce((s, a) => s + (a.winner_prize_amount || 0), 0);
-  const totalDividend = history.reduce((s, a) => s + (a.dividend_amount || 0), 0);
-  const avgDiscount = totalSettled > 0
-    ? history.filter(a => a.status === 'completed').reduce((s, a) => s + (a.discount_amount || 0), 0) / totalSettled
-    : 0;
 
   return (
     <SafeAreaView style={st.container} edges={['top']}>
@@ -200,14 +206,17 @@ export default function AdminAuctionsIndex() {
       </View>
 
       <ScrollView contentContainerStyle={st.scroll} showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag"
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#005E7D" />}>
+
+        {!!fetchError && <Text style={{ color: '#B91C1C', marginBottom: 14 }}>{fetchError}</Text>}
 
         {loading ? (
           <ActivityIndicator color="#005E7D" size="large" style={{ marginTop: 60 }} />
         ) : activeTab === 'upcoming' ? (
           <UpcomingTab live={live} upcoming={scheduledUpcoming} router={router} />
         ) : (
-          <HistoryTab history={history} stats={{ totalSettled, totalPrizePaid, totalDividend, avgDiscount }} />
+          <AuctionHistoryPanel history={history} />
         )}
 
         <View style={{ height: 100 }} />
@@ -288,113 +297,6 @@ function UpcomingTab({ live, upcoming, router }: { live: AuctionRow | undefined;
           <Text style={st.emptyText}>No upcoming auctions configured yet.</Text>
         </View>
       )}
-    </View>
-  );
-}
-
-// ─── History Tab ──────────────────────────────────────────────
-function HistoryTab({ history, stats }: {
-  history: AuctionRow[];
-  stats: { totalSettled: number; totalPrizePaid: number; totalDividend: number; avgDiscount: number };
-}) {
-  if (history.length === 0) {
-    return (
-      <View style={st.emptyCard}>
-        <Text style={st.emptyText}>No completed auctions yet. History will appear here once an auction is settled.</Text>
-      </View>
-    );
-  }
-
-  return (
-    <View>
-      {/* Summary stats row */}
-      <View style={st.statsRow}>
-        <View style={[st.statCard, { flex: 1 }]}>
-          <Text style={st.statLabel}>SETTLED</Text>
-          <Text style={st.statVal}>{stats.totalSettled}</Text>
-        </View>
-        <View style={[st.statCard, { flex: 1 }]}>
-          <Text style={st.statLabel}>PRIZE PAID</Text>
-          <Text style={[st.statVal, { color: '#005E7D' }]}>{fmtRupees(stats.totalPrizePaid)}</Text>
-        </View>
-        <View style={[st.statCard, { flex: 1 }]}>
-          <Text style={st.statLabel}>DIVIDENDS</Text>
-          <Text style={[st.statVal, { color: '#10B981' }]}>{fmtRupees(stats.totalDividend)}</Text>
-        </View>
-      </View>
-
-      <View style={[st.statCard, { marginBottom: 20 }]}>
-        <Text style={st.statLabel}>AVG DISCOUNT PER AUCTION</Text>
-        <Text style={[st.statVal, { color: '#F59E0B' }]}>{fmtRupees(stats.avgDiscount)}</Text>
-      </View>
-
-      <Text style={st.sectionTitle}>Auction History</Text>
-      {history.map((a, i) => {
-        const sc = statusColor(a.status);
-        const sb = statusBg(a.status);
-        const settled = a.status === 'completed';
-        return (
-          <View key={a.id} style={st.historyCard}>
-            {/* Header */}
-            <View style={st.historyHeader}>
-              <View style={{ flex: 1 }}>
-                <Text style={st.historyGroup}>{a.chit_groups?.name}</Text>
-                <Text style={st.historyCode}>{a.chit_groups?.group_code} · Auction #{a.auction_number}</Text>
-              </View>
-              <View style={[st.statusPill, { backgroundColor: sb }]}>
-                <Text style={[st.statusPillText, { color: sc }]}>{a.status.toUpperCase()}</Text>
-              </View>
-            </View>
-
-            {/* Date row */}
-            <View style={st.historyDateRow}>
-              <Text style={st.historyDateLabel}>Held on</Text>
-              <Text style={st.historyDateVal}>{fmtDate(a.ended_at || a.scheduled_at)}</Text>
-            </View>
-
-            {settled && (
-              <>
-                {/* Winner bar */}
-                <View style={st.winnerBar}>
-                  <View style={st.winnerAvatar}>
-                    <Text style={st.winnerAvatarText}>
-                      {(a._winner_display || a.winner_name || 'W').charAt(0).toUpperCase()}
-                    </Text>
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={st.winnerLabel}>WINNER</Text>
-                    <Text style={st.winnerName}>{a._winner_display || getAuctionWinnerDisplayName(a, [])}</Text>
-                  </View>
-                  <View style={{ alignItems: 'flex-end' }}>
-                    <Text style={st.winnerLabel}>PRIZE</Text>
-                    <Text style={st.winnerPrize}>{fmtRupees(a.winner_prize_amount)}</Text>
-                  </View>
-                </View>
-
-                {/* Settlement grid */}
-                <View style={st.settlementGrid}>
-                  <View style={st.settlementCell}>
-                    <Text style={st.cellLabel}>DISCOUNT</Text>
-                    <Text style={st.cellValGreen}>{fmtRupees(a.discount_amount)}</Text>
-                  </View>
-                  <View style={st.settlementCell}>
-                    <Text style={st.cellLabel}>DIVIDEND/MEMBER</Text>
-                    <Text style={st.cellValGreen}>{fmtRupees(a.dividend_amount)}</Text>
-                  </View>
-                  <View style={st.settlementCell}>
-                    <Text style={st.cellLabel}>PAYABLE EMI</Text>
-                    <Text style={[st.cellVal, { color: '#005E7D' }]}>{fmtRupees(a.final_due_amount)}</Text>
-                  </View>
-                  <View style={st.settlementCell}>
-                    <Text style={st.cellLabel}>TOTAL BIDS</Text>
-                    <Text style={st.cellVal}>{a._bid_count || 0}</Text>
-                  </View>
-                </View>
-              </>
-            )}
-          </View>
-        );
-      })}
     </View>
   );
 }

@@ -18,6 +18,7 @@ import {
     generateCSVFilename,
     getCycleDueAmount,
 } from './utils';
+import { getCashCycleDueAmount } from '../../../lib/chitPayments';
 import { getMemberWonAuctionNumbers, WINNER_HIGHLIGHT } from '../../../lib/auctionWinner';
 import { shareCsvFile } from '../../../lib/csvExport';
 import { AdminColors, softElevation } from './adminStyles';
@@ -164,7 +165,7 @@ export function PaymentHistoryTab({
                 if (isUnaccounted) {
                     const cashCollection = cashCollections.find((c) => c.month_number === schedule.month_number);
                     const netPaid = cashCollection?.amount || 0;
-                    const cycleDue = getCycleDueAmount(
+                    const cycleDue = getCashCycleDueAmount(
                         schedule.month_number,
                         membership.chit_groups.monthly_installment,
                         groupAuctions,
